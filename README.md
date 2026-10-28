@@ -160,4 +160,4 @@ docs/               graphiques du README
 
 ## 📄 Licence
 
-À définir avant publication (MIT conseillée).
+MIT
