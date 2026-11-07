@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+*.zip
+.vscode/
+# Résultats générés, distincts des outils et de la documentation.
+results/
+.cache/
+# Consignes locales de l'assistant, non publiées.
+CLAUDE.md
+# Configuration locale de l'assistant.
+.claude/
