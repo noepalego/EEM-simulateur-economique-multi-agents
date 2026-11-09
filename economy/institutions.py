@@ -22,6 +22,9 @@ from dataclasses import dataclass, field
 
 from economy.politics import ALL_LEVERS, MULTIPLIER_LEVERS, orientation_label
 
+# champ ajouté après les références d'identité : omis de l'empreinte à sa valeur par défaut
+NEUTRE = {"identity": "neutre"}
+
 # décalage de graine du générateur dédié (nominations, traits de proximité, écarts de doctrine)
 STATE_SEED_OFFSET = 27644437
 
@@ -304,6 +307,10 @@ class Objective:
     value: float = 0.0
     progress: float = 0.0
     status: str = "en cours"
+    # lot C : levier du ministère actionné quand l'objectif est en retard ; rang (principal ou
+    # secondaire). Vides par défaut : objectifs d'avant le lot C, sans levier
+    lever: str = field(default="", metadata=NEUTRE)
+    rank: str = field(default="", metadata=NEUTRE)
 
     def met(self, value: float) -> bool:
         if self.comparison == "<=":
@@ -351,16 +358,99 @@ INDICATOR_LABELS = {
     "monopoles_critiques": "secteurs critiques dominés sans opérateur public ni régulation",
     "monopoles": "secteurs dominés sans réponse publique",
     "portefeuille_non_strategique": "valeur des participations non stratégiques",
+    # lot C (objectifs enrichis)
+    "arrieres_recettes": "arriérés de l'État / recettes (12 mois)",
+    "chomage_longue_duree": "chômage de longue durée (12 mois, part des ménages)",
+    "taux_emploi": "taux d'emploi (12 mois)",
+    "salaire_reel_median": "salaire réel médian du privé (euros de départ)",
+    "investissement_pib": "investissement / PIB (12 mois)",
+    "concentration": "concentration moyenne des secteurs (Herfindahl)",
+    "vacance_postes": "postes publics vacants / postes ouverts",
+    "education": "qualité de l'éducation reçue (couverture lissée)",
+    "prix_energie": "indice du prix de l'énergie (relatif au départ du modèle)",
 }
+
+# lot C : levier du ministère actionné par un objectif en retard (``objective_pressure``)
+OBJECTIVE_LEVERS = {
+    "dette_pib": "loi_de_finances", "solde_pib": "loi_de_finances",
+    "interets_recettes": "loi_de_finances", "arrieres_recettes": "loi_de_finances",
+    "chomage": "conseillers_emploi", "chomage_longue_duree": "conseillers_emploi",
+    "taux_emploi": "conseillers_emploi",
+    "smic_median": "salaire_minimum", "salaire_reel_median": "salaire_minimum",
+    "monopoles": "instruction", "monopoles_critiques": "instruction", "concentration": "instruction",
+    "prix_energie": "instruction",
+    "portefeuille_non_strategique": "cessions", "investissement_pib": "investissement_public",
+    "couverture_services": "arbitrage_services", "vacance_postes": "arbitrage_services",
+    "education": "recrutement_education", "masse_salariale_pib": "maitrise_effectifs",
+}
+LEVER_TEXT = {
+    "loi_de_finances": "loi de finances : solde voulu relevé",
+    "conseillers_emploi": "recrutements : couverture du service Emploi et formation relevée",
+    "salaire_minimum": "salaire minimum : coup de pouce annuel plafonné plus haut",
+    "instruction": "intervention industrielle : dossiers de concurrence instruits plus vite",
+    "cessions": "intervention industrielle : cessions mensuelles accélérées",
+    "investissement_public": "loi de finances : programme d'investissement relevé",
+    "arbitrage_services": "recrutements : primes et point d'indice arbitrés par la présidence",
+    "recrutement_education": "recrutements : couverture du service Éducation relevée",
+    "maitrise_effectifs": "recrutements : postes ouverts réduits",
+}
+# lot C : cible relevée quand la situation de départ remplit déjà l'objectif (« trop facile ») :
+# indicateur -> (pas d'amélioration, borne atteignable)
+OBJECTIVE_IMPROVEMENT = {
+    "dette_pib": (0.03, 0.0), "solde_pib": (0.005, 0.03), "interets_recettes": (0.01, 0.0),
+    "arrieres_recettes": (0.005, 0.0), "chomage": (0.01, 0.02), "chomage_longue_duree": (0.002, 0.0),
+    "taux_emploi": (0.01, 0.99), "smic_median": (0.02, 0.85), "couverture_services": (0.05, 1.0),
+    "masse_salariale_pib": (0.002, 0.0), "vacance_postes": (0.05, 0.0), "education": (0.05, 1.0),
+    "investissement_pib": (0.01, 0.5),
+}
+# indicateurs en niveau relatif (cible = départ × (1 + pas)) plutôt qu'en points
+RELATIVE_IMPROVEMENT = {"salaire_reel_median": 0.02, "concentration": -0.05, "prix_energie": -0.02}
+
+
+def format_indicator(indicator: str, value: float) -> str:
+    """Valeur lisible d'un indicateur (pour les libellés d'objectifs)."""
+    if indicator in ("monopoles", "monopoles_critiques"):
+        return f"{value:.0f}"
+    if indicator in ("portefeuille_non_strategique", "salaire_reel_median"):
+        return f"{value:,.0f} €".replace(",", " ")
+    if indicator in ("concentration", "prix_energie"):
+        return f"{value:.2f}"
+    return f"{value:.1%}"
+
+
+def demanding_target(indicator: str, comparison: str, target: float, baseline: float) -> float:
+    """Lot C : cible qui dépend de la situation de départ. Si le niveau de départ remplit déjà
+    l'objectif, la cible devient une amélioration d'un pas par rapport à lui, sans dépasser une
+    borne atteignable (déjà à la borne : cible du programme gardée, objectif de maintien) ; sinon
+    la cible du programme est gardée."""
+    if comparison not in ("<=", ">="):
+        return target
+    already = baseline <= target if comparison == "<=" else baseline >= target
+    if not already:
+        return target
+    if indicator in RELATIVE_IMPROVEMENT:
+        return baseline * (1.0 + RELATIVE_IMPROVEMENT[indicator])
+    if indicator not in OBJECTIVE_IMPROVEMENT:
+        return target
+    step, bound = OBJECTIVE_IMPROVEMENT[indicator]
+    if comparison == "<=":
+        return max(bound, min(target, baseline - step)) if baseline > bound else target
+    return min(bound, max(target, baseline + step)) if baseline < bound else target
 
 
 def make_objective(role: str, doctrine: Doctrine, values: dict[str, float], month: int,
                    deadline: int, config, envelope: float = 0.0) -> Objective:
-    """Objectif principal d'un ministre, tiré du programme (hypothèses : docs/ETAT.md)."""
+    """Objectif principal d'un ministre, tiré du programme (hypothèses : docs/ETAT.md). Avec
+    ``enriched_objectives`` (lot C) : même choix, cible dépendant de la situation de départ,
+    levier et rang (``_enrich``)."""
 
     def objective(indicator: str, comparison: str, target: float, text: str, tolerance: float = 0.0) -> Objective:
         return Objective(indicator, text, comparison, target, values[indicator], deadline,
                          envelope=envelope, tolerance=tolerance, value=values[indicator])
+
+    if getattr(config, "enriched_objectives", False):
+        return _enrich(make_objective(role, doctrine, values, month, deadline,
+                                      _Plain(config), envelope), "principal")
 
     if role == "finances":
         if doctrine.budget_rule == "excedent":
@@ -412,6 +502,11 @@ class Office:
     objective: Objective | None = None
     holdings: tuple = ()        # entreprises dont la personne détenait des titres à sa nomination
     refusals: tuple = ()        # personnes pressenties qui ont refusé avant elle
+    secondary: Objective | None = field(default=None, metadata=NEUTRE)  # lot C : objectif secondaire
+
+    def objectives(self) -> list:
+        """Objectifs du titulaire : principal puis secondaire (lot C), ceux qui existent."""
+        return [o for o in (self.objective, self.secondary) if o is not None]
 
 
 @dataclass
@@ -426,6 +521,7 @@ class GovernmentTerm:
     members: list = field(default_factory=list)   # dictionnaires : rôle, personne, dates, salaire, objectif
     objectives_met: float = 0.0
     record: dict = field(default_factory=dict)    # bilan par portefeuille (« atteint », « partiel », « manqué »)
+    secondary_record: dict = field(default_factory=dict, metadata=NEUTRE)  # lot C : bilan des secondaires
 
     @property
     def label(self) -> str:
@@ -677,6 +773,8 @@ class StateInstitutions:
     created: int
     doctrine: Doctrine | None = None
     lean: dict = field(default_factory=dict)          # proximité politique de chaque ménage (0–100)
+    # lot E : régime de propriété courant (0 ultra-capitalisme, 1 coopératives) ; None sans le réglage
+    ownership_regime: float | None = field(default=None, metadata=NEUTRE)
     offices: dict = field(default_factory=dict)       # rôle -> Office
     terms: list = field(default_factory=list)         # GovernmentTerm
     journal: list = field(default_factory=list)       # Decision
@@ -854,3 +952,81 @@ def elect_orientation(rng: random.Random, incumbent_orientation: float | None, c
     desired = 50.0 + config.vote_ideology_pull * 100.0 * (unemployment_gap - inflation_gap)
     side = -1.0 if incumbent_orientation >= 50.0 else 1.0
     return reflect(desired + 15.0 * side + rng.gauss(0.0, 12.0)), False
+
+
+# -- lot C : objectifs enrichis ------------------------------------------------------------------
+
+class _Plain:
+    """Vue de ``config`` sans les objectifs enrichis (choix de l'objectif principal de base)."""
+
+    def __init__(self, config) -> None:
+        self._config = config
+
+    def __getattr__(self, name):
+        if name == "enriched_objectives":
+            return False
+        return getattr(self._config, name)
+
+
+def _enrich(objective: Objective, rank: str) -> Objective:
+    """Cible dépendant de la situation de départ, levier et rang (lot C)."""
+    target = demanding_target(objective.indicator, objective.comparison, objective.target, objective.baseline)
+    if target != objective.target:
+        objective.label += (f" ; déjà rempli au départ ({format_indicator(objective.indicator, objective.baseline)}),"
+                            f" cible relevée à {format_indicator(objective.indicator, target)}")
+        objective.target = target
+    objective.update(objective.value)
+    objective.lever = OBJECTIVE_LEVERS.get(objective.indicator, "")
+    objective.rank = rank
+    return objective
+
+
+def make_secondary_objective(role: str, doctrine: Doctrine, values: dict[str, float], principal: Objective,
+                             deadline: int, envelope: float = 0.0) -> Objective | None:
+    """Objectif secondaire d'un ministre (lot C), choisi selon la doctrine parmi les indicateurs
+    du relevé mensuel, distinct de l'objectif principal ; cible dépendant de la situation de
+    départ, comme le principal. ``None`` pour la présidence."""
+
+    def objective(indicator: str, comparison: str, target: float, text: str) -> Objective:
+        made = Objective(indicator, text, comparison, target, values[indicator], deadline,
+                         envelope=envelope, value=values[indicator])
+        return _enrich(made, "secondaire")
+
+    orientation = doctrine.orientation
+    if role == "finances":
+        # déficit d'abord (doctrine non sociale), puis arriérés s'il y en a, sinon charge d'intérêts
+        if (principal.indicator != "solde_pib" and doctrine.budget_rule != "programme"
+                and values["solde_pib"] < 0.0):
+            return objective("solde_pib", ">=", values["solde_pib"] + 0.005,
+                             "réduire le déficit public d'un demi-point de PIB (solde sur douze mois)")
+        if values["arrieres_recettes"] > 0.001 or principal.indicator == "interets_recettes":
+            return objective("arrieres_recettes", "<=", 0.5 * values["arrieres_recettes"],
+                             "réduire de moitié les arriérés de l'État (salaires, allocations, intérêts dus)")
+        return objective("interets_recettes", "<=", min(doctrine.interest_tolerance, values["interets_recettes"]),
+                         "contenir la charge d'intérêts de la dette (part des recettes)")
+    if role == "travail":
+        if orientation >= 55.0 and values["chomage_longue_duree"] > 0.005:
+            target = values["chomage_longue_duree"] * 2.0 / 3.0
+            return objective("chomage_longue_duree", "<=", target,
+                             f"réduire d'un tiers le chômage de longue durée (sous {target:.1%})")
+        if orientation >= 40.0:
+            return objective("salaire_reel_median", ">=", values["salaire_reel_median"] * 1.02,
+                             "relever de 2 % le salaire réel médian du privé")
+        return objective("taux_emploi", ">=", values["taux_emploi"] + 0.01,
+                         "relever d'un point le taux d'emploi")
+    if role == "industrie":
+        if doctrine.industry_stance == "operateur_public":
+            return objective("prix_energie", "<=", values["prix_energie"] * 0.98,
+                             "baisser de 2 % le prix de l'énergie")
+        if doctrine.industry_stance == "reguler":
+            return objective("concentration", "<=", values["concentration"] * 0.95,
+                             "réduire de 5 % la concentration moyenne des secteurs")
+        return objective("investissement_pib", ">=", values["investissement_pib"] * 1.10,
+                         "relever de 10 % l'investissement rapporté au PIB")
+    if role == "services":
+        if doctrine.coverage_goal >= 0.9:
+            return objective("education", ">=", min(1.0, values["education"] + 0.05),
+                             "améliorer la qualité de l'éducation reçue par la génération suivante")
+        return objective("vacance_postes", "<=", 0.5 * values["vacance_postes"],
+                         "pourvoir la moitié des postes publics vacants")
+    return None

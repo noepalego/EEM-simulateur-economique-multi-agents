@@ -209,10 +209,21 @@ class StateServicesMixin:
         # 2. postes ouverts : besoin / capacité d'un agent × couverture voulue par la doctrine
         needs = self._service_needs()
         coverage_goal = inst.doctrine.coverage_goal
+        # lot C : objectifs en retard des ministres du Travail (conseillers de l'emploi) et des
+        # Services publics (éducation ; maîtrise des effectifs) : couverture voulue modulée
+        goals = {}
+        if self.live.enriched_objectives:
+            restraint = self._objective_pressure("services", "maitrise_effectifs")
+            boosts = {"emploi": self._objective_pressure("travail", "conseillers_emploi"),
+                      "education": self._objective_pressure("services", "recrutement_education")}
+            for key in services:
+                factor = (1.0 + boosts.get(key, 0.0)) * max(0.0, 1.0 - restraint)
+                if factor != 1.0:
+                    goals[key] = coverage_goal * factor
         for key, service in services.items():
             service.need = needs[key]
             service.agents_needed = needs[key] / max(self._service_capacity_per_agent(key), 1e-9)
-            service.authorized = max(1, math.ceil(service.agents_needed * coverage_goal - 1e-9))
+            service.authorized = max(1, math.ceil(service.agents_needed * goals.get(key, coverage_goal) - 1e-9))
             service.posts = _apportion(service.authorized, SERVICE_TRADES[key])
         previous = inst.services
         changed = [
@@ -418,6 +429,10 @@ class StateServicesMixin:
 
     def _coverage_objective_missed(self) -> bool:
         """Vrai si le ministre des Services publics vise une couverture qu'il n'atteint pas."""
+        if self.live.enriched_objectives:
+            # lot C : tout objectif des Services publics en retard sur ce levier (couverture,
+            # postes vacants), principal ou secondaire
+            return self._objective_pressure("services", "arbitrage_services") > 0.0
         office = self.institutions.offices.get("services")
         objective = office.objective if office else None
         return (objective is not None and objective.indicator == "couverture_services"

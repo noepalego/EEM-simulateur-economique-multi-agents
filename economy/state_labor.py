@@ -90,7 +90,12 @@ class StateLaborMixin:
             # montée progressive : au plus ``minimum_wage_boost_cap`` par an, sans diluer l'écart
             # sur les années de mandat restantes (dilué, un gouvernement social ne rattrapait pas
             # en un mandat le minimum érodé par ses prédécesseurs)
-            boost = min(live.minimum_wage_boost_cap, target / level - 1.0)
+            limit = live.minimum_wage_boost_cap
+            pressure = self._objective_pressure("travail", "salaire_minimum")
+            if pressure:
+                # lot C : objectif salarial du ministre du Travail en retard : plafond relevé
+                limit *= 1.0 + pressure
+            boost = min(limit, target / level - 1.0)
             level *= 1.0 + boost
         inst.minimum_wage = max(before, level)
         # baisse décidée : un gouvernement non social (libéral ou centre, mêmes seuils que les

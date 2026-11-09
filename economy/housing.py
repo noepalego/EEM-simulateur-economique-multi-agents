@@ -121,6 +121,7 @@ class HousingMixin:
         (étalement urbain) pour que la construction reste possible.
         """
         self.live = config = self.config.fresh_copy()
+        self._apply_bank_margins(config)  # lot B : avant le coût d'usage (taux hypothécaire)
         wage_index = self.wage_reference / max(config.starting_wage, 1.0)
         cost_index = 0.6 * wage_index + 0.4 * self.resources.input_cost_index
         stock = self._rental_stock()

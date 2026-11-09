@@ -250,6 +250,11 @@ class StateIndustryMixin:
         inst, live = self.institutions, self.live
         service = inst.services.get("concurrence")
         capacity = min(1.0, service.coverage) if service is not None else 0.0
+        pressure = self._objective_pressure("industrie", "instruction")
+        if pressure:
+            # lot C : objectif de concurrence de l'Industrie en retard (monopoles, concentration,
+            # prix de l'énergie) : instruction prioritaire, plus de dossiers avancés par mois
+            capacity *= 1.0 + pressure
         for case in inst.cases:
             if case.status == "décidé":
                 continue
@@ -563,7 +568,12 @@ class StateIndustryMixin:
             fundamental = _fundamental_price(company, self.companies, live, annual_rate)
             if company.stock_price < (1.0 - live.privatization_price_discount) * fundamental:
                 continue
-            quantity = min(holding.to_sell, holding.sell_lot, state.shares.get(company_id, 0.0))
+            lot = holding.sell_lot
+            pressure = self._objective_pressure("industrie", "cessions")
+            if pressure:
+                # lot C : objectif de cession de l'Industrie en retard : lots mensuels plus gros
+                lot *= 1.0 + pressure
+            quantity = min(holding.to_sell, lot, state.shares.get(company_id, 0.0))
             if quantity > 0.0:
                 orders.append((state, company_id, quantity))
         return orders

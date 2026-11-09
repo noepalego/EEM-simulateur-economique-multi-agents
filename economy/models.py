@@ -88,6 +88,10 @@ class SimulationConfig:
     stock_growth_expectation: float = 0.02      # croissance annuelle anticipée des bénéfices
     stock_min_discount: float = 0.04            # taux d'actualisation minimal (PER plafonné à 25)
     stock_flow_impact: float = 0.5              # effet sur le cours d'un déséquilibre d'ordres (en part de la capitalisation)
+    # Lot F2 (novembre 2026) : la valeur fondamentale capitalise la moyenne du bénéfice des
+    # ``stock_earnings_smoothing_months`` derniers mois (mois courant compris) au lieu du bénéfice du
+    # mois extrapolé ; 0 (défaut) : ancienne formule, neutre pour l'identité
+    stock_earnings_smoothing_months: int = field(default=0, metadata={"identity": "neutre"})
     stock_trend_weight: float = 0.05            # poids de la tendance récente (annualisée) dans le rendement anticipé
     # parts visées dans l'épargne investissable selon l'écart de rendement avec les dépôts
     stock_base_share: float = 0.20
@@ -203,6 +207,35 @@ class SimulationConfig:
     capital_requirement: float = 0.08            # fonds propres minimaux / (prêts + titres publics)
     deposit_spread: float = 0.0012               # taux des dépôts = taux directeur - écart (mensuel)
     mortgage_spread: float = 0.0008              # taux hypothécaire = taux directeur + écart (mensuel)
+    # Lot F1 (novembre 2026), désactivés par défaut (neutres pour l'identité) :
+    # exigence de fonds propres contracyclique : quand la capacité de crédit du système passe sous
+    # ``countercyclical_trigger`` de l'encours et que l'activité baisse, l'exigence effective
+    # baisse de ``countercyclical_step`` par mois jusqu'à ``countercyclical_floor`` ; elle remonte
+    # au même rythme dès que la capacité dépasse 2,5 × le seuil
+    countercyclical_capital: bool = field(default=False, metadata={"identity": "neutre"})
+    countercyclical_floor: float = field(default=0.06, metadata={"identity": "neutre"})
+    countercyclical_step: float = field(default=0.0025, metadata={"identity": "neutre"})
+    countercyclical_trigger: float = field(default=0.02, metadata={"identity": "neutre"})
+    # filet de recapitalisation : après ``bank_backstop_months`` mois de capacité de crédit nulle
+    # (sous 0,1 % de l'encours), l'État souscrit des actions nouvelles des banques au cours, pour
+    # leur rendre une capacité de ``bank_backstop_capacity`` de leur encours
+    bank_capital_backstop: bool = field(default=False, metadata={"identity": "neutre"})
+    bank_backstop_months: int = field(default=3, metadata={"identity": "neutre"})
+    bank_backstop_capacity: float = field(default=0.05, metadata={"identity": "neutre"})
+    # Lot B (novembre 2026) : marge supplémentaire des banques commerciales, ajoutée (mensuelle)
+    # à tout nouveau crédit — entreprises (marge de risque), immobilier, consommation — et au
+    # coût du crédit que les entreprises anticipent. 0 : désactivée, aucun calcul modifié ;
+    # neutre pour l'empreinte d'identité à sa valeur par défaut. Forçable en mode intervention.
+    bank_margin_offset: float = field(default=0.0, metadata={"identity": "neutre"})
+    # Refonte bancaire (novembre 2026) : trésorerie propre des banques, qui paie salaires,
+    # charges, intérêts des dépôts et dividendes (elle n'est pas de la monnaie, voir ``ledger``).
+    # « cash » (défaut) : compteur indépendant, que les pertes sur prêts ne réduisent pas (mesuré
+    # sur 800 mois : 5 à 10 fois les fonds propres nets, 30 à 50 % des dividendes bancaires versés
+    # au-delà du bénéfice) ; « equity » : au début de chaque mois, elle est la part liquide des
+    # fonds propres (fonds propres − actifs réels − prêts interbancaires accordés + emprunts
+    # interbancaires), et l'excédent distribué est le capital au-delà de l'exigence et de son
+    # coussin. Neutre pour l'empreinte d'identité à sa valeur par défaut.
+    bank_own_funds: str = field(default="cash", metadata={"identity": "neutre"})
     investment_risk_premium: float = 0.004       # prime de risque du taux d'actualisation des investissements
     debt_amortization_rate: float = 0.003
     initial_household_ownership: float = 0.85
@@ -512,6 +545,16 @@ class SimulationConfig:
     # hausse de prix réduit la dépense de l'acheteur, un fournisseur ne peut plus fixer un prix
     # libre sans perdre de recettes)
     b2b_price_elasticity: float = 1.5
+    # Lot D (novembre 2026) : économies d'échelle, désactivées par défaut (neutres pour l'identité).
+    # Remise sur le volume des achats entre entreprises : remise = ``volume_discount_max`` ×
+    # v / (v + ``volume_discount_half_volume``), v = commande au prix de base déflatée par l'indice
+    # des intrants ; jamais au-delà de la marge observée des fournisseurs (pas de vente sous le coût).
+    volume_discount_max: float = field(default=0.0, metadata={"identity": "neutre"})
+    volume_discount_half_volume: float = field(default=5000.0, metadata={"identity": "neutre"})
+    # Coût fixe des producteurs d'alimentation et de biens : part des intrants non matériels payée
+    # en forfait mensuel (frais de structure), calé sur les ventes moyennes du secteur ; une
+    # entreprise qui vend plus que la moyenne produit moins cher par unité
+    fixed_cost_share: float = field(default=0.0, metadata={"identity": "neutre"})
     # Investissement de capacité (alimentation, biens, R1) : l'entreprise ne compte que ses ventes
     # supplémentaires et les salaires qu'elle paie réellement, tranche par tranche, contre le coût
     # de ses fonds propres ; apport limité à la trésorerie au-delà de son fonds de roulement.
@@ -589,6 +632,22 @@ class SimulationConfig:
     social_pay_ratio_cap: float = 8.0         # gouvernement social : présidence ≤ 8 × salaire minimum
     cabinet_reshuffle: bool = True            # remaniement à mi-mandat d'un objectif gravement manqué
     vote_record_weight: float = 0.4           # effet du bilan des objectifs sur le logit de réélection
+    # Lot E (novembre 2026) : régime de propriété des entreprises selon l'orientation
+    # (economy/ownership.py). Faux (défaut) : rien. Vrai : régime 0 (ultra-capitalisme) à 1
+    # (coopératives) suivant l'orientation en ``ownership_transition_months`` mois pour un écart
+    # complet ; part du capital détenue par les salariés à 100/100 ; rachat mensuel maximal
+    ownership_regime: bool = field(default=False, metadata={"identity": "neutre"})
+    ownership_transition_months: float = field(default=48.0, metadata={"identity": "neutre"})
+    cooperative_share_max: float = field(default=0.30, metadata={"identity": "neutre"})
+    cooperative_purchase_rate: float = field(default=0.01, metadata={"identity": "neutre"})
+    # Lot C (novembre 2026) : objectifs ministériels enrichis. Vrai : chaque ministre a un objectif
+    # principal et un secondaire (nouveaux indicateurs), des cibles relevées quand la situation de
+    # départ les remplit déjà, et chaque objectif en retard actionne un levier de son ministère avec
+    # l'intensité ``objective_effort`` (secondaire : × ``secondary_objective_weight``), poids aussi
+    # retenu pour son bilan dans le vote. Faux (défaut) : un objectif par ministre, comme avant.
+    enriched_objectives: bool = field(default=False, metadata={"identity": "neutre"})
+    objective_effort: float = field(default=0.25, metadata={"identity": "neutre"})
+    secondary_objective_weight: float = field(default=0.5, metadata={"identity": "neutre"})
     # Vote individuel des ménages (idée 4, novembre 2026, economy/institutions.individual_election) :
     # chaque ménage compare sa proximité au sortant et à l'opposition (médiane du camp opposé),
     # déplacée par son intérêt anticipé selon son rang de fortune, et juge son propre bilan :
@@ -840,6 +899,7 @@ class Person:
     cash: float
     employer_id: str | None = None
     shares: dict[str, float] = field(default_factory=dict)
+    coop_shares: dict = field(default_factory=dict, metadata={"identity": "neutre"})  # lot E : parts salariées (bloquées)
     owns_home: bool = False
     investment_homes: int = 0
     rented_homes: int = 0                     # logements-patrimoine loués le mois dernier
@@ -1075,6 +1135,7 @@ class Company:
     previous_unmet_units: float = 0.0
     potential_output: float = 0.0               # production possible du mois (travail et capacité, énergie livrée)
     unit_input_cost: float = 0.0                # intrants et matières par unité produite (dernière production)
+    fixed_cost: float = field(default=0.0, metadata={"identity": "neutre"})  # lot D : frais de structure du mois
     price_markup: float = -1.0                  # marge sur le coût variable ; < 0 : à initialiser
     # anticipations locales
     demand_forecast: float = 0.0                # prévision de demande du mois, erreur comprise
@@ -1183,6 +1244,9 @@ class Resources:
     # élasticité-prix du volume d'énergie et de services technologiques achetés en B2B
     # (copie mensuelle de ``SimulationConfig.b2b_price_elasticity``)
     b2b_price_elasticity: float = 0.0
+    # lot D : copies mensuelles des réglages de remise sur le volume (``SimulationConfig``)
+    volume_discount_max: float = field(default=0.0, metadata={"identity": "neutre"})
+    volume_discount_half_volume: float = field(default=5000.0, metadata={"identity": "neutre"})
     # commandes de services et B2B non servies du mois, par secteur fournisseur (« delivered »)
     refused_orders: dict = field(default_factory=dict)
     energy_price_index: float = 1.0

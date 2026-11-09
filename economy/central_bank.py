@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from economy import diagnostics
 
@@ -14,6 +14,11 @@ class CentralBank:
     initial_reserves: float = 0.0
     reserves: float = 0.0
     advances: float = 0.0
+    # lot F1 (novembre 2026) : allègement contracyclique en cours de l'exigence de fonds propres
+    # (points retirés de ``capital_requirement``) et mois consécutifs de capacité de crédit nulle
+    # (filet de recapitalisation) ; neutres à zéro, sans les réglages
+    capital_relief: float = field(default=0.0, metadata={"identity": "neutre"})
+    frozen_months: int = field(default=0, metadata={"identity": "neutre"})
 
 
 class CentralBankMixin:
@@ -80,7 +85,15 @@ class CentralBankMixin:
         (inflation - cible) - coefficient × (chômage - chômage naturel). Le taux
         mensuel suit sa cible avec inertie : plus de dérive vers le plafond comme
         avec une règle purement incrémentale.
+
+        Lot B (novembre 2026) : un taux forcé par l'opérateur (mode intervention) remplace
+        la règle jusqu'à ce qu'il le relâche ; la règle repart alors, avec son lissage, du
+        taux forcé. Sans forçage, aucun calcul supplémentaire.
         """
+        operator = getattr(self, "interventions", None)
+        if operator is not None and getattr(operator, "forced_policy_rate", None) is not None:
+            self.policy_rate = operator.forced_policy_rate / 12.0
+            return
         live = self.live
         target = (1.0 + live.inflation_target) ** 12 - 1.0
         # inflation sur 12 mois, ou annualisée sur les mois déjà observés : la

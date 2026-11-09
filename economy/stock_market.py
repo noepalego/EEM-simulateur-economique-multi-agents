@@ -145,7 +145,10 @@ def update_prices_and_trade(
                 household_buys.append((person, budget))
         elif stock_order < 0.0 and stock_value > 0.0:
             fraction = min(1.0, -stock_order / stock_value)
+            locked = person.coop_shares  # lot E : parts salariées, jamais vendues (vide sans réglage)
             for cid, q in held:
+                if locked:
+                    q = max(0.0, q - locked.get(cid, 0.0))
                 sells[cid].append((person, q * fraction))
         if founders:
             for cid, q in held:
@@ -404,6 +407,20 @@ def _fundamental_price(
     book_equity = max(
         0.0, balance_sheet["Capitaux propres"] - config.holding_discount * max(0.0, holdings)
     )
+    smoothing = config.stock_earnings_smoothing_months
+    if smoothing > 1:
+        # lot F2 : bénéfice lissé (mois courant et ``smoothing`` − 1 mois précédents de
+        # l'historique financier), sans extrapolation : la valeur fondamentale ne saute plus avec
+        # le bénéfice d'un mois, qui varie d'environ 100 % de son niveau d'un mois à l'autre
+        past = [row["Bénéfice"] for row in company.financial_history[-(smoothing - 1):]]
+        expected_monthly_profit = (company.profit + sum(past)) / (1 + len(past))
+        earnings_value = max(0.0, expected_monthly_profit) * 12.0 / max(
+            config.stock_min_discount,
+            annual_rate + config.equity_risk_premium - config.stock_growth_expectation,
+        )
+        book_weight = config.stock_book_value_weight
+        estimated_equity = book_equity * book_weight + earnings_value * (1.0 - book_weight)
+        return max(1.0, estimated_equity / max(company.shares_outstanding, 1.0))
     expected_monthly_profit = company.profit + 0.25 * (
         company.profit - company.previous_profit
     )
@@ -450,6 +467,7 @@ def distribute_dividends(
     extra_holders: tuple = (),
     retained: frozenset = frozenset(),
     planned_payouts: dict[str, float] | None = None,
+    bank_capital_ratio: float | None = None,
 ) -> float:
     """Dividendes : part des bénéfices + distribution de la trésorerie excédentaire.
 
@@ -459,7 +477,9 @@ def distribute_dividends(
     financier. Une banque garde en réserve une fraction de ses prêts et ``working_capital_months``
     mois de charges, et restitue le capital au-delà à ``bank_excess_payout_rate`` par mois. Les
     entreprises de ``retained`` (banques sous leur exigence de fonds propres et son coussin)
-    ne distribuent rien : elles reconstituent leur capital.
+    ne distribuent rien : elles reconstituent leur capital. Avec ``bank_capital_ratio``
+    (``bank_own_funds="equity"`` : exigence de fonds propres + coussin), l'excédent d'une banque
+    est son capital au-delà de ce ratio de ses prêts et titres, et non sa trésorerie propre.
     """
     planned_payouts = planned_payouts or {}
     total_paid = 0.0
@@ -510,10 +530,16 @@ def distribute_dividends(
             # de refinancement) et un fonds de roulement ; le capital en excès
             # est restitué progressivement à ses actionnaires.
             loan_book = positive_loan_book(company.bank_loan_accounts)
-            requirement = bank_reserve_ratio * loan_book + working_capital_months * max(
-                company.expenses, company.wage_bill
-            )
-            excess_payout = max(0.0, company.cash - requirement) * bank_excess_payout_rate
+            if bank_capital_ratio is not None:
+                # fonds propres réconciliés : le capital au-delà de l'exigence et de son coussin
+                # (la trésorerie propre n'en est que la part liquide)
+                excess = company.bank_equity - bank_capital_ratio * (loan_book + company.bond_holdings)
+                excess_payout = max(0.0, excess) * bank_excess_payout_rate
+            else:
+                requirement = bank_reserve_ratio * loan_book + working_capital_months * max(
+                    company.expenses, company.wage_bill
+                )
+                excess_payout = max(0.0, company.cash - requirement) * bank_excess_payout_rate
         elif company.sector != "bank":
             excess_payout = max(0.0, planned_payouts.get(company.id, 0.0))
         payout = min(distributable_cash, max(profit_payout, excess_payout))

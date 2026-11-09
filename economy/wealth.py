@@ -357,3 +357,138 @@ def share_prices(companies: list[Company]) -> dict[str, float]:
 
 def _share_price(companies: list[Company], company_id: str) -> float:
     return share_prices(companies).get(company_id, 0.0)
+
+
+# --- Répartition des fortunes pour l'interface (lot A2, novembre 2026) ----------------------
+# Lecture seule : aucun appel depuis le moteur, aucun effet sur la simulation.
+
+def money_label(value: float, resolution: float | None = None) -> str:
+    """Borne lisible : 950, 1,5 k, 20 k, 1,2 M, 3 Md (sans « ,0 » inutile). ``resolution`` (le
+    pas des classes) fixe le nombre de décimales pour que deux bornes voisines restent
+    distinctes (5 010 et 5 020 : « 5,01 k » et « 5,02 k »)."""
+    sign = "-" if value < 0 else ""
+    magnitude = abs(value)
+    for size, suffix in ((1e9, " Md"), (1e6, " M"), (1e3, " k"), (1.0, "")):
+        if magnitude >= size or size == 1.0:
+            decimals = 1 if size > 1.0 else 0
+            if resolution is not None and resolution > 0.0:
+                decimals = min(4, max(decimals, -_floor_log10(resolution / size)))
+            text = f"{magnitude / size:.{decimals}f}"
+            if "." in text:
+                text = text.rstrip("0").rstrip(".")
+            return f"{sign}{text.replace('.', ',')}{suffix}"
+    return f"{sign}{magnitude:.0f}"
+
+
+def _nice_step(span: float) -> float:
+    """Pas « rond » (1, 2 ou 5 × 10^k) le plus proche par excès de ``span``."""
+    exponent = 10.0 ** _floor_log10(span)
+    for mantissa in (1.0, 2.0, 5.0, 10.0):
+        if mantissa * exponent >= span:
+            return mantissa * exponent
+    return 10.0 * exponent
+
+
+def _floor_log10(value: float) -> int:
+    exponent = 0
+    while value >= 10.0:
+        value /= 10.0
+        exponent += 1
+    while value < 1.0:
+        value *= 10.0
+        exponent -= 1
+    return exponent
+
+
+def _log_edges(low: float, high: float, max_classes: int) -> list[float]:
+    """Bornes rondes sur une échelle logarithmique couvrant [low, high] : la suite la plus fine
+    (1-1,5-2-3-5-7, 1-2-3-5-7, 1-2-5, 1-3, puis 1 par décade) qui donne au plus
+    ``max_classes`` classes."""
+    edges: list[float] = []
+    for mantissas in ((1.0, 1.5, 2.0, 3.0, 5.0, 7.0), (1.0, 2.0, 3.0, 5.0, 7.0),
+                      (1.0, 2.0, 5.0), (1.0, 3.0), (1.0,)):
+        exponent = _floor_log10(low)
+        candidates: list[float] = []
+        while True:
+            for mantissa in mantissas:
+                candidates.append(mantissa * 10.0 ** exponent)
+            if candidates[-1] > high:
+                break
+            exponent += 1
+        start = max(i for i, edge in enumerate(candidates) if edge <= low)
+        stop = min(i for i, edge in enumerate(candidates) if edge > high)
+        edges = candidates[start:stop + 1]
+        if len(edges) - 1 <= max_classes:
+            return edges
+    # écart de plusieurs dizaines de décades : une borne toutes les quelques décades
+    stride = -(-(len(edges) - 1) // max_classes)
+    return edges[::stride] + ([edges[-1]] if (len(edges) - 1) % stride else [])
+
+
+def _linear_edges(low: float, high: float, target_classes: int) -> list[float]:
+    """Bornes régulières à pas rond quand les fortunes positives tiennent dans une décade."""
+    step = _nice_step(max(high - low, 1.0) / target_classes)
+    first = (low // step) * step
+    edges = [first]
+    while edges[-1] <= high:
+        edges.append(edges[-1] + step)
+    return edges
+
+
+def wealth_distribution(fortunes: list[float], max_classes: int = 10) -> list[dict[str, object]]:
+    """Classes de fortune adaptées aux montants observés, pour le graphique « Répartition des
+    fortunes ». Patrimoines négatifs et nuls ont leurs propres classes. Pour les fortunes
+    positives, les bornes rondes sont calculées sur le cœur de la distribution (quantiles 5 % et
+    95 %) : échelle logarithmique dès qu'il couvre plus d'une décade, régulière sinon ; les
+    queues vont dans deux classes ouvertes (« < X » et « ≥ Y »), pour que quelques fortunes
+    extrêmes n'écrasent pas la résolution. Les classes restent lisibles du premier au dernier
+    mois, que l'économie soit riche ou pauvre.
+
+    Retourne une liste ordonnée de ``{"Tranche de fortune", "Nombre de ménages", "Borne basse",
+    "Borne haute"}`` ; la somme des effectifs vaut ``len(fortunes)``."""
+    negative = [value for value in fortunes if value < -0.5]
+    null = [value for value in fortunes if -0.5 <= value <= 0.5]
+    positive = sorted(value for value in fortunes if value > 0.5)
+    rows: list[dict[str, object]] = []
+    if negative:
+        rows.append({"Tranche de fortune": f"Négative ({money_label(min(negative))} à 0 €)",
+                     "Nombre de ménages": len(negative),
+                     "Borne basse": min(negative), "Borne haute": 0.0})
+    if null:
+        rows.append({"Tranche de fortune": "Nulle (0 €)", "Nombre de ménages": len(null),
+                     "Borne basse": 0.0, "Borne haute": 0.0})
+    if not positive:
+        return rows
+    count = len(positive)
+    if count >= 20:  # cœur de la distribution : quantiles 5 % et 95 % (rang le plus proche)
+        low, high = positive[int(0.05 * (count - 1))], positive[int(0.95 * (count - 1))]
+    else:
+        low, high = positive[0], positive[-1]
+    core_classes = max(2, max_classes - 2)  # deux places réservées aux queues
+    linear = high < 10.0 * low
+    if linear:
+        edges = _linear_edges(low, high, core_classes)
+    else:
+        edges = _log_edges(low, high, core_classes)
+    resolution = edges[1] - edges[0] if linear else None
+    index = 0
+    below = 0
+    while index < count and positive[index] < edges[0]:
+        below += 1
+        index += 1
+    if below:
+        rows.append({"Tranche de fortune": f"< {money_label(edges[0], resolution)} €",
+                     "Nombre de ménages": below, "Borne basse": positive[0], "Borne haute": edges[0]})
+    for lower, upper in zip(edges, edges[1:]):
+        inside = 0
+        while index < count and positive[index] < upper:
+            inside += 1
+            index += 1
+        rows.append({"Tranche de fortune":
+                     f"{money_label(lower, resolution)}–{money_label(upper, resolution)} €",
+                     "Nombre de ménages": inside, "Borne basse": lower, "Borne haute": upper})
+    if index < count:
+        rows.append({"Tranche de fortune": f"≥ {money_label(edges[-1], resolution)} €",
+                     "Nombre de ménages": count - index,
+                     "Borne basse": edges[-1], "Borne haute": float("inf")})
+    return rows

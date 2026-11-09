@@ -50,6 +50,11 @@ def variable_unit_cost(company: Company) -> float | None:
     unité ; None si l'entreprise ne peut rien produire."""
     if company.potential_output <= 0.0:
         return None
+    if company.fixed_cost > 0.0:
+        # lot D : frais de structure répartis sur la production possible (coût moyen décroissant
+        # avec la taille) ; nuls sans le réglage ``fixed_cost_share``
+        return (company.wage_bill / company.potential_output + company.unit_input_cost
+                + company.fixed_cost / company.potential_output)
     return company.wage_bill / company.potential_output + company.unit_input_cost
 
 

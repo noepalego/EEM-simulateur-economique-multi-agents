@@ -38,6 +38,10 @@ def request_operating_credit(
             or company.sector == "bank"
             or bank_reserves <= 0.0
         ):
+            if bank_reserves <= 0.0 and company.active and company.sector != "bank":
+                # lot F1 : entreprise non examinée faute de toute capacité bancaire (compteur de
+                # diagnostic seulement, hors état ; auparavant ce cas n'était pas compté)
+                diagnostics.refusal("credit_exploitation", "capacite_nulle")
             continue
         executive = people_by_id.get(company.executive_id or "")
         risk = executive.risk_tolerance if executive else company.risk_tolerance
@@ -133,6 +137,9 @@ def request_operating_credit(
         risk_spread = spread_multiplier * risk_loan_spread(
             company, loan, collateral, config, current_policy_rate
         )
+        if config.bank_margin_offset != 0.0:
+            # lot B : marge réglée des banques commerciales (désactivée à 0 : calcul inchangé)
+            risk_spread = max(0.0, risk_spread + config.bank_margin_offset)
         diagnostics.refusal("credit_exploitation_issue", "accord_reduit" if loan < wanted else "accord_complet")
         new_loan_rate = current_policy_rate + risk_spread
         previous_debt_rate = company.debt_interest_rate
@@ -198,6 +205,9 @@ def extend_credit(
         return 0.0
     diagnostics.refusal(kind + "_issue", "accord_reduit" if loan < amount else "accord_complet")
     spread = risk_loan_spread(company, loan, assets, config, rate)
+    if config.bank_margin_offset != 0.0:
+        # lot B : marge réglée des banques commerciales (désactivée à 0 : calcul inchangé)
+        spread = max(0.0, spread + config.bank_margin_offset)
     new_rate = rate + spread
     previous_rate = (
         company.debt_interest_rate
@@ -247,8 +257,13 @@ def new_loan_rate(
     """Taux mensuel d'un nouveau prêt d'investissement (même règle que ``extend_credit``)."""
     rate = config.loan_interest_rate if policy_rate is None else max(0.0, policy_rate)
     if company is None:
-        return rate + config.credit_risk_spread * 0.5
-    return rate + investment_loan_spread(company, config)
+        loan_rate = rate + config.credit_risk_spread * 0.5
+    else:
+        loan_rate = rate + investment_loan_spread(company, config)
+    if config.bank_margin_offset != 0.0:
+        # lot B : l'entreprise anticipe la marge réglée des banques (désactivée à 0)
+        loan_rate = max(rate, loan_rate + config.bank_margin_offset)
+    return loan_rate
 
 
 def borrowing_share(

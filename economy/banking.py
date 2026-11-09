@@ -8,6 +8,7 @@ import math
 from economy.consolidation import _transfer_interbank_position
 from economy.credit_risk import voluntary_buffer
 from economy.models import Company, ResolutionEvent, positive_loan_book
+from economy.payments import transfer_cash
 
 
 class BankingMixin:
@@ -122,6 +123,99 @@ class BankingMixin:
             bank.expenses += part
             paid += part
         return paid
+
+    def _apply_bank_margins(self, live) -> None:
+        """Lot B (novembre 2026) : marges des banques commerciales du mois, sur ``live`` qui
+        vient d'être recréé à partir de ``config``.
+
+        Les forçages de l'opérateur (``interventions.monetary`` : marge supplémentaire, écart
+        des dépôts) remplacent d'abord les valeurs de base, jusqu'à ce qu'il les relâche (pas
+        de fin à l'élection : ces taux ne relèvent pas du gouvernement). Puis la marge
+        supplémentaire ``bank_margin_offset`` relève l'écart hypothécaire et celui du crédit à
+        la consommation ; le crédit aux entreprises la lit dans ``finance.py``. À 0 et sans
+        forçage, rien n'est calculé : simulation identique au bit près."""
+        operator = getattr(self, "interventions", None)
+        if operator is not None and getattr(operator, "monetary", None):
+            operator.apply_monetary(live)
+        offset = live.bank_margin_offset
+        if offset != 0.0:
+            live.mortgage_spread = max(0.0, live.mortgage_spread + offset)
+            live.consumer_credit_spread = max(0.0, live.consumer_credit_spread + offset)
+        if live.countercyclical_capital:
+            self._countercyclical_capital(live)
+
+    def _countercyclical_capital(self, live) -> None:
+        """Lot F1 : exigence de fonds propres contracyclique (désactivée par défaut).
+
+        Le diagnostic (results/lot_f_stabilite/DIAGNOSTIC.md) montre que la contrainte qui gèle
+        le crédit est celle des fonds propres, pas celle des réserves. Quand la capacité du
+        système (calculée à l'exigence de base) passe sous ``countercyclical_trigger`` de l'encours
+        et que l'activité baisse (PIB réel des trois derniers mois sous la moyenne de douze),
+        l'allègement augmente de ``countercyclical_step`` par mois, sans que l'exigence descende
+        sous ``countercyclical_floor`` ; dès que la capacité dépasse 2,5 × le seuil, il diminue au
+        même rythme. L'exigence allégée vaut pour tout le mois (capacité, coussins, dividendes)."""
+        central_bank = self.central_bank
+        banks = [b for b in self.companies if b.sector == "bank" and b.active]
+        exposure = sum(positive_loan_book(b.bank_loan_accounts) + b.bond_holdings for b in banks)
+        capacity = self.credit_capacity()  # exigence de base : ``live`` vient d'être recréé
+        recent = self.history[-12:]
+        falling = (
+            len(recent) == 12
+            and sum(r.real_gdp for r in recent[-3:]) / 3.0 < sum(r.real_gdp for r in recent) / 12.0
+        )
+        room = max(0.0, live.capital_requirement - live.countercyclical_floor)
+        step = max(0.0, live.countercyclical_step)
+        if exposure > 0.0 and capacity < live.countercyclical_trigger * exposure and falling:
+            central_bank.capital_relief = min(room, central_bank.capital_relief + step)
+        elif exposure <= 0.0 or capacity > 2.5 * live.countercyclical_trigger * exposure:
+            central_bank.capital_relief = max(0.0, central_bank.capital_relief - step)
+        central_bank.capital_relief = min(central_bank.capital_relief, room)
+        if central_bank.capital_relief > 0.0:
+            live.capital_requirement -= central_bank.capital_relief
+
+    def _bank_capital_backstop(self) -> None:
+        """Lot F1 : filet de recapitalisation de dernier recours (désactivé par défaut).
+
+        Après ``bank_backstop_months`` mois consécutifs où la capacité de crédit du système est
+        nulle (sous 0,1 % de l'encours), l'État souscrit des actions nouvelles de chaque banque, au
+        cours, pour lui rendre une capacité de ``bank_backstop_capacity`` de son encours (dans la
+        limite de ce que la trésorerie publique et l'emprunt permettent). Comme une
+        recapitalisation de la politique industrielle : l'argent va aux fonds propres de la banque,
+        les titres à l'État, dilution explicite, décision au journal. Aucune monnaie créée : la
+        hausse des fonds propres réduit d'autant les dépôts du bilan bancaire."""
+        live, central_bank = self.live, self.central_bank
+        banks = [b for b in self.companies if b.sector == "bank" and b.active]
+        exposures = {b.id: positive_loan_book(b.bank_loan_accounts) + b.bond_holdings for b in banks}
+        total = sum(exposures.values())
+        if total <= 0.0 or self.credit_capacity() >= 0.001 * total:
+            central_bank.frozen_months = 0
+            return
+        central_bank.frozen_months += 1
+        if central_bank.frozen_months < max(1, live.bank_backstop_months):
+            return
+        state = self.public.account
+        for bank in banks:
+            requirement = max(live.capital_requirement, 1e-6) * (1.0 + voluntary_buffer(bank, live))
+            wanted = requirement * (1.0 + max(0.0, live.bank_backstop_capacity)) * exposures[bank.id]
+            amount = wanted - max(0.0, bank.bank_equity)
+            if amount <= 1.0:
+                continue
+            amount = min(amount, self._state_funds(amount))
+            if amount <= 1.0:
+                continue
+            new_shares = amount / max(bank.stock_price, 1.0)
+            bank.shares_outstanding += new_shares
+            state.shares[bank.id] = state.shares.get(bank.id, 0.0) + new_shares
+            transfer_cash(self.public, bank, amount)
+            bank.bank_equity += amount
+            self._decide(
+                "finances", f"Recapitalisation de dernier recours : {bank.name}",
+                f"capacité de crédit du système nulle depuis {central_bank.frozen_months} mois ; "
+                f"{new_shares:,.0f} actions nouvelles souscrites au cours pour rendre une capacité de "
+                f"{live.bank_backstop_capacity:.0%} de l'encours".replace(",", " "),
+                amount=amount, financing="titres nouveaux souscrits (trésorerie ou emprunt), opération financière",
+            )
+        central_bank.frozen_months = 0
 
     def _pay_deposit_interest(self) -> float:
         """Intérêt versé aux déposants, depuis les fonds propres des banques.
@@ -253,6 +347,33 @@ class BankingMixin:
             bank.bank_loan_accounts[borrower_id] = (
                 bank.bank_loan_accounts.get(borrower_id, 0.0) + amount * weight
             )
+
+    def _reconcile_bank_own_funds(self) -> None:
+        """Trésorerie propre des banques réconciliée avec leurs fonds propres, en début de mois
+        (``bank_own_funds="equity"``).
+
+        La trésorerie propre n'entre pas dans l'identité du bilan bancaire (``ledger``) : ce n'est
+        pas de la monnaie, c'est ce que la banque peut payer (salaires, charges, intérêts des
+        dépôts, dividendes), chaque paiement réduisant ses fonds propres à la clôture. Elle devient
+        la part liquide de ces fonds propres : fonds propres moins actifs réels (technologie,
+        capital), moins ses prêts interbancaires, plus ses emprunts interbancaires ; jamais
+        négative. Une perte sur prêt, qui réduit les fonds propres, réduit donc aussi ce que la
+        banque peut payer ; une banque solvable peut toujours payer ses salaires. Aucune monnaie
+        n'est créée ni détruite (le résidu du ``ledger`` ne dépend pas de cette trésorerie)."""
+        banks = [b for b in self.companies if b.sector == "bank" and b.active]
+        owed: dict[str, float] = {}
+        for lender in banks:
+            for borrower_id, amount in lender.interbank_claims.items():
+                owed[borrower_id] = owed.get(borrower_id, 0.0) + amount
+        for bank in banks:
+            liquid = (
+                bank.bank_equity
+                - bank.technology_asset_value
+                - bank.productive_capital_value
+                - sum(bank.interbank_claims.values())
+                + owed.get(bank.id, 0.0)
+            )
+            bank.cash = max(0.0, liquid)
 
     def _interbank_market(self) -> None:
         """Marché interbancaire de la trésorerie propre des banques.

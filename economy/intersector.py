@@ -23,6 +23,22 @@ def _delivering_suppliers(suppliers: list[Company]) -> tuple[list[Company], list
     return staffed, [len(c.employees) * max(0.25, c.productivity_trait) for c in staffed]
 
 
+def volume_discount(volume: float, suppliers: list[Company], resources: Resources) -> float:
+    """Lot D : remise sur le volume d'une commande entre entreprises.
+
+    ``volume`` : commande au prix de base, déflatée par l'indice des intrants. Courbe dégressive
+    bornée : ``volume_discount_max`` × v / (v + ``volume_discount_half_volume``) ; plafonnée à la
+    marge observée des fournisseurs (bénéfice / chiffre d'affaires du mois précédent), pour que
+    la remise ne fasse jamais vendre sous le coût. 0 si le réglage est désactivé."""
+    maximum = resources.volume_discount_max
+    if maximum <= 0.0 or volume <= 0.0:
+        return 0.0
+    revenue = sum(max(0.0, c.previous_revenue) for c in suppliers)
+    margin = sum(c.previous_profit for c in suppliers) / revenue if revenue > 0.0 else 0.0
+    discount = maximum * volume / (volume + max(resources.volume_discount_half_volume, 1e-9))
+    return max(0.0, min(discount, margin, 0.95))
+
+
 def pay_business_suppliers(
     buyer: Company,
     amount: float,
@@ -69,8 +85,13 @@ def pay_business_suppliers(
             if price_elasticity > 0.0:
                 desired_payment *= resources.energy_price_index ** -price_elasticity
             budget = min(desired_payment, part + max(0.0, buyer.cash))
+            discount = 0.0
+            if resources.volume_discount_max > 0.0:
+                # lot D : remise sur le volume, à la marge des producteurs d'énergie
+                producers = [c for c in companies if c.active and c.sector == "energy" and c.id != buyer.id]
+                discount = volume_discount(part / max(resources.input_cost_index, 1e-9), producers, resources)
             paid = deliver_energy(buyer, desired_payment / resources.energy_unit_price,
-                                  budget, companies, resources)
+                                  budget, companies, resources, discount)
             # Le montant de base a déjà été débité ; ne payer que l'énergie livrée.
             buyer.cash += part - paid
             buyer.expenses += paid - part
@@ -108,6 +129,19 @@ def pay_business_suppliers(
             resources.refused_orders[sector] = resources.refused_orders.get(sector, 0.0) + part
             diagnostics.flow("commande_b2b_non_servie", part)
             continue
+        if resources.volume_discount_max > 0.0:
+            # lot D : remise sur le volume (commande au prix de base, déflatée), rendue à l'acheteur
+            discount = volume_discount(
+                amount * max(0.0, share) / total_share / max(resources.input_cost_index, 1e-9),
+                suppliers, resources,
+            )
+            if discount > 0.0:
+                rebate = part * discount
+                buyer.cash += rebate
+                buyer.expenses -= rebate
+                if sector == "energy":
+                    buyer.energy_bill -= rebate
+                part -= rebate
         paid_total += part
         total_weight = sum(weights)
         tracking = diagnostics.active()  # compteurs inactifs : aucun appel dans la boucle

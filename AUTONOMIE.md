@@ -42,6 +42,7 @@ des modes déjà codés. Les valeurs exactes sont celles de `SimulationConfig`.
 | `retraining_probability` | reconversion probabiliste | Hétérogénéité des décisions de reconversion professionnelle ; coûts, délais et besoins de métiers restent des contraintes du marché du travail. |
 | `minimum_wage_boost_cap` | coup de pouce borné | Nouvel État : hausse discrétionnaire annuelle du salaire minimum au-delà de l'indexation légale, au plus 10 %, sans dilution sur le mandat restant depuis novembre 2026 (montée progressive vers l'ambition de la doctrine), et baisse décidée par un gouvernement non social bornée de même ; vitesse d'une décision politique (révision sur observations retardées), pas un niveau visé du salaire minimum. |
 | `social_pay_ratio_cap` | plafond politique | État institutionnel : un gouvernement social plafonne le salaire de la présidence à 8 fois le salaire minimum ; choix de doctrine consigné au journal, appliqué aux révisions. |
+| `countercyclical_floor` | plancher prudentiel | Lot F1, actif seulement avec `countercyclical_capital` : exigence de fonds propres minimale (6 %) pendant un allègement contracyclique ; borne un instrument de politique prudentielle, sans viser de volume de crédit ni de croissance. |
 
 ### Cibles institutionnelles explicitement reconnues
 
@@ -96,3 +97,46 @@ existant (écart national, écart du nouveau gouvernement), comme l'ancien vote.
 | `vote_income_weight` | 4,0 | Poids de l'évolution du revenu réel attendu du ménage pendant le mandat (bornée à ± 50 %) : vote sur son propre bilan. |
 | `vote_unemployment_weight` | 3,0 | Poids de la fréquence lissée de ses propres mois sans emploi : un chômeur sanctionne davantage le sortant. |
 | `vote_swing_sd` | 0,03 | Écart-type de l'écart national de la part des voix (un tirage par élection) : aléa de campagne, qui remplace l'ancien tirage de réélection. |
+
+## Réglages du programme de modifications (lots B à F, novembre 2026)
+
+Chaque mécanisme ajouté par le programme `results/prompt_modifications.md` a son réglage dans
+`SimulationConfig`, **désactivé par défaut** et marqué neutre pour l'empreinte d'identité
+(`metadata={"identity": "neutre"}`) : à sa valeur par défaut, aucun calcul ni tirage n'est
+modifié. `RateRegistryTests` (`tests/test_taux.py`) vérifie que la liste ci-dessous correspond aux
+réglages ajoutés. Les forçages du mode intervention (taux directeur, marge, écart des dépôts) ne
+sont pas des paramètres : ils vivent dans `simulation.interventions` et au journal.
+
+| Réglage | Défaut (lot) | Justification |
+|---|---|---|
+| `bank_margin_offset` | 0 (lot B) | Marge supplémentaire mensuelle des banques commerciales, ajoutée à tout nouveau crédit aux entreprises (après la marge de risque), à l'écart hypothécaire et à celui du crédit à la consommation, ainsi qu'au coût du crédit que les entreprises anticipent ; marges bornées à zéro. Instrument d'expérience (pouvoir de marché des banques, durcissement du crédit), ne vise aucun résultat. |
+| `enriched_objectives` | faux (lot C) | Objectifs ministériels enrichis : un objectif principal et un secondaire par ministre, choisis selon la doctrine parmi des indicateurs du relevé mensuel ; cible relevée d'un pas quand la situation de départ la remplit déjà ; un objectif en retard actionne un levier de son ministère. Aucun indicateur n'est imposé à l'économie : seuls les instruments publics bougent. |
+| `objective_effort` | 0,25 (lot C) | Intensité du levier actionné par un objectif principal en retard : solde voulu relevé de 0,25 point de PIB, couverture d'un service relevée de 25 %, coup de pouce du salaire minimum plafonné 25 % plus haut, instruction ou cessions 25 % plus rapides. Ordre de grandeur d'une priorité budgétaire, non calibré. |
+| `secondary_objective_weight` | 0,5 (lot C) | Poids d'un objectif secondaire relativement au principal, pour l'effort sur son levier, le partage de l'enveloppe du ministère et le bilan compté au vote : un objectif secondaire compte, mais moins que le principal. |
+| `volume_discount_max` | 0 (lot D) | Remise maximale sur le volume d'une commande entre entreprises (0,15 dans les mesures) : courbe dégressive bornée, jamais au-delà de la marge observée des fournisseurs, donc jamais sous leur coût. Pouvoir de négociation des gros acheteurs, non calibré. |
+| `volume_discount_half_volume` | 5 000 (lot D) | Commande (au prix de base, déflatée par l'indice des intrants) qui obtient la moitié de la remise maximale ; choisie d'après la distribution observée des commandes (médiane ≈ 300, 90e centile ≈ 3 000, 99e ≈ 50 000), pour que seules les grosses commandes soient nettement remisées. |
+| `fixed_cost_share` | 0 (lot D) | Part des intrants non matériels des producteurs d'alimentation et de biens payée en frais de structure mensuels, calés sur les ventes moyennes du secteur (0,3 dans les mesures) : coût total inchangé à la taille moyenne, coût unitaire décroissant au-delà. Une entreprise à l'arrêt ne paie rien. |
+| `ownership_regime` | faux (lot E) | Régime de propriété des entreprises selon l'orientation (`economy/ownership.py`) : laisser-faire près de 0 (pas d'intervention contre les monopoles, seuil de contrôle des OPA abaissé, dividendes accrus), coopératives près de 100 (parts salariées minimales, OPA plus difficiles, dividendes et salaires de direction votés à la baisse), interpolation continue, nul au centre. Aucun transfert direct de richesse : les inégalités et la concentration doivent émerger. |
+| `ownership_transition_months` | 48 (lot E) | Durée d'un passage complet du régime d'un extrême à l'autre : un changement de gouvernement s'applique progressivement (environ un mandat), sans rupture des règles de propriété. |
+| `cooperative_share_max` | 0,30 (lot E) | Part du capital de chaque entreprise non bancaire détenue par ses salariés à 100/100 (proportionnelle à l'intensité coopérative) ; minorité de blocage partielle, sans prise de contrôle par les salariés. Ordre de grandeur des entreprises à actionnariat salarié fort, non calibré. |
+| `cooperative_purchase_rate` | 0,01 (lot E) | Part du capital qu'une entreprise peut acquérir par mois pour ses salariés (titres auto-détenus, puis rachat au cours sur sa trésorerie libre) : convergence lente, sans expropriation ni ponction brutale de trésorerie. |
+| `countercyclical_capital` | faux (lot F1) | Exigence de fonds propres contracyclique : le diagnostic (`results/lot_f_stabilite/DIAGNOSTIC.md`) montre que le crédit gèle sur la contrainte de fonds propres, jamais sur les réserves ; l'exigence effective baisse progressivement en cas de capacité épuisée et d'activité en baisse, puis remonte. Instrument de politique prudentielle, ne vise aucun résultat. |
+| `countercyclical_floor` | 0,06 (lot F1) | Exigence minimale pendant l'allègement (8 % → 6 % au plus) : ordre de grandeur des coussins contracycliques relâchés en crise, l'exigence de base restant contraignante. |
+| `countercyclical_step` | 0,0025 (lot F1) | Allègement ou rétablissement mensuel (0,25 point) : huit mois pour atteindre le plancher, sans saut de l'exigence d'un mois à l'autre. |
+| `countercyclical_trigger` | 0,02 (lot F1) | Seuil de capacité de crédit du système (2 % de l'encours) sous lequel l'allègement commence, s'il y a baisse d'activité ; rétablissement au-delà de 2,5 fois ce seuil (hystérésis). Choisi d'après le diagnostic : capacité sous 2 % pendant 150 à 340 mois sur 800. |
+| `bank_capital_backstop` | faux (lot F1) | Recapitalisation de dernier recours : après un gel durable du crédit (capacité nulle), l'État souscrit des actions nouvelles des banques au cours, comme une recapitalisation de la politique industrielle (titres à l'État, journal, financement par trésorerie ou emprunt) ; aucune monnaie créée. |
+| `bank_backstop_months` | 3 (lot F1) | Mois consécutifs de capacité nulle avant l'intervention : un trimestre, pour laisser d'abord jouer l'émission d'actions de marché et le bénéfice des banques. |
+| `bank_backstop_capacity` | 0,05 (lot F1) | Capacité de crédit rendue par la recapitalisation (5 % de l'encours de chaque banque) : le minimum qui rouvre le crédit, pas un renflouement complet. |
+| `stock_earnings_smoothing_months` | 0 (lot F2) | Mois de bénéfice moyennés dans la valeur fondamentale des actions (12 dans les mesures) au lieu du bénéfice du mois extrapolé, qui varie d'environ 100 % de son niveau d'un mois à l'autre ; 0 : ancienne formule. |
+
+## Refonte de la comptabilité bancaire (novembre 2026)
+
+La trésorerie propre d'une banque (ce qu'elle peut payer : salaires, charges, intérêts des dépôts,
+dividendes) n'entre pas dans l'identité du bilan bancaire de `ledger.py` : ce n'est pas de la
+monnaie. Par défaut c'est un compteur indépendant, que les pertes sur prêts ne réduisent pas.
+Réglage désactivé par défaut et neutre pour l'empreinte d'identité ; `BankOwnFundsTests`
+(`tests/test_refonte_banque.py`) vérifie que la liste ci-dessous correspond aux réglages ajoutés.
+
+| Réglage | Défaut | Justification |
+|---|---|---|
+| `bank_own_funds` | `cash` | « equity » : en début de mois, la trésorerie propre est la part liquide des fonds propres (fonds propres − actifs réels − prêts interbancaires accordés + emprunts interbancaires, jamais négative), et l'excédent distribué est le capital au-delà de l'exigence et de son coussin (`capital_requirement` + `bank_recap_buffer`). Correction comptable : mesuré sur 800 mois, le compteur par défaut atteint 5 à 10 fois les fonds propres nets et 30 à 50 % des dividendes bancaires sont versés au-delà du bénéfice. Ne vise aucun résultat. |

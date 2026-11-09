@@ -82,10 +82,15 @@ def produce_food(
             companies, resources, config, worker_skills
         )
         maximum_production = min(wanted, available_materials)
+        base_cost = config.food_input_cost
+        if config.fixed_cost_share > 0.0:
+            # lot D : frais de structure payés d'abord, part variable des intrants réduite d'autant
+            company.fixed_cost = _pay_fixed_cost(company, food_firms, base_cost, companies, resources, config)
+            base_cost *= 1.0 - config.fixed_cost_share
         produced, input_cost = _affordable_production(
             maximum_production,
             company.cash,
-            config.food_input_cost,
+            base_cost,
             1.0,
             resources,
             config,
@@ -204,10 +209,15 @@ def produce_consumer_goods(
             capacity,
             raw_materials_available / material_per_unit,
         )
+        base_cost = config.goods_input_cost
+        if config.fixed_cost_share > 0.0:
+            # lot D : frais de structure payés d'abord, part variable des intrants réduite d'autant
+            company.fixed_cost = _pay_fixed_cost(company, producers, base_cost, companies, resources, config)
+            base_cost *= 1.0 - config.fixed_cost_share
         produced, input_cost = _affordable_production(
             maximum_production,
             company.cash,
-            config.goods_input_cost,
+            base_cost,
             material_per_unit,
             resources,
             config,
@@ -228,6 +238,31 @@ def produce_consumer_goods(
         if produced > 0.0:
             company.unit_input_cost = _unit_input_cost(company, produced, input_cost, supplied, resources, config)
     return sum(company.goods_inventory for company in producers)
+
+
+def _pay_fixed_cost(
+    company: Company,
+    firms: list[Company],
+    base_input_cost: float,
+    companies: list[Company],
+    resources: Resources,
+    config: SimulationConfig,
+) -> float:
+    """Lot D : frais de structure du mois d'un producteur d'alimentation ou de biens.
+
+    Forfait = ``fixed_cost_share`` × coût de base des intrants non matériels × indice des intrants
+    × ventes moyennes du secteur le mois précédent : à la taille moyenne du secteur, le coût
+    total est celui d'avant ; au-delà, le coût par unité baisse (économies d'échelle), en deçà il
+    monte. Payé aux secteurs fournisseurs (``input_cost_split``), dans la limite de la trésorerie.
+    Une entreprise sans salarié (à l'arrêt) ne paie rien. Retourne le montant payé."""
+    if not company.employees:
+        return 0.0
+    sales = [max(0.0, firm.previous_units_sold) for firm in firms]
+    reference = sum(sales) / len(sales) if sales else 0.0
+    amount = config.fixed_cost_share * base_input_cost * resources.input_cost_index * reference
+    if amount <= 0.0:
+        return 0.0
+    return pay_business_suppliers(company, amount, config.input_cost_split, companies, resources)
 
 
 def _unit_input_cost(

@@ -21,6 +21,13 @@ def _holder_valuation(holder: Person | Company, base: float, config: SimulationC
     return base
 
 
+def _employee_stake(holder, company_id: str) -> float:
+    """Lot E : part salariée de ``holder`` dans ``company_id``, jamais apportée à une offre (0 sans
+    le régime de propriété : soustraire 0,0 laisse la quantité inchangée)."""
+    stakes = getattr(holder, "coop_shares", None)
+    return stakes.get(company_id, 0.0) if stakes else 0.0
+
+
 def takeover_by_value(
     companies: list[Company],
     people: list[Person],
@@ -91,10 +98,10 @@ def takeover_by_value(
             bids += 1
             base = max(target.stock_price, fundamental(target))
             tendered = [
-                (holder, holder.shares[target.id])
+                (holder, holder.shares[target.id] - _employee_stake(holder, target.id))
                 for holder in holders
                 if holder is not buyer and holder is not target
-                and holder.shares.get(target.id, 0.0) > 0.0
+                and holder.shares.get(target.id, 0.0) - _employee_stake(holder, target.id) > 0.0
                 and offer >= _holder_valuation(holder, base, config)
                 and not any(holder is locked_holder for locked_holder in locked)
             ]

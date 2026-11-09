@@ -11,6 +11,7 @@ from economy.warmup_cache import warmed_simulation
 from economy.institutions import (
     FLOW_LABELS,
     INDICATOR_LABELS,
+    LEVER_TEXT,
     OFFICE_LABELS,
     OFFICE_ROLES,
     OFFICES,
@@ -20,24 +21,34 @@ from economy.institutions import (
     SERVICE_TRADES,
     display_name,
     doctrine_summary,
+    format_indicator,
 )
 from economy.interventions import (
     LEVERS,
+    MONETARY_BOUNDS,
+    MONETARY_LEVERS,
+    POLICY_RATE_BOUNDS,
     SKILL_BOUNDS,
     adjust_company_cash,
     adjust_household_cash,
     cancel_orientation,
     clear_lever,
+    release_bank_rate,
+    release_policy_rate,
     request_orientation,
+    set_bank_rate,
     set_household_skill,
     set_lever,
+    set_policy_rate,
 )
+from economy.ownership import regime_intensities
 from economy.politics import orientation_label
 from economy.wealth import (
     company_balance_sheet,
     company_valuation_metrics,
     household_net_worth,
     share_prices,
+    wealth_distribution,
     wealth_leaderboards,
 )
 
@@ -173,6 +184,23 @@ def bar_chart(data, x: str, y=None) -> None:
     _vega_chart("bar", data, x, y)
 
 
+def observed_rows(history: list, simulation: EconomySimulation) -> list:
+    """Lignes d'un historique financier d'agent limitées aux mois observés (lot F2) : les
+    ``period`` dernières lignes, une par mois depuis la fin de la chauffe. Une entreprise créée
+    après la chauffe a moins de lignes : toutes sont observées."""
+    period = simulation.period
+    if period <= 0:
+        return []
+    return history[-period:]
+
+
+def _annual_points(percent: float, months: int) -> float:
+    """Pourcentage annuel de l'interface -> taux par période de ``months`` mois (1 : annuel,
+    12 : mensuel), en passant par les points de base entiers : 1,44 % donne exactement 0,0012
+    par mois (``1.44 / 1200`` aussi, mais ``0.96 / 1200`` ne donne pas 0,0008)."""
+    return round(float(percent) * 100.0) / (10000.0 * months)
+
+
 def new_simulation() -> EconomySimulation:
     """Simulation après la chauffe pour les réglages de la barre latérale. L'état après chauffe est
     mémorisé (``economy.warmup_cache`` : mêmes réglages et même code, même état, bit pour bit) :
@@ -272,6 +300,13 @@ def new_simulation() -> EconomySimulation:
             inflation_target=st.session_state.inflation_target_percent / 100,
             taylor_inflation_coefficient=st.session_state.taylor_inflation_coefficient,
             taylor_unemployment_coefficient=st.session_state.taylor_unemployment_coefficient,
+            taylor_neutral_real_rate=_annual_points(st.session_state.taylor_neutral_real_rate_percent, 1),
+            policy_rate_cap=_annual_points(st.session_state.policy_rate_cap_percent, 1),
+            policy_rate_smoothing=st.session_state.policy_rate_smoothing,
+            mortgage_spread=_annual_points(st.session_state.mortgage_spread_annual, 12),
+            consumer_credit_spread=_annual_points(st.session_state.consumer_credit_spread_annual, 12),
+            deposit_spread=_annual_points(st.session_state.deposit_spread_annual, 12),
+            bank_margin_offset=_annual_points(st.session_state.bank_margin_offset_annual, 12),
             mortgage_down_payment_rate=st.session_state.mortgage_down_payment_percent / 100,
             mortgage_payment_income_share=st.session_state.mortgage_payment_income_percent / 100,
             mortgage_interest_rate=st.session_state.mortgage_interest_percent / 100,
@@ -292,6 +327,14 @@ def new_simulation() -> EconomySimulation:
             cabinet_refusal_tolerance=st.session_state.cabinet_refusal_tolerance_percent / 100,
             minimum_wage_boost_cap=st.session_state.minimum_wage_boost_cap_percent / 100,
             critical_sectors=tuple(st.session_state.critical_sectors),
+            enriched_objectives=bool(st.session_state.enriched_objectives),
+            objective_effort=st.session_state.objective_effort_percent / 100,
+            volume_discount_max=st.session_state.volume_discount_max_percent / 100,
+            fixed_cost_share=st.session_state.fixed_cost_share_percent / 100,
+            ownership_regime=bool(st.session_state.ownership_regime),
+            countercyclical_capital=bool(st.session_state.countercyclical_capital),
+            bank_capital_backstop=bool(st.session_state.bank_capital_backstop),
+            stock_earnings_smoothing_months=int(st.session_state.stock_earnings_smoothing_months),
         )
     )
 
@@ -306,8 +349,9 @@ def advance_simulation(months: int | None = None) -> None:
 # -- mode intervention (economy/interventions.py) ------------------------------------------
 # Les rappels s'exécutent avant le rendu ; un nouvel identifiant de vue invalide les blocs mis
 # en cache par (vue, mois), qui affichent ainsi l'état modifié sans attendre le mois suivant.
-def _after_intervention(message: str) -> None:
-    st.session_state._intervention_message = message
+def _after_intervention(message: str, slot: str = "_intervention_message") -> None:
+    """``slot`` : panneau qui affiche le message (taux : ``_rate_message``, lot B)."""
+    st.session_state[slot] = message
     st.session_state._view_id = uuid4().hex
 
 
@@ -356,8 +400,32 @@ def _release_lever(name: str | None) -> None:
     _after_intervention("Leviers rendus au gouvernement (effet dès le prochain mois).")
 
 
-def show_intervention_message() -> None:
-    message = st.session_state.pop("_intervention_message", None)
+def _policy_rate_intervention() -> None:
+    value = set_policy_rate(st.session_state.simulation, float(st.session_state.forced_policy_rate) / 100.0)
+    _after_intervention(f"Taux directeur forcé à {value:.2%} jusqu'au relâchement (effet dès le prochain mois).",
+                        "_rate_message")
+
+
+def _release_policy_rate() -> None:
+    release_policy_rate(st.session_state.simulation)
+    _after_intervention("Taux directeur rendu à la règle de Taylor (elle repart du taux forcé, avec lissage).",
+                        "_rate_message")
+
+
+def _bank_rate_intervention(name: str, key: str) -> None:
+    value = set_bank_rate(st.session_state.simulation, name, float(st.session_state[key]) / 100.0)
+    _after_intervention(f"{MONETARY_LEVERS[name]} : {value:.2%}, valeur forcée jusqu'au relâchement "
+                        "(effet dès le prochain mois).", "_rate_message")
+
+
+def _release_bank_rate(name: str) -> None:
+    release_bank_rate(st.session_state.simulation, name)
+    _after_intervention(f"{MONETARY_LEVERS[name]} : valeur de base rétablie (effet dès le prochain mois).",
+                        "_rate_message")
+
+
+def show_intervention_message(slot: str = "_intervention_message") -> None:
+    message = st.session_state.pop(slot, None)
     if message:
         st.success(message, icon="🛠")
 
@@ -450,6 +518,62 @@ def render_state_interventions(simulation: EconomySimulation) -> None:
                        f"{operator.issued_money:,.0f} €".replace(",", " "))
 
 
+def render_rate_interventions(simulation: EconomySimulation) -> None:
+    """Panneau de l'onglet État (lot B) : taux directeur forcé à la place de la règle de Taylor,
+    marge des banques commerciales et écart des dépôts, jusqu'au relâchement (pas de fin à
+    l'élection). Les actions vont au même journal que celles du panneau de l'État."""
+    operator = getattr(simulation, "interventions", None)
+    forced_rate = getattr(operator, "forced_policy_rate", None) if operator else None
+    monetary = dict(getattr(operator, "monetary", {}) or {}) if operator else {}
+    title = "🛠 Intervenir sur les taux d'intérêt (banque centrale et banques)"
+    with st.expander(title, **({"key": "rate_intervention_panel"} if lazy_expanders else {})):
+        show_intervention_message("_rate_message")
+        st.markdown("**Taux directeur de la banque centrale**")
+        st.caption(
+            f"Taux actuel : {12.0 * simulation.policy_rate:.2%} par an "
+            + ("· **forcé** : la règle de Taylor est suspendue." if forced_rate is not None
+               else "· fixé par la règle de Taylor (inflation, chômage, lissage).")
+            + " Un taux forcé reste en place après les élections, jusqu'à ce qu'il soit relâché."
+        )
+        low, high = POLICY_RATE_BOUNDS
+        row = st.columns([2.2, 1.2, 1.2])
+        row[0].number_input(
+            "Taux directeur annuel (%)", min_value=100.0 * low, max_value=100.0 * high,
+            value=float(round(100.0 * (forced_rate if forced_rate is not None else 12.0 * simulation.policy_rate), 2)),
+            step=0.25, format="%.2f", key="forced_policy_rate",
+        )
+        row[1].button("Forcer", key="forced_policy_rate_set", use_container_width=True,
+                      on_click=_policy_rate_intervention)
+        row[2].button("Relâcher", key="forced_policy_rate_clear", use_container_width=True,
+                      on_click=_release_policy_rate, disabled=forced_rate is None)
+
+        st.markdown("**Banques commerciales**")
+        st.caption(
+            "La marge supplémentaire s'ajoute à tous les nouveaux crédits (entreprises, immobilier, "
+            "consommation) ; l'écart des dépôts fixe le taux de référence servi aux déposants "
+            "(taux directeur − écart), que chaque banque ajuste selon sa liquidité. Valeurs annuelles."
+        )
+        for name, label in MONETARY_LEVERS.items():
+            base = 12.0 * getattr(simulation.config, name)
+            row = st.columns([2.2, 1.4, 1.2, 1.2])
+            text = f"{label}  \n<span class='section-note'>base : {base:.2%}</span>"
+            if name in monetary:
+                text += f" · **forcé : {12.0 * monetary[name]:.2%}**"
+            row[0].markdown(text, unsafe_allow_html=True)
+            key = f"bank_rate_{name}"
+            bound_low, bound_high = MONETARY_BOUNDS[name]
+            row[1].number_input(
+                label, min_value=100.0 * bound_low, max_value=100.0 * bound_high,
+                value=float(round(100.0 * 12.0 * monetary.get(name, base / 12.0), 2)),
+                step=0.12, format="%.2f", key=key, label_visibility="collapsed",
+            )
+            row[2].button("Forcer", key=f"{key}_set", use_container_width=True,
+                          on_click=_bank_rate_intervention, args=(name, key))
+            row[3].button("Relâcher", key=f"{key}_clear", use_container_width=True,
+                          on_click=_release_bank_rate, args=(name,), disabled=name not in monetary)
+        st.caption("Le journal des interventions est affiché dans le panneau « Intervenir sur l'État ».")
+
+
 LAW_LINE_LABELS = {
     "personnel": "Personnel (agents et cabinet)", "allocations": "Allocations chômage",
     "interets": "Intérêts de la dette", "entretien": "Entretien du capital public",
@@ -478,6 +602,7 @@ def render_institutional_state(simulation: EconomySimulation, observed_history: 
     view = (st.session_state._view_id, simulation.month)
     render_state_head(*view, simulation)
     render_state_interventions(simulation)
+    render_rate_interventions(simulation)
     sections = st.tabs(["Gouvernement", "Budget", "Fonction publique", "Salaire minimum", "Industrie", "Journal"])
     with sections[0]:
         render_state_government(*view, simulation)
@@ -558,6 +683,7 @@ def render_state_government(view_id: str, month: int, _simulation: EconomySimula
             hide_index=True,
         )
         rows = []
+        goals = []  # lot C : objectifs principal et secondaire, avec leur levier
         for role in OFFICES:
             office = inst.offices.get(role)
             person = people.get(office.person_id) if office else None
@@ -578,9 +704,34 @@ def render_state_government(view_id: str, month: int, _simulation: EconomySimula
                 "Échéance (période)": objective.deadline - offset if objective else None,
                 "Salaire (€)": person.current_wage,
             })
+            if office.secondary is not None:
+                for goal in office.objectives():
+                    goals.append({
+                        "Ministère": OFFICE_LABELS[role],
+                        "Rang": goal.rank,
+                        "Objectif": goal.label,
+                        "Départ": format_indicator(goal.indicator, goal.baseline),
+                        "Cible": format_indicator(goal.indicator, goal.target),
+                        "Valeur": format_indicator(goal.indicator, goal.value),
+                        "Progression": goal.progress,
+                        "Atteint": "oui" if goal.met(goal.value) else "non",
+                        "Levier en cas de retard": LEVER_TEXT.get(goal.lever, ""),
+                        "Enveloppe annuelle (€)": goal.envelope,
+                    })
         st.markdown("**Présidence et ministres**")
         st.dataframe(rows, hide_index=True,
                      column_config={"Progression": st.column_config.NumberColumn(format="percent")})
+        if goals:
+            st.markdown("**Objectifs des ministres : principal et secondaire**")
+            st.caption(
+                "Chaque objectif en retard actionne le levier de son ministère (secondaire : "
+                f"× {simulation.live.secondary_objective_weight:.2f} de l'effort) ; au vote, le bilan "
+                "pondère les secondaires du même coefficient. Une cible déjà remplie au départ est relevée."
+            )
+            st.dataframe(goals, hide_index=True, use_container_width=True,
+                         column_config={"Progression": st.column_config.ProgressColumn(
+                             format="percent", min_value=-1.0, max_value=1.0),
+                             "Enveloppe annuelle (€)": st.column_config.NumberColumn(format="%.0f")})
         pay = st.columns(3)
         pay[0].metric("Salaire de la présidence", f"{inst.salaries.get('presidence', 0.0):,.0f} €".replace(",", " "))
         pay[1].metric("Salaire d'un ministre", f"{inst.salaries.get('ministre', 0.0):,.0f} €".replace(",", " "))
@@ -606,7 +757,9 @@ def render_state_government(view_id: str, month: int, _simulation: EconomySimula
                     "Couleur": term.label, "Orientation": round(term.orientation),
                     "Réélu": "oui" if term.reelected else "non",
                     "Objectifs atteints": term.objectives_met if term.until is not None else None,
-                    "Bilan": ", ".join(f"{OFFICE_LABELS[r]} : {s}" for r, s in term.record.items()),
+                    "Bilan": ", ".join(f"{OFFICE_LABELS[r]} : {s}" for r, s in term.record.items())
+                    + ("" if not getattr(term, "secondary_record", None) else " ; secondaires : "
+                       + ", ".join(f"{OFFICE_LABELS[r]} : {s}" for r, s in term.secondary_record.items())),
                 }
                 for term in inst.terms
             ],
@@ -621,6 +774,8 @@ def render_state_government(view_id: str, month: int, _simulation: EconomySimula
                     "Jusqu'à": None if m["until"] is None else m["until"] - offset,
                     "Salaire de début": m["salary_start"], "Salaire de fin": m["salary_end"],
                     "Objectif": m["objective"], "Bilan": m["status"], "Refus avant nomination": m["refusals"],
+                    **({"Objectif secondaire": m["secondary"], "Bilan secondaire": m.get("secondary_status", "")}
+                       if "secondary" in m else {}),
                 }
                 for term in inst.terms for m in term.members
             ],
@@ -811,6 +966,27 @@ def render_state_minimum_wage(view_id: str, month: int, _simulation: EconomySimu
 def render_state_industry(view_id: str, month: int, _simulation: EconomySimulation) -> None:
         simulation = _simulation
         inst, offset, people, companies = _state_context(simulation)
+        regime = getattr(inst, "ownership_regime", None)
+        if regime is not None:
+            # lot E : régime de propriété (0 ultra-capitalisme, 1 coopératives)
+            liberal, cooperative = regime_intensities(regime)
+            capital = sum(c.shares_outstanding for c in simulation.companies if c.active and c.sector != "bank")
+            stakes = sum(sum(p.coop_shares.values()) for p in simulation.people)
+            live = simulation.live
+            st.markdown("**Régime de propriété des entreprises**")
+            cols = st.columns(4)
+            cols[0].metric("Régime (0 → 100)", f"{100.0 * regime:.0f}",
+                           help="Se rapproche de l'orientation du gouvernement, progressivement.")
+            cols[1].metric("Parts salariées", f"{stakes / capital:.1%}" if capital > 0 else "—",
+                           help=f"Visé : {live.cooperative_share_max * cooperative:.0%} du capital des entreprises non bancaires.")
+            cols[2].metric("Seuil de contrôle des OPA", f"{live.control_threshold:.0%}")
+            cols[3].metric("Distribution des bénéfices", f"{live.dividend_payout_rate:.0%}")
+            st.caption(
+                ("Laisser-faire : aucune intervention contre les monopoles. " if liberal >= 1.0 else
+                 f"Durée de problème avant un dossier de concurrence : {live.monopoly_duration_months} mois. ")
+                + f"Au moins {live.min_firms_per_sector} entreprise(s) par secteur après une fusion ; "
+                f"salaire de direction × {live.executive_wage_multiplier:.1f} le salaire de référence."
+            )
         st.markdown("**Diagnostic des marchés** (problème : concentration élevée et marge ou demande "
                     "non servie anormales, sans entrant, pendant une durée minimale)")
         st.dataframe(
@@ -1491,6 +1667,30 @@ def render_sidebar() -> None:
                 key="critical_sectors",
                 help="Un gouvernement social y crée un opérateur public ou nationalise ; un libéral y régule ; une participation y est stratégique.",
             )
+            # lot C : objectifs ministériels enrichis (désactivés par défaut)
+            st.checkbox(
+                "Objectifs ministériels enrichis (principal + secondaire, avec leviers)",
+                value=False, key="enriched_objectives",
+                help="Chaque ministre reçoit deux objectifs choisis selon la doctrine, avec des cibles "
+                     "relevées quand la situation de départ les remplit déjà ; un objectif en retard "
+                     "actionne un levier de son ministère, et le bilan des deux compte au vote.",
+            )
+            # lot E : régime de propriété selon l'orientation (désactivé par défaut)
+            st.checkbox(
+                "Régime de propriété selon l'orientation (capitalisme ↔ coopératives)",
+                value=False, key="ownership_regime",
+                help="Près de 0 : laisser-faire (pas de régulation des monopoles, OPA facilitées, "
+                     "dividendes accrus). Près de 100 : parts salariées minimales (30 % du capital), "
+                     "OPA plus difficiles, dividendes et salaires de direction réduits. Interpolation "
+                     "continue, application progressive (48 mois pour un écart complet).",
+            )
+            st.slider(
+                "Effort d'un objectif en retard sur son levier", min_value=0, max_value=100, value=25,
+                format="%d %%", key="objective_effort_percent",
+                disabled=not st.session_state.get("enriched_objectives", False),
+                help="Intensité du levier actionné par un objectif principal en retard (solde voulu relevé "
+                     "de 0,25 point de PIB, couverture d'un service relevée de 25 %, …) ; secondaire : moitié.",
+            )
         with st.expander("Politique publique & hasard", expanded=False):
             st.slider("Impôt sur le revenu", min_value=0, max_value=30, value=10, format="%d %%", key="income_tax_percent")
             st.number_input(
@@ -1520,6 +1720,40 @@ def render_sidebar() -> None:
             st.number_input("Graine aléatoire", min_value=0, max_value=999999, value=7, key="seed")
         with st.expander("Concurrence, dette & entreprises", expanded=False):
             st.slider("Pression concurrentielle sur les prix", min_value=0, max_value=20, value=6, format="%d %%", key="competitive_pricing_percent")
+            # lot F : stabilité (désactivés par défaut)
+            st.checkbox(
+                "Exigence de fonds propres contracyclique", value=False, key="countercyclical_capital",
+                help="Quand la capacité de crédit des banques est presque épuisée et que l'activité "
+                     "baisse, l'exigence de fonds propres descend progressivement de 8 % à 6 %, puis "
+                     "remonte quand la capacité se reconstitue.",
+            )
+            st.checkbox(
+                "Recapitalisation de dernier recours des banques", value=False, key="bank_capital_backstop",
+                help="Après trois mois sans aucune capacité de crédit, l'État souscrit des actions "
+                     "nouvelles des banques, au cours, pour leur rendre une capacité de 5 % de leur encours.",
+            )
+            st.slider(
+                "Bénéfice lissé dans la valeur fondamentale des actions", min_value=0, max_value=24, value=0,
+                format="%d mois", key="stock_earnings_smoothing_months",
+                help="0 : bénéfice du mois extrapolé (ancienne formule). Au-delà : moyenne des derniers "
+                     "mois, qui stabilise la valeur vers laquelle les cours sont rappelés. Non validé : "
+                     "à 12 mois, des effondrements tardifs sur certaines graines.",
+            )
+            # lot D : économies d'échelle (désactivées par défaut)
+            st.slider(
+                "Remise maximale sur le volume (achats entre entreprises)", min_value=0, max_value=40, value=0,
+                format="%d %%", key="volume_discount_max_percent",
+                help="Les grosses commandes entre entreprises paient moins cher à l'unité (courbe bornée : "
+                     "moitié de la remise pour une commande de 5 000 € de départ), jamais sous le coût "
+                     "du fournisseur. 0 : désactivé.",
+            )
+            st.slider(
+                "Part des intrants payée en frais de structure", min_value=0, max_value=60, value=0,
+                format="%d %%", key="fixed_cost_share_percent",
+                help="Alimentation et biens : cette part des intrants non matériels devient un forfait "
+                     "mensuel calé sur les ventes moyennes du secteur ; une entreprise plus grande "
+                     "produit moins cher par unité. 0 : désactivé.",
+            )
             st.slider(
                 "Sensibilité des clients aux écarts de prix",
                 min_value=0.0,
@@ -1574,6 +1808,31 @@ def render_sidebar() -> None:
                 key="taylor_unemployment_coefficient",
                 help="Points de taux retirés par point de chômage au-dessus du niveau naturel.",
             )
+            # lot B : valeurs de base des taux (annuelles ; converties exactement par
+            # ``_annual_points`` pour que les défauts redonnent les valeurs de SimulationConfig)
+            st.slider("Taux réel neutre (règle de Taylor)", min_value=0.0, max_value=6.0, value=1.8,
+                      step=0.1, format="%.1f %%", key="taylor_neutral_real_rate_percent",
+                      help="Taux directeur réel visé quand l'inflation est à la cible et le chômage à son niveau naturel.")
+            st.slider("Plafond du taux directeur", min_value=2.0, max_value=30.0, value=12.0, step=0.5,
+                      format="%.1f %%", key="policy_rate_cap_percent",
+                      help="Taux annuel que la règle de Taylor ne dépasse jamais (un taux forcé en intervention peut aller jusqu'à 20 %).")
+            st.slider("Lissage mensuel du taux directeur", min_value=0.01, max_value=1.0, value=0.10, step=0.01,
+                      key="policy_rate_smoothing",
+                      help="Part de l'écart à la cible de la règle comblée chaque mois (1 : sans inertie).")
+            st.slider("Écart du crédit immobilier", min_value=0.0, max_value=6.0, value=0.96, step=0.06,
+                      format="%.2f %%", key="mortgage_spread_annual",
+                      help="Taux hypothécaire = taux directeur + cet écart (annuel).")
+            st.slider("Écart du crédit à la consommation", min_value=0.0, max_value=15.0, value=7.2, step=0.12,
+                      format="%.2f %%", key="consumer_credit_spread_annual",
+                      help="Taux du crédit à la consommation = taux directeur + cet écart (annuel).")
+            st.slider("Écart des dépôts sous le taux directeur", min_value=0.0, max_value=6.0, value=1.44, step=0.12,
+                      format="%.2f %%", key="deposit_spread_annual",
+                      help="Taux de référence des dépôts = taux directeur − cet écart (annuel) ; chaque banque "
+                           "l'ajuste ensuite selon sa liquidité.")
+            st.slider("Marge supplémentaire des banques", min_value=-2.0, max_value=10.0, value=0.0, step=0.12,
+                      format="%.2f %%", key="bank_margin_offset_annual",
+                      help="Points annuels ajoutés à tous les nouveaux crédits (entreprises, immobilier, "
+                           "consommation) et au coût du crédit que les entreprises anticipent. 0 : désactivé.")
             st.slider(
                 "Marge de crédit liée au risque",
                 min_value=0.0,
@@ -2222,20 +2481,31 @@ def render_company_history(
     """Historiques d'une entreprise, mémorisés par simulation, mois et entreprise ; affichés
     seulement quand leur volet est ouvert. Les mêmes séries qu'auparavant, regroupées en quatre
     graphiques au lieu de huit (A4, novembre 2026 : la génération Altair coûtait 0,36 s au premier
-    dépliage) : patrimoine et dette, flux du mois, activité et effectifs, cours."""
+    dépliage) : patrimoine et dette, flux du mois, activité et effectifs, cours. Les dividendes
+    ont leur propre graphique (lot A1, novembre 2026) : mêlés aux flux du mois, leur échelle
+    était écrasée par celle du chiffre d'affaires."""
     selected_company = _simulation.company_profile(selected_company_id)
-    firm_history = selected_company.financial_history
+    # mois observés seulement (lot F2) : l'historique garde aussi les mois de chauffe, numérotés
+    # 1 à 120 comme les mois observés ; affichés ensemble, ils formaient des dents de scie
+    firm_history = observed_rows(selected_company.financial_history, _simulation)
     history_first, history_second = st.columns(2)
     with history_first:
         st.caption("Trésorerie, valeur nette et dette (€)")
         line_chart(firm_history, x="Période", y=["Trésorerie", "Fortune", "Dettes"])
     with history_second:
-        st.caption("Flux du mois : chiffre d'affaires, bénéfice, dividendes, flux de trésorerie disponible (€)")
+        st.caption("Flux du mois : chiffre d'affaires, bénéfice, flux de trésorerie disponible (€)")
         line_chart(
             firm_history,
             x="Période",
-            y=["Chiffre d'affaires", "Bénéfice", "Dividendes", "Flux de trésorerie disponible"],
+            y=["Chiffre d'affaires", "Bénéfice", "Flux de trésorerie disponible"],
         )
+    st.caption(
+        "Dividendes versés par mois (€). Le modèle ne comporte pas de rachat d'actions par "
+        "l'émetteur : les « rachats » de la simulation sont des prises de contrôle d'autres "
+        "entreprises, sans effet sur les actions de l'entreprise elle-même."
+    )
+    # aire plutôt que barres : l'axe des périodes reste continu (des centaines de mois)
+    area_chart(firm_history, x="Période", y="Dividendes")
     history_third, history_fourth = st.columns(2)
     with history_third:
         st.caption("Activité : effectifs, production, stocks et capacité ajoutée (unités)")
@@ -2535,7 +2805,7 @@ if not lazy_tabs or firms_tab.open:
                 # volet fermé par défaut : les huit courbes ne sont calculées qu'à l'ouverture
                 # (versions de Streamlit sans volet paresseux : toujours calculées)
                 history_panel = st.expander(
-                    "Historiques de l'entreprise (trésorerie, activité, effectifs, dette, cours)",
+                    "Historiques de l'entreprise (trésorerie, activité, dividendes, effectifs, dette, cours)",
                     **({"key": "company_history_panel", "on_change": "rerun"} if lazy_expanders else {}),
                 )
                 if not lazy_expanders or history_panel.open:
@@ -2686,47 +2956,56 @@ if not lazy_tabs or households_tab.open:
                     )
             else:
                 st.caption("Ce ménage ne détient pas d'actions actuellement.")
-            if person.financial_history:
+            person_history = observed_rows(person.financial_history, simulation)
+            if person_history:
                 st.caption("Fortune nette au fil du temps")
                 line_chart(
-                    person.financial_history,
+                    person_history,
                     x="Période",
                     y=["Fortune", "Fortune réelle"],
                 )
                 st.caption("Liquidités et valeur des actions")
                 line_chart(
-                    person.financial_history,
+                    person_history,
                     x="Période",
                     y=["Trésorerie nette", "Actions"],
                 )
                 st.caption("Revenus et dépenses mensuels")
                 line_chart(
-                    person.financial_history,
+                    person_history,
                     x="Période",
                     y=["Revenus", "Dividendes", "Dépenses"],
                 )
         if len(observed_history) > 1:
-            wealth_bands = [
-                ("0–10 k€", 0.0, 10000.0),
-                ("10–25 k€", 10000.0, 25000.0),
-                ("25–50 k€", 25000.0, 50000.0),
-                ("50–100 k€", 50000.0, 100000.0),
-                ("100–250 k€", 100000.0, 250000.0),
-                ("250 k€ et +", 250000.0, float("inf")),
-            ]
             # fortunes calculées une fois (auparavant une fois par tranche et par ménage)
             prices = share_prices(simulation.companies)
             fortunes = [household_net_worth(p, simulation.companies, simulation.live, prices)
                         for p in simulation.people]
-            distribution = [
-                {
-                    "Tranche de fortune": label,
-                    "Nombre de ménages": sum(lower <= value < upper for value in fortunes),
-                }
-                for label, lower, upper in wealth_bands
-            ]
+            # classes adaptatives (lot A2, novembre 2026) : les six tranches fixes de 0 à
+            # 250 k€ regroupaient presque tous les ménages dans une ou deux barres
+            distribution = wealth_distribution(fortunes)
             st.subheader("Répartition des fortunes")
-            bar_chart(distribution, x="Tranche de fortune", y="Nombre de ménages")
+            ordered = sorted(fortunes)
+            st.caption(
+                f"Classes recalculées chaque mois sur 90 % des ménages (quantiles 5 %–95 %), "
+                f"queues dans les classes ouvertes · médiane {compact(ordered[len(ordered) // 2], ' €')} · "
+                f"de {compact(ordered[0], ' €')} à {compact(ordered[-1], ' €')} · "
+                f"{sum(v < -0.5 for v in fortunes)} ménage(s) en patrimoine négatif"
+            )
+            # barres horizontales : jusqu'à douze libellés de classe sans chevauchement
+            st.vega_lite_chart(
+                [{key: row[key] for key in ("Tranche de fortune", "Nombre de ménages")}
+                 for row in distribution],
+                {
+                    "mark": {"type": "bar", "tooltip": True},
+                    "encoding": {
+                        "y": {"field": "Tranche de fortune", "type": "nominal", "sort": None,
+                              "title": None},
+                        "x": {"field": "Nombre de ménages", "type": "quantitative"},
+                    },
+                },
+                use_container_width=True,
+            )
 
 if not lazy_tabs or model_tab.open:
     with model_tab:
@@ -2741,7 +3020,7 @@ if not lazy_tabs or model_tab.open:
             ("Élections", "Chaque ménage vote : sa proximité politique, déplacée par ses intérêts selon son rang de fortune, l'évolution de son revenu réel pendant le mandat et ses propres mois sans emploi décident de son soutien au sortant. L'opposition défend la position médiane de son camp ; le résultat figure au journal de l'État."),
             ("Investissement", "Les entreprises évaluent les ventes supplémentaires et les salaires économisés, puis financent les projets par trésorerie et crédit. Les logements sont livrés après un délai et payés au fil du chantier."),
             ("Création et disparition", "Les ménages éligibles peuvent fonder une entreprise, qui porte leur nom. Pendant douze mois, ses titres offerts servent la demande avant les vendeurs. Le fondateur revend ensuite ses titres sur le marché, au cours, pour se diversifier ou reconstituer sa trésorerie. Insolvabilité et cessation de paiements peuvent fermer même le dernier producteur d'un secteur ; il n'existe plus de faillite aléatoire des jeunes entreprises. Une entreprise sans salarié réembauche quand un poste rapporte ce qu'il coûte dans son secteur (toujours si le secteur n'a plus aucun employeur) ; sans perspective pendant deux ans, sans dette ni actif physique, ses actionnaires la liquident à l'amiable et récupèrent sa trésorerie."),
-            ("Banques et monnaie", "Un prêt crée un dépôt ; son remboursement détruit de la monnaie. Les banques évaluent le risque, la liquidité et leurs fonds propres. L'aide publique à leur résolution est plafonnée."),
+            ("Banques et monnaie", "Un prêt crée un dépôt ; son remboursement détruit de la monnaie. Les banques évaluent le risque, la liquidité et leurs fonds propres. L'aide publique à leur résolution est plafonnée. Le taux directeur suit une règle de Taylor, sauf s'il est forcé en intervention ; une marge supplémentaire réglable s'ajoute à tous les crédits."),
             ("État institutionnel", "Présidence et ministres ont des doctrines et objectifs. Une loi de finances organise impôts et dépenses sans ratio de dette visé. L'impôt sur le revenu a un barème progressif indexé (taux de base, puis surtaxe) et inclut dividendes et loyers : au barème à gauche, au forfait réduit à droite. Les transferts sont d'autant plus ciblés sur les bas revenus que le gouvernement est à gauche ; le minimum légal peut atteindre 80 % du médian à l'extrême gauche. Aucun Gini n'est visé. Services publics, minimum légal et politique industrielle figurent dans l'onglet État."),
             ("Bourse et concurrence", "Les ordres d'achat et de vente font évoluer les cours avec les estimations fondamentales. Les rachats reposent sur une offre de valeur et l'acceptation des actionnaires. Les dividendes transfèrent la trésorerie aux détenteurs des titres."),
         ]
@@ -2771,6 +3050,36 @@ if not lazy_tabs or model_tab.open:
             "entre investissements, remboursement, placements et distributions. Le PIB récurrent "
             "exclut la construction, comptée séparément à sa valeur ajoutée au fil des chantiers."
         )
+        # lot B : valeurs de base des taux (config) et valeurs du mois (live, forçages compris)
+        st.subheader("Taux d'intérêt : valeurs de base et en vigueur")
+        base, live = simulation.config, simulation.live
+        operator = getattr(simulation, "interventions", None)
+        forced_rate = getattr(operator, "forced_policy_rate", None) if operator else None
+        monetary = getattr(operator, "monetary", {}) if operator else {}
+        rate_rows = [
+            ("Taux directeur", "règle de Taylor", f"{12.0 * simulation.policy_rate:.2%}"
+             + (" (forcé)" if forced_rate is not None else "")),
+            ("Taux réel neutre (Taylor)", f"{base.taylor_neutral_real_rate:.2%}", f"{live.taylor_neutral_real_rate:.2%}"),
+            ("Inflation visée (annuelle)", f"{(1 + base.inflation_target) ** 12 - 1:.2%}",
+             f"{(1 + live.inflation_target) ** 12 - 1:.2%}"),
+            ("Plafond du taux directeur", f"{base.policy_rate_cap:.2%}", f"{live.policy_rate_cap:.2%}"),
+            ("Lissage mensuel du taux directeur", f"{base.policy_rate_smoothing:.2f}", f"{live.policy_rate_smoothing:.2f}"),
+            ("Écart du crédit immobilier", f"{12 * base.mortgage_spread:.2%}", f"{12 * live.mortgage_spread:.2%}"),
+            ("Écart du crédit à la consommation", f"{12 * base.consumer_credit_spread:.2%}",
+             f"{12 * live.consumer_credit_spread:.2%}"),
+            ("Écart des dépôts sous le directeur", f"{12 * base.deposit_spread:.2%}", f"{12 * live.deposit_spread:.2%}"
+             + (" (forcé)" if "deposit_spread" in monetary else "")),
+            ("Marge supplémentaire des banques", f"{12 * base.bank_margin_offset:.2%}",
+             f"{12 * live.bank_margin_offset:.2%}" + (" (forcée)" if "bank_margin_offset" in monetary else "")),
+            ("Taux servi sur les dépôts", "—", f"{12.0 * simulation.deposit_rate:.2%}"),
+        ]
+        st.dataframe(
+            [{"Taux (annuel)": name, "Base (réglages)": value, "En vigueur ce mois": current}
+             for name, value, current in rate_rows],
+            hide_index=True, use_container_width=True,
+        )
+        st.caption("Base : valeurs de la barre latérale, appliquées à la réinitialisation. En vigueur : "
+                   "valeurs du mois, forçages du mode intervention compris (onglet État).")
         st.divider()
         st.subheader("Hypothèses et limites")
         st.markdown(

@@ -11,7 +11,11 @@ Trois sortes d'actions, décidées depuis l'interface entre deux mois :
   normalement (le gouvernement imposé est le sortant jugé par les électeurs) ;
 - **leviers forcés** (TVA, impôts, allocation chômage, salaire minimum) : la valeur choisie
   remplace chaque mois la valeur votée, jusqu'à la prochaine élection ou jusqu'à ce qu'un
-  nouveau gouvernement soit imposé ; la valeur votée reprend alors la main.
+  nouveau gouvernement soit imposé ; la valeur votée reprend alors la main ;
+- **taux forcés** (lot B, novembre 2026) : taux directeur de la banque centrale (à la place de
+  la règle de Taylor), marge supplémentaire des banques commerciales sur tous les crédits, écart
+  entre taux directeur et taux de référence des dépôts. Ils ne relèvent pas du gouvernement :
+  ils restent forcés après une élection, jusqu'à ce que l'opérateur les relâche.
 
 Neutralité : ``simulation.interventions`` n'existe pas tant qu'aucune intervention n'a été
 faite, et les crochets du moteur ne font alors rien (aucun tirage, aucun calcul flottant).
@@ -40,6 +44,15 @@ LEVERS = {
     "minimum_wage": ("Salaire minimum légal", "€"),
 }
 
+# taux forcés (lot B) : attribut de ``live`` -> libellé ; valeurs annuelles dans l'interface,
+# mensuelles dans ``live`` (comme ``config``)
+MONETARY_LEVERS = {
+    "bank_margin_offset": "Marge supplémentaire des banques commerciales",
+    "deposit_spread": "Écart taux directeur − taux des dépôts",
+}
+MONETARY_BOUNDS = {"bank_margin_offset": (-0.02, 0.10), "deposit_spread": (-0.02, 0.10)}  # annuels
+POLICY_RATE_BOUNDS = (0.0, 0.20)  # taux directeur annuel forcé
+
 SKILL_BOUNDS = (0.5, 2.0)  # bornes déjà appliquées par le marché du travail
 
 
@@ -52,6 +65,9 @@ class Interventions:
     pending_orientation: float | None = None          # gouvernement à imposer au prochain mois
     forced_months: list = field(default_factory=list)  # mois où un gouvernement a été imposé
     issued_money: float = 0.0                          # monnaie émise nette par l'opérateur
+    # lot B : taux directeur annuel forcé (None : règle de Taylor) ; marges forcées (mensuelles)
+    forced_policy_rate: float | None = None
+    monetary: dict = field(default_factory=dict)
     journal: list = field(default_factory=list)
 
     def log(self, month: int, kind: str, target: str, before, after, note: str = "") -> None:
@@ -70,6 +86,11 @@ class Interventions:
         """Remplace dans ``live`` les valeurs votées par les valeurs forcées (chaque mois)."""
         self.voted = {name: getattr(live, name) for name in self.levers}
         for name, value in self.levers.items():
+            setattr(live, name, value)
+
+    def apply_monetary(self, live) -> None:
+        """Remplace dans ``live`` les marges de base par les marges forcées (chaque mois)."""
+        for name, value in self.monetary.items():
             setattr(live, name, value)
 
     def end_mandate(self, month: int, reason: str) -> None:
@@ -188,3 +209,56 @@ def clear_lever(sim, name: str) -> None:
 def doctrine_random(sim) -> random.Random:
     """Générateur des doctrines imposées : graine et mois, indépendant des générateurs du moteur."""
     return random.Random(sim.config.seed * 1_000_003 + INTERVENTION_SEED_OFFSET + sim.month)
+
+
+# -- lot B : taux d'intérêt ------------------------------------------------------------------
+
+def _percent(annual: float) -> str:
+    return f"{100.0 * annual:.2f} %"
+
+
+def set_policy_rate(sim, annual_rate: float) -> float:
+    """Force le taux directeur (annuel, borné à ``POLICY_RATE_BOUNDS``) à la place de la règle de
+    Taylor, jusqu'à ``release_policy_rate``. Le taux s'applique dès le mois suivant (crédits,
+    dépôts, actualisation) ; la règle ne le recalcule plus en fin de mois. Retourne le taux."""
+    low, high = POLICY_RATE_BOUNDS
+    value = max(low, min(high, float(annual_rate)))
+    current = interventions(sim)
+    before = 12.0 * sim.policy_rate
+    current.forced_policy_rate = value
+    sim.policy_rate = value / 12.0
+    current.log(sim.month, "Taux directeur forcé", "Banque centrale", _percent(before), _percent(value),
+                "à la place de la règle de Taylor, jusqu'au relâchement")
+    return value
+
+
+def release_policy_rate(sim) -> None:
+    """Rend le taux directeur à la règle de Taylor (qui repart du taux forcé, avec lissage)."""
+    current = getattr(sim, "interventions", None)
+    if current is not None and current.forced_policy_rate is not None:
+        current.log(sim.month, "Taux directeur rendu à la règle", "Banque centrale",
+                    _percent(current.forced_policy_rate), "règle de Taylor")
+        current.forced_policy_rate = None
+
+
+def set_bank_rate(sim, name: str, annual_value: float) -> float:
+    """Force une marge bancaire (``MONETARY_LEVERS``), en valeur annuelle, jusqu'à
+    ``release_bank_rate``. Elle s'applique dès le mois suivant (``live`` est recréé chaque mois).
+    Retourne la valeur annuelle retenue."""
+    if name not in MONETARY_LEVERS:
+        raise KeyError(name)
+    low, high = MONETARY_BOUNDS[name]
+    value = max(low, min(high, float(annual_value)))
+    current = interventions(sim)
+    before = 12.0 * current.monetary.get(name, getattr(sim.config, name))
+    current.monetary[name] = value / 12.0
+    current.log(sim.month, "Taux bancaire forcé", MONETARY_LEVERS[name], _percent(before), _percent(value),
+                "jusqu'au relâchement")
+    return value
+
+
+def release_bank_rate(sim, name: str) -> None:
+    current = getattr(sim, "interventions", None)
+    if current is not None and name in current.monetary:
+        current.log(sim.month, "Taux bancaire rendu à sa valeur de base", MONETARY_LEVERS[name],
+                    _percent(12.0 * current.monetary.pop(name)), _percent(12.0 * getattr(sim.config, name)))

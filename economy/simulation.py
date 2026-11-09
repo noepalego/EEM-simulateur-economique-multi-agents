@@ -98,6 +98,7 @@ from economy.public_finance import PublicFinanceMixin
 from economy.records import MonthFlows, build_record
 from economy.sectors import SECTORS, SKILL_SECTORS
 from economy.state_budget import StateBudgetMixin
+from economy.ownership import OwnershipMixin
 from economy.state_government import StateGovernmentMixin
 from economy.state_industry import StateIndustryMixin
 from economy.state_labor import StateLaborMixin
@@ -105,7 +106,7 @@ from economy.state_services import StateServicesMixin
 from economy.demography import DEMOGRAPHY_SEED_OFFSET, DemographyMixin
 
 
-class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, StateBudgetMixin, StateServicesMixin, StateLaborMixin, StateIndustryMixin, BankingMixin, CentralBankMixin, PricingMixin, HousingMixin, WageMixin, DemographyMixin, ViewsMixin):
+class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin, StateBudgetMixin, StateServicesMixin, StateLaborMixin, StateIndustryMixin, BankingMixin, CentralBankMixin, PricingMixin, HousingMixin, WageMixin, DemographyMixin, ViewsMixin):
     def __init__(self, config: SimulationConfig | None = None) -> None:
         # ``config`` : paramètres choisis par l'utilisateur, jamais modifiés par le moteur.
         # ``live`` : copie de travail du mois, où vivent les prix de marché dérivés
@@ -403,6 +404,9 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, StateBudgetMix
         # lecture seule jusqu'à _update_housing_costs, qui recrée ``live`` (copie complète)
         self.live = copy.copy(self.config)
         self.resources.b2b_price_elasticity = self.config.b2b_price_elasticity
+        # lot D : remise sur le volume des achats entre entreprises (0 : désactivée)
+        self.resources.volume_discount_max = self.config.volume_discount_max
+        self.resources.volume_discount_half_volume = self.config.volume_discount_half_volume
         # commandes refusées du mois écoulé, gardées pour juger la reprise d'une entreprise sans
         # salarié (idée 2) avant d'être remises à zéro
         self._last_refused_orders = dict(self.resources.refused_orders)
@@ -449,6 +453,9 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, StateBudgetMix
         self.resources.recycled_materials += self.resources.recycling_pending
         self.resources.recycling_pending = 0.0
         self._roll_over_firms(f)
+        if self.live.bank_own_funds == "equity":
+            # refonte bancaire : trésorerie propre = part liquide des fonds propres
+            self._reconcile_bank_own_funds()
         self._interbank_market()
         prepare_delivery_month(self.companies, self.resources, self.live)
         # Pas de cliquet de consommation : propension inchangée
@@ -992,6 +999,10 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, StateBudgetMix
             (self.public.account,),
             retained=self._undercapitalized_banks(),
             planned_payouts={cid: p.distribution for cid, p in plans.items()},
+            bank_capital_ratio=(
+                live.capital_requirement + live.bank_recap_buffer
+                if live.bank_own_funds == "equity" else None
+            ),
         )
         self.public.equity_dividends = self.public.cash - cash_before_dividends
         self.public.total_equity_dividends += self.public.equity_dividends

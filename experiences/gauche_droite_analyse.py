@@ -1,12 +1,17 @@
 """Analyse de results/gauche_droite/runs.jsonl : moyennes par scénario et écarts appariés.
 
-python experiences/gauche_droite_analyse.py  ->  results/gauche_droite/synthese.json et tableau console
+python experiences/gauche_droite_analyse.py [DOSSIER]  ->  results/DOSSIER/synthese.json et tableau console
+
+``DOSSIER`` : sous-dossier de ``results/`` (par défaut ``gauche_droite``). Les indicateurs de
+concentration et de parts salariées (lot E) ne sont affichés que si la campagne les a relevés.
 """
 import json
 import os
 import statistics
+import sys
 
-HERE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "results", "gauche_droite")
+HERE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "results",
+                    sys.argv[1] if len(sys.argv) > 1 else "gauche_droite")
 runs = [json.loads(line) for line in open(os.path.join(HERE, "runs.jsonl"), encoding="utf-8")]
 by = {(r["seed"], r["scenario"]): r for r in runs}
 seeds = sorted({r["seed"] for r in runs})
@@ -21,7 +26,18 @@ def indicators(run):
     last = years[-10:]  # dix dernières années
     first_gdp, last_gdp = years[0]["real_gdp_sum"], years[-1]["real_gdp_sum"]
     n = len(years) - 1
-    return {
+    extra = {}
+    if "hhi_mean" in years[0]:  # campagnes du lot E
+        extra = {
+            "Concentration moyenne des secteurs (HHI)": mean(years, "hhi_mean"),
+            "Concentration alimentation (HHI)": mean(years, "hhi_food"),
+            "Concentration biens (HHI)": mean(years, "hhi_goods"),
+            "Part du capital en parts salariées (fin)": years[-1]["employee_share"],
+            "Part du 1 % le plus riche (10 dernières années)": mean(last, "household_top1_share"),
+            "Part des 10 % (10 dernières années)": mean(last, "household_top10_share"),
+            "Gini du patrimoine (10 dernières années)": mean(last, "household_gini"),
+        }
+    return extra | {
         "PIB réel mensuel (moyenne)": mean(years, "real_gdp"),
         "Croissance réelle annuelle": (last_gdp / first_gdp) ** (1 / n) - 1 if first_gdp > 0 else 0.0,
         "Chômage": mean(years, "unemployment"),

@@ -39,6 +39,7 @@ from economy.institutions import (
     individual_election,
     make_doctrine,
     make_objective,
+    make_secondary_objective,
     political_lean,
 )
 from economy.payments import transfer_cash
@@ -127,6 +128,12 @@ class StateGovernmentMixin:
         if operator is not None:
             # leviers forcés par l'opérateur : remplacent les valeurs votées jusqu'à l'élection
             operator.apply_levers(live)
+        if live.ownership_regime:
+            # lot E : régime de propriété (règles interpolées sur ``live``, parts salariées)
+            self._ownership_step()
+        if live.bank_capital_backstop:
+            # lot F1 : recapitalisation de dernier recours après un gel durable du crédit
+            self._bank_capital_backstop()
 
     def _impose_government(self, operator) -> None:
         """Gouvernement imposé par l'opérateur (mode intervention), formé comme après une
@@ -222,11 +229,37 @@ class StateGovernmentMixin:
         return voters
 
     def _objectives_met_share(self) -> float:
-        """Part des objectifs ministériels du mandat en cours atteints à ce jour."""
+        """Part des objectifs ministériels du mandat en cours atteints à ce jour. Lot C (objectifs
+        enrichis) : moyenne pondérée, un objectif secondaire pesant ``secondary_objective_weight``
+        fois un principal."""
         offices = [o for o in self.institutions.offices.values() if o.objective is not None]
         if not offices:
             return 0.5
+        if self.live.enriched_objectives:
+            weight = max(0.0, self.live.secondary_objective_weight)
+            pairs = [(o.met(o.value), weight if o.rank == "secondaire" else 1.0)
+                     for office in offices for o in office.objectives()]
+            total = sum(w for _, w in pairs)
+            return sum(w for met, w in pairs if met) / total if total > 0.0 else 0.5
         return sum(o.objective.met(o.objective.value) for o in offices) / len(offices)
+
+    def _objective_pressure(self, role: str, lever: str) -> float:
+        """Lot C : intensité avec laquelle les objectifs en retard du ministre ``role`` actionnent
+        le levier ``lever`` : ``objective_effort`` pour le principal, × ``secondary_objective_weight``
+        pour le secondaire ; 0 si les objectifs enrichis sont désactivés ou atteints."""
+        live = self.live
+        if not live.enriched_objectives:
+            return 0.0
+        inst = getattr(self, "institutions", None)
+        office = inst.offices.get(role) if inst is not None else None
+        if office is None:
+            return 0.0
+        pressure = 0.0
+        for objective in office.objectives():
+            if objective.lever == lever and not objective.met(objective.value):
+                weight = live.secondary_objective_weight if objective.rank == "secondaire" else 1.0
+                pressure += max(0.0, live.objective_effort) * max(0.0, weight)
+        return pressure
 
     def _close_term(self) -> None:
         """Bilan des objectifs à la fin du mandat, conservé dans l'historique des gouvernements."""
@@ -242,9 +275,22 @@ class StateGovernmentMixin:
         term.objectives_met = (
             sum(status == "atteint" for status in statuses.values()) / len(statuses) if statuses else 0.0
         )
+        secondary = {role: office.secondary.close() for role, office in inst.offices.items()
+                     if office.secondary is not None}
+        if secondary:
+            # lot C : bilan pondéré (un secondaire pèse ``secondary_objective_weight`` principal)
+            term.secondary_record = secondary
+            weight = max(0.0, self.live.secondary_objective_weight)
+            total = len(statuses) + weight * len(secondary)
+            term.objectives_met = (
+                sum(s == "atteint" for s in statuses.values())
+                + weight * sum(s == "atteint" for s in secondary.values())
+            ) / total if total > 0.0 else 0.0
         self._decide(
             "presidence", "Bilan du gouvernement",
-            ", ".join(f"{OFFICE_LABELS[r]} : {s}" for r, s in statuses.items()) or "aucun objectif",
+            (", ".join(f"{OFFICE_LABELS[r]} : {s}" for r, s in statuses.items()) or "aucun objectif")
+            + ("" if not secondary else " ; objectifs secondaires : "
+               + ", ".join(f"{OFFICE_LABELS[r]} : {s}" for r, s in secondary.items())),
             amount=term.objectives_met,
         )
 
@@ -295,14 +341,26 @@ class StateGovernmentMixin:
                 office = self._nominate(role, excluded)
                 reason = "nomination"
             if role != "presidence":
+                envelope = envelopes.get(role, 0.0)
+                if live.enriched_objectives:
+                    # lot C : enveloppe partagée entre principal et secondaire selon leurs poids
+                    share = max(0.0, live.secondary_objective_weight)
+                    envelope_secondary = envelope * share / (1.0 + share)
+                    envelope -= envelope_secondary
                 office.objective = make_objective(
-                    role, inst.doctrine, values, self.month, deadline, live, envelopes.get(role, 0.0)
+                    role, inst.doctrine, values, self.month, deadline, live, envelope
                 )
+                if live.enriched_objectives:
+                    office.secondary = make_secondary_objective(
+                        role, inst.doctrine, values, office.objective, deadline, envelope_secondary
+                    )
             inst.offices[role] = office
             excluded.add(office.person_id)
             self._start_membership(term, office)
             person = people.get(office.person_id)
             objective = office.objective.label if office.objective else "porter le programme, arbitrer les enveloppes"
+            if office.secondary is not None:
+                objective += f" ; objectif secondaire : {office.secondary.label}"
             note = self._interest_note(office)
             self._decide(
                 "presidence" if role != "presidence" else "presidence",
@@ -331,6 +389,7 @@ class StateGovernmentMixin:
             excluded = {o.person_id for r, o in inst.offices.items() if r != role}
             successor = self._nominate(role, excluded | {office.person_id})
             successor.objective = office.objective
+            successor.secondary = office.secondary
             inst.offices[role] = successor
             self._start_membership(term, successor)
             self._decide(
@@ -425,6 +484,9 @@ class StateGovernmentMixin:
             "objective": objective.label if objective else "", "status": "en cours" if objective else "",
             "refusals": len(office.refusals),
         })
+        if office.secondary is not None:
+            term.members[-1]["secondary"] = office.secondary.label
+            term.members[-1]["secondary_status"] = "en cours"
 
     def _end_membership(self, term: GovernmentTerm, office: Office) -> None:
         for member in reversed(term.members):
@@ -434,6 +496,8 @@ class StateGovernmentMixin:
                 if office.objective is not None:
                     member["status"] = office.objective.status
                     member["value"] = office.objective.value
+                if office.secondary is not None:
+                    member["secondary_status"] = office.secondary.status
                 break
 
     def _interest_note(self, office: Office, target: str | None = None) -> str:
@@ -513,6 +577,35 @@ class StateGovernmentMixin:
             "monopoles_critiques": float(sum(s in critical for s in dominated)),
             "monopoles": float(len(dominated)),
             "portefeuille_non_strategique": self._non_strategic_portfolio(),
+            **(self._enriched_indicator_values(recent, revenue) if self.live.enriched_objectives else {}),
+        }
+
+    def _enriched_indicator_values(self, recent: list, revenue: float) -> dict[str, float]:
+        """Lot C : indicateurs des nouveaux objectifs, lus dans le relevé mensuel et l'État."""
+        inst = self.institutions
+        services = inst.services
+        authorized = sum(sum(service.posts.values()) for service in services.values())
+        vacancies = sum(service.vacancies for service in services.values())
+        gdp = sum(r.nominal_gdp for r in recent)
+        diagnostic = inst.diagnostic
+        median = self._median_private_wage()
+        return {
+            "arrieres_recettes": inst.arrears / revenue if revenue > 0.0 else 0.0,
+            "chomage_longue_duree": (
+                sum(r.long_term_unemployment for r in recent) / len(recent) if recent else 0.0
+            ),
+            "taux_emploi": (
+                sum(r.employed_count / max(r.population_count, 1) for r in recent) / len(recent)
+                if recent else 1.0 - self.live.natural_unemployment_rate
+            ),
+            "salaire_reel_median": median * 100.0 / max(self.price_index, 1e-9),
+            "investissement_pib": sum(r.investment for r in recent) / gdp if gdp > 0.0 else 0.0,
+            "concentration": (
+                sum(data["hhi"] for data in diagnostic.values()) / len(diagnostic) if diagnostic else 1.0
+            ),
+            "vacance_postes": vacancies / authorized if authorized > 0 else 0.0,
+            "education": getattr(self, "education_quality", 0.0),
+            "prix_energie": self.resources.energy_price_index,
         }
 
     def _track_objectives(self) -> None:
@@ -521,6 +614,8 @@ class StateGovernmentMixin:
         for office in inst.offices.values():
             if office.objective is not None:
                 office.objective.update(values[office.objective.indicator])
+            if office.secondary is not None:
+                office.secondary.update(values[office.secondary.indicator])
 
     def _ministry_envelopes(self) -> dict[str, float]:
         """Enveloppes annuelles des ministères (livraison 2 : dépenses observées sur douze mois)."""

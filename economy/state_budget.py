@@ -174,6 +174,11 @@ class StateBudgetMixin:
         inst.benefit_factor = _step(inst.benefit_factor, doctrine.benefit_factor, live.budget_tax_speed)
         desired = {"transferts": doctrine.transfer_share, "achats": doctrine.purchases_share,
                    "investissement": doctrine.investment_share}
+        pressure = self._objective_pressure("industrie", "investissement_public")
+        if pressure:
+            # lot C : objectif d'investissement de l'Industrie en retard : programme relevé
+            desired["investissement"] *= 1.0 + pressure
+            adjustments.append(f"priorité à l'investissement public (objectif de l'Industrie) × {1.0 + pressure:.2f}")
         inst.tax_relief = 0.0
         returned = 0.0
         revenue = self._observed_revenue()
@@ -192,7 +197,7 @@ class StateBudgetMixin:
             goal = self._balance_goal(gdp, expected, lines["interets"])
             commitments = sum(amount for key, amount in lines.items() if key not in PROGRAMS)
             room = expected - commitments - goal
-            adjustments = self._allocate_programs(room, gdp, desired, revenue)
+            adjustments += self._allocate_programs(room, gdp, desired, revenue)
             lines = self._law_lines(gdp)
             revenue = self._observed_revenue()
             expected = sum(revenue.values())
@@ -298,6 +303,11 @@ class StateBudgetMixin:
             goal = -debt * self._nominal_growth()
         else:
             goal = -doctrine.deficit_tolerance * gdp
+        pressure = self._objective_pressure("finances", "loi_de_finances")
+        if pressure:
+            # lot C : objectif des Finances en retard (dette, déficit, intérêts, arriérés) : priorité
+            # dans la loi, solde voulu relevé de ``pressure`` point de PIB
+            goal += 0.01 * pressure * gdp
         if revenue > 0.0 and interest / revenue > doctrine.interest_tolerance:
             goal = max(goal, 0.0)
         if debt >= 0.9 * live.debt_ceiling_gdp * gdp:

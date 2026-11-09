@@ -232,26 +232,80 @@ c'est ce qui permet une reproduction exacte.
   installée, de l'énergie livrée, des matières et du niveau technologique.
 - **Prix** : chaque entreprise fixe son prix selon ses commandes non servies, ses stocks, ses coûts
   et la concurrence. Le prix de marché est la moyenne des prix affichés.
+- **Économies d'échelle** (désactivées par défaut ; barre latérale, rubrique « Concurrence, dette
+  & entreprises ») :
+  - **remise sur le volume** (`volume_discount_max`) : dans les achats entre entreprises (énergie,
+    services, technologie, immobilier d'entreprise), une commande paie
+    `1 − max × v / (v + 5 000)` du prix, où v est la commande au prix de base déflatée. La remise
+    ne dépasse jamais la marge observée des fournisseurs : pas de vente sous le coût. Les
+    matières premières, payées au prix du marché des ressources, n'ont pas de remise ;
+  - **frais de structure** (`fixed_cost_share`) : chez les producteurs d'alimentation et de
+    biens, cette part des intrants non matériels devient un forfait mensuel calé sur les ventes
+    moyennes du secteur. Le coût total est inchangé à la taille moyenne ; au-delà, le coût par
+    unité baisse, et le prix de l'entreprise suit son coût moyen. Une entreprise à l'arrêt ne
+    paie rien. **Attention** : dès 10 %, ce mécanisme fait émerger des quasi-monopoles en chaîne
+    en alimentation et en biens, et double faillites et chômage (mesures :
+    `results/lot_d_echelle/RESUME.md`).
 - **Salaires** : l'offre salariale monte quand les postes restent vacants. Elle baisse quand le
   chômage de longue durée est élevé ou quand la recette ne couvre plus la paie. Elle ne descend
   jamais sous le salaire minimum légal.
 - **Investissement** : une entreprise achète de la capacité ou des centrales, et investit en
   recherche, en jugeant la rentabilité au taux d'actualisation du moment. La connaissance
   accumulée fait monter la productivité globale (PGF).
-- **Finance** : crédit d'exploitation, dividendes, rachats d'actions, obligations, offres
-  publiques de rachat sur des concurrents moins bien valorisés.
+- **Finance** : crédit d'exploitation, dividendes, émission d'actions, obligations, offres
+  publiques de rachat sur des concurrents moins bien valorisés. Une entreprise ne rachète pas
+  ses propres actions (aucun rachat d'actions par l'émetteur dans le moteur).
+- **Cours de Bourse** : les ordres font bouger le cours (±15 % par mois au plus), rappelé de 18 %
+  par mois vers une valeur fondamentale qui mêle fonds propres et bénéfices capitalisés. Par
+  défaut, c'est le bénéfice du mois, extrapolé, qui est capitalisé ; avec
+  `stock_earnings_smoothing_months` (0 par défaut, lot F2), c'est la moyenne des derniers mois,
+  ce qui stabilise la valeur vers laquelle le cours est rappelé. **Non validé** : à 12 mois, deux
+  graines sur cinq s'effondrent après le mois 700 (`results/lot_f_stabilite/RESUME.md`) ; à
+  laisser à 0 hors étude.
 - **Fin de vie** : une entreprise insolvable fait faillite. Une entreprise restée sans salarié et
   sans perspective est liquidée à l'amiable, et sa trésorerie revient aux actionnaires.
 
 ### Banques et banque centrale
-- Les banques prêtent dans la limite de leurs **fonds propres** (8 % des prêts et titres) et de
-  leurs **réserves** (10 % des dépôts). Leur marge dépend du risque de défaut qu'elles observent.
+- Les banques prêtent dans la limite de leurs **fonds propres** (8 % des prêts et titres). Les
+  **réserves** exigées (10 % des dépôts) ne limitent pas le crédit : la banque centrale les fournit
+  par des avances au taux directeur, dont les intérêts sont une charge des banques. Leur marge
+  dépend du risque de défaut qu'elles observent.
 - Une banque peut lever des fonds propres en Bourse. Si elle fait faillite, elle est **résolue** :
   la perte retombe sur les actionnaires, puis sur les créanciers, et l'État paie le reste.
 - **Règle de Taylor** : taux annuel visé = 1,8 % + inflation + 0,5 × (inflation − cible)
   − 1,0 × (chômage − 5 %), avec inertie, un plafond à 12 % et une cible d'environ 2,4 % par an.
   La crédibilité de la banque centrale s'apprend : plus l'inflation reste proche de la cible, plus
   les entreprises fondent leurs anticipations sur la cible.
+- **Structure des taux** (taux annuels par défaut) : crédit aux entreprises = taux directeur +
+  marge de risque (perte attendue + coût des fonds propres immobilisés) ; crédit immobilier =
+  directeur + 0,96 point ; crédit à la consommation = directeur + 7,2 points ; dépôts =
+  directeur − 1,44 point, ajusté par chaque banque selon sa liquidité.
+- **Marge supplémentaire des banques** (`bank_margin_offset`, 0 par défaut, réglable dans la
+  barre latérale ou forcée en intervention) : points ajoutés à tous les nouveaux crédits
+  (entreprises, immobilier, consommation) et au coût du crédit que les entreprises anticipent ;
+  aucune marge ne descend sous zéro. Les prêts aux entreprises à taux variable gardent la marge
+  de leur octroi.
+- **Stabilité bancaire** (lot F, désactivés par défaut ; barre latérale, rubrique « Concurrence,
+  dette & entreprises ») ; diagnostic : `results/lot_f_stabilite/DIAGNOSTIC.md` :
+  - **exigence contracyclique** (`countercyclical_capital`) : quand la capacité de crédit du
+    système passe sous 2 % de l'encours et que l'activité baisse, l'exigence de fonds propres
+    descend de 0,25 point par mois jusqu'à 6 %, puis remonte au même rythme quand la capacité
+    dépasse 5 % ;
+  - **recapitalisation de dernier recours** (`bank_capital_backstop`) : après trois mois de
+    capacité nulle, l'État souscrit des actions nouvelles des banques au cours, pour leur rendre
+    une capacité de 5 % de leur encours (titres à l'État, décision au journal, financement par
+    trésorerie ou emprunt).
+- **Trésorerie propre des banques** (`bank_own_funds`, « cash » par défaut) : ce qu'une banque
+  peut payer (salaires, charges, intérêts des dépôts, dividendes) n'est pas de la monnaie et
+  n'entre pas dans l'identité du bilan bancaire. Par défaut c'est un compteur indépendant, que
+  les pertes sur prêts ne réduisent pas : sur 800 mois il atteint 5 à 10 fois les fonds propres
+  nets, et 30 à 50 % des dividendes bancaires sont versés au-delà du bénéfice. Avec « equity »,
+  il est recalculé chaque mois comme la part liquide des fonds propres (fonds propres − actifs
+  réels − prêts interbancaires accordés + emprunts interbancaires), et le capital distribué est
+  celui qui dépasse l'exigence et son coussin. Mesuré sur 10 graines × 800 mois : les dividendes
+  versés au-delà du bénéfice baissent de 87 %, mais les banques retiennent davantage, la demande
+  baisse et les critères de stabilité tombent de 9 à 6 graines ; le réglage reste donc désactivé
+  (`results/refonte_banque/JOURNAL.md`).
 
 ---
 
@@ -290,6 +344,32 @@ politique.
 | **Industrie** | laisser faire, privatiser | réguler les monopoles durables | opérateur public dans les secteurs critiques, garder les participations |
 | **Droits de succession** | nuls à l'extrême droite | 20 % au-delà d'un abattement | jusqu'à 40 % |
 
+### Le régime de propriété (lot E, désactivé par défaut)
+
+Avec `ownership_regime` (case de la rubrique « État institutionnel » de la barre latérale),
+l'orientation agit aussi sur les **règles de propriété des entreprises** (`economy/ownership.py`).
+L'État porte un régime `r` de 0 (ultra-capitalisme) à 1 (coopératives), qui suit l'orientation du
+gouvernement en place à raison d'un écart complet en 48 mois : une alternance s'applique
+progressivement. Les règles sont interpolées, et ne changent rien au centre (`r` = 0,5) :
+
+| Règle | Près de 0 | Centre | Près de 100 |
+|---|---|---|---|
+| Monopoles | aucune intervention (la durée avant un dossier tend vers l'infini) | 12 mois de problème | inchangé (opérateur public selon la doctrine) |
+| Prises de contrôle (OPA) | seuil de contrôle 30 % au lieu de 50 % | 50 % | 70 %, et au moins 3 entreprises par secteur après une fusion |
+| Dividendes | 1,5 × le taux de distribution | 12 % des bénéfices | moitié moins (vote des salariés) |
+| Salaire de direction | inchangé | 5 × la référence | 3 × (vote des salariés) |
+| Parts salariées | aucune | aucune | 30 % du capital des entreprises non bancaires |
+
+Les **parts salariées** sont détenues à parts égales par les salariés de l'entreprise et leur
+rapportent les dividendes correspondants. L'entreprise les constitue progressivement, sans
+expropriation : elle attribue d'abord ses titres auto-détenus, puis rachète au cours, sur sa
+trésorerie libre, des titres aux autres actionnaires (jamais à l'État), au plus 1 % de son
+capital par mois. Un nouvel embauché reçoit sa part à mesure qu'elle se reconstitue. Au départ
+d'un salarié, l'entreprise rachète sa part au cours ; faute de trésorerie, la part redevient une
+détention ordinaire. Ces parts ne sont ni vendues en Bourse ni apportées à une offre publique. La
+fiscalité du capital suit déjà la doctrine (forfait bas à droite). Aucun transfert direct de
+richesse : l'enrichissement du 1 % et la concentration des marchés doivent émerger des règles.
+
 ### Le gouvernement en action
 
 - **Une présidence et quatre ministres** (Finances, Travail, Industrie, Services publics) sont
@@ -297,6 +377,27 @@ politique.
   leur métier. Une personne pressentie peut refuser si le salaire proposé est trop bas.
 - Chaque ministre reçoit un **objectif** chiffré, avec une échéance et une enveloppe. L'objectif
   oriente ses décisions, mais ne fixe jamais un résultat.
+- **Objectifs enrichis** (`enriched_objectives`, désactivé par défaut ; case de la rubrique « État
+  institutionnel » de la barre latérale). Chaque ministre a alors deux objectifs, principal et
+  secondaire, choisis selon la doctrine. Ils ont la même échéance et se partagent l'enveloppe
+  (le secondaire en reçoit un tiers).
+
+  | Ministère | Indicateurs possibles | Levier actionné par un objectif en retard |
+  |---|---|---|
+  | Finances | dette / PIB, solde public, intérêts / recettes, arriérés / recettes | loi de finances : solde voulu relevé |
+  | Travail | chômage, chômage de longue durée, taux d'emploi | recrutement de conseillers (service Emploi et formation) |
+  | Travail | salaire minimum / médian, salaire réel médian | coup de pouce annuel du salaire minimum plafonné plus haut |
+  | Industrie | monopoles, concentration (Herfindahl), prix de l'énergie | instruction plus rapide des dossiers de concurrence |
+  | Industrie | participations non stratégiques ; investissement / PIB | cessions accélérées ; programme d'investissement relevé dans la loi |
+  | Services publics | couverture des besoins, postes vacants | primes et point d'indice arbitrés par la présidence |
+  | Services publics | qualité de l'éducation ; masse salariale | recrutements dans l'Éducation ; postes ouverts réduits |
+
+  Une cible **dépend de la situation de départ** : si elle est déjà remplie à la fixation, elle
+  est relevée d'un pas (un point de chômage, 2 % de salaire réel…), sans dépasser une borne
+  atteignable. L'effort sur le levier vaut `objective_effort` (0,25) pour un principal en retard,
+  la moitié pour un secondaire (`secondary_objective_weight`). Au vote et au bilan du mandat, un
+  objectif secondaire compte pour la moitié d'un principal. Les deux objectifs et leur avancement
+  sont affichés dans l'onglet État.
 - **Cinq services publics**, dont l'Éducation, recrutent des agents en concurrence avec le privé,
   selon une grille de salaires.
 - **Loi de finances** annuelle : elle fixe les impôts, les programmes et le financement. Si
@@ -437,8 +538,15 @@ surtout sur le **niveau** de production et sa **répartition**, pas sur le rythm
 |---|---|
 | **Vue d'ensemble** | PIB, chômage, inflation, salaires, prix, inégalités, logement, monnaie, événements du mois |
 | **État** | gouvernement et cabinet, budget, fonction publique, salaire minimum, industrie, journal des décisions |
-| **Entreprises & bourse** | tableau des entreprises, fiche détaillée par entreprise, cours de Bourse, secteurs |
+| **Entreprises & bourse** | tableau des entreprises, fiche détaillée par entreprise (historique des mois observés : bilan, flux du mois, dividendes versés dans un graphique à part, activité, cours), cours de Bourse, secteurs |
 | **Ménages** | distribution des revenus et des patrimoines, fiche détaillée d'un ménage |
+
+La **répartition des fortunes** (onglet Ménages) recalcule ses classes chaque mois à partir des
+montants observés : une classe pour les patrimoines négatifs, une pour les patrimoines nuls,
+puis des bornes rondes calculées sur le cœur des fortunes positives (quantiles 5 % et 95 %) —
+échelle logarithmique (1-1,5-2-3-5-7 par décade, ou plus grossière) s'il couvre plus d'une
+décade, régulière sinon — et deux classes ouvertes pour les queues. La légende donne la
+médiane, l'étendue et le nombre de ménages en patrimoine négatif.
 | **Modèle & réglages** | paramètres, description des mécanismes |
 
 **Mode intervention 🛠** : sans réinitialiser la simulation, vous pouvez :
@@ -447,7 +555,18 @@ surtout sur le **niveau** de production et sa **répartition**, pas sur le rythm
 - fixer la compétence d'un ménage ;
 - **imposer un gouvernement** d'orientation 0 à 100 jusqu'à la prochaine élection ;
 - **forcer** la TVA, l'impôt sur le revenu, la tranche supérieure, l'impôt sur les bénéfices,
-  l'allocation chômage ou le salaire minimum.
+  l'allocation chômage ou le salaire minimum ;
+- **forcer les taux d'intérêt** (onglet État, panneau « Intervenir sur les taux d'intérêt ») :
+  le taux directeur, à la place de la règle de Taylor (0 à 20 % par an) ; la marge
+  supplémentaire des banques commerciales (−2 à +10 points) ; l'écart entre taux directeur et
+  taux des dépôts. Contrairement aux leviers fiscaux, ces forçages ne s'arrêtent pas à
+  l'élection : ils durent jusqu'à ce qu'on les relâche. Relâché, le taux directeur repart du
+  taux forcé selon la règle et son lissage.
+
+Les valeurs de base des taux (taux réel neutre, plafond et lissage du taux directeur, écarts
+du crédit immobilier, de la consommation et des dépôts, marge supplémentaire) sont réglables
+dans la barre latérale (rubrique « Politique publique & hasard », avec la règle de Taylor) et
+s'appliquent à la réinitialisation.
 
 L'argent ajouté est émis comme de la monnaie fiduciaire, ce qui garde la comptabilité exacte.
 Toutes les actions sont inscrites au journal des interventions. Tant qu'on n'intervient pas, la
@@ -509,7 +628,8 @@ economy/                   Moteur, sans dépendance à Streamlit
 │   household_credit.py, central_bank.py
 ├── stock_market.py, treasury.py,         Bourse, trésorerie, OPA, patrimoine
 │   consolidation.py, wealth.py, innovation.py
-├── institutions.py        Doctrines, objectifs, élection (règles pures)
+├── institutions.py        Doctrines, objectifs (principal, secondaire, cibles, leviers), élection (règles pures)
+├── ownership.py           Régime de propriété selon l'orientation, parts salariées (lot E)
 ├── state_government.py    Gouvernement, cabinet, journal
 ├── state_budget.py        Loi de finances, exécution, dette
 ├── state_services.py      Fonction publique, éducation
@@ -538,7 +658,14 @@ python run_tests.py -j 4      # toute la suite, en parallèle
 python identity_check.py      # 5 trajectoires de référence, comparées au bit près
 python performance_probe.py identity --output results/identity_before
 python performance_probe.py ui --repeats 1 --output results/ui   # parcours de l'interface
+python experiences/gauche_droite_campagne.py 400 1001 1002 1003 1004 1005 --output lot_e_propriete/active --set ownership_regime=1
+python experiences/gauche_droite_analyse.py lot_e_propriete/active
 ```
+
+Les nouveaux attributs ajoutés par les lots C à E sont neutres à leur valeur par défaut pour
+l'empreinte d'identité ; la variante d'empreinte du parcours UI les compte tous, d'où
+`--exclusions results/lot_c_objectifs/exclusions_ui.json` pour comparer à une référence plus
+ancienne.
 
 - La suite contient plus de 400 tests : mécanismes, cohérence comptable, stabilité, État,
   interventions et régression.
@@ -563,12 +690,30 @@ python performance_probe.py ui --repeats 1 --output results/ui   # parcours de l
 - **Stabilité non garantie.** Les récessions longues, la concentration bancaire et les booms de
   crédit qui finissent en faillites restent possibles. Le modèle est sensible à certaines
   élasticités, notamment l'élasticité-prix des achats entre entreprises.
+- **Régime coopératif coûteux pour les entreprises.** Avec `ownership_regime`, les rachats de
+  titres pour les salariés puisent dans la trésorerie libre : sous un gouvernement social durable,
+  il reste moins d'entreprises, les marchés se concentrent et le chômage monte, alors que les
+  inégalités de patrimoine baissent nettement (`results/lot_e_propriete/RESUME.md`). Les parts
+  salariées n'atteignent que 10 % du capital en 400 mois, pour 30 % visés.
+- **Économies d'échelle sans contrepoids.** Les frais de structure (`fixed_cost_share`) créent
+  une boucle « plus gros, moins cher, plus gros » que rien ne freine rapidement : quasi-monopoles
+  et récessions dès 10 %. La remise sur le volume ne s'applique pas aux matières premières.
 - **Démographie simplifiée.** Il n'y a ni retraites, ni enfants à charge, ni partage d'héritage.
   Un ménage est une lignée, et l'héritier garde l'emploi.
 - **Politique sur un seul axe.** Il n'y a ni partis, ni campagnes, ni coalitions. Les services
   reçus (éducation) n'influencent pas encore le vote.
-- **Fonction publique perfectible.** Les recrues sont parfois débauchées aussitôt par le privé, et
-  certains objectifs ministériels sont trop faciles.
+- **Fonction publique perfectible.** Les recrues sont parfois débauchées aussitôt par le privé.
+  Par défaut, certains objectifs ministériels sont trop faciles (déjà remplis à leur fixation) ;
+  les objectifs enrichis (`enriched_objectives`) relèvent ces cibles, mais un objectif de maintien
+  déjà à sa borne (aucun monopole, aucun arriéré) reste facile.
+- **Bourse nerveuse.** Les cours varient d'environ 8 % par mois et un sur quatre bute sur la
+  limite de ±15 %, pendant toute la simulation (pas seulement au début) : le marché est mince et
+  la valeur fondamentale capitalise un bénéfice mensuel très variable. Le lissage du bénéfice
+  (`stock_earnings_smoothing_months`) calme les cours mais dégrade le long terme : non retenu.
+- **Banque unique.** Dans toutes les graines mesurées, le système finit avec une seule banque ;
+  l'exigence contracyclique et la recapitalisation de dernier recours (lot F1) réduisent les gels
+  du crédit de 79 %, mais pas le nombre de crises, et augmentent les faillites d'entreprises. Les fiches des entreprises et des ménages n'affichent que
+  les mois observés ; leur historique interne garde aussi les mois de chauffe.
 - **Calendrier des comptes.** Certaines recettes tardives (ventes de capacité des centrales) ne
   sont pas comptées dans le bénéfice du mois.
 

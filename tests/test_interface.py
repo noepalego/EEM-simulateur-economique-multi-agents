@@ -1,0 +1,72 @@
+"""Lot A (novembre 2026) : lectures pour l'interface, sans effet sur la simulation.
+
+A2 : classes adaptatives de la répartition des fortunes (``economy.wealth.wealth_distribution``).
+"""
+
+import random
+import unittest
+
+from economy.wealth import money_label, wealth_distribution
+
+
+def _counts(rows):
+    return [row["Nombre de ménages"] for row in rows]
+
+
+class WealthDistributionTests(unittest.TestCase):
+    def test_every_household_is_counted_once(self):
+        generator = random.Random(7)
+        samples = [
+            [generator.lognormvariate(10.0, 1.5) for _ in range(500)],
+            [-3000.0, -10.0, 0.0, 0.0, 12.0, 4.0e5, 7.0e8],
+            [5000.0 + i for i in range(100)],
+            [250.0] * 40,
+            [0.0, 3.0, 1.0e12],
+        ]
+        for fortunes in samples:
+            rows = wealth_distribution(fortunes)
+            self.assertEqual(sum(_counts(rows)), len(fortunes))
+            self.assertLessEqual(len(rows), 10 + 2)  # classes positives + négative + nulle
+
+    def test_empty_population(self):
+        self.assertEqual(wealth_distribution([]), [])
+
+    def test_negative_and_null_classes_come_first(self):
+        rows = wealth_distribution([-500.0, 0.0, 0.0, 120.0, 9000.0])
+        self.assertTrue(rows[0]["Tranche de fortune"].startswith("Négative"))
+        self.assertEqual(rows[0]["Nombre de ménages"], 1)
+        self.assertEqual(rows[1]["Tranche de fortune"], "Nulle (0 €)")
+        self.assertEqual(rows[1]["Nombre de ménages"], 2)
+
+    def test_bounds_follow_the_scale_of_the_economy(self):
+        """Économie pauvre ou riche : les ménages se répartissent sur plusieurs classes au
+        lieu de tomber dans une ou deux (ancien défaut des tranches fixes 0–250 k€)."""
+        generator = random.Random(3)
+        for scale in (50.0, 2.0e4, 5.0e7):
+            fortunes = [scale * generator.lognormvariate(0.0, 1.2) for _ in range(400)]
+            rows = wealth_distribution(fortunes)
+            largest = max(_counts(rows))
+            self.assertLess(largest / len(fortunes), 0.5)
+            self.assertGreaterEqual(sum(count > 0 for count in _counts(rows)), 4)
+            self.assertLessEqual(rows[0]["Borne basse"], min(fortunes))
+            self.assertGreater(rows[-1]["Borne haute"], max(fortunes))
+
+    def test_narrow_range_uses_distinct_regular_bounds(self):
+        rows = wealth_distribution([5000.0 + i for i in range(100)])
+        labels = [row["Tranche de fortune"] for row in rows]
+        self.assertEqual(len(labels), len(set(labels)))
+        steps = {round(row["Borne haute"] - row["Borne basse"], 6) for row in rows}
+        self.assertEqual(len(steps), 1)
+
+    def test_money_labels(self):
+        self.assertEqual(money_label(950.0), "950")
+        self.assertEqual(money_label(1500.0), "1,5 k")
+        self.assertEqual(money_label(20000.0), "20 k")
+        self.assertEqual(money_label(1.2e6), "1,2 M")
+        self.assertEqual(money_label(3.0e9), "3 Md")
+        self.assertEqual(money_label(-2500.0), "-2,5 k")
+        self.assertEqual(money_label(5020.0, resolution=20.0), "5,02 k")
+
+
+if __name__ == "__main__":
+    unittest.main()

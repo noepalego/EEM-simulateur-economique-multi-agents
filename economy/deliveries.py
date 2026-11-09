@@ -72,8 +72,10 @@ def credit_supplier(buyer: Company, supplier: Company, payment: float) -> None:
 
 
 def deliver_energy(buyer: Company, wanted: float, budget: float,
-                   companies: list[Company], resources: Resources) -> float:
-    """Livre et crédite les fournisseurs ; le débit de l'acheteur est fait par l'appelant."""
+                   companies: list[Company], resources: Resources, discount: float = 0.0) -> float:
+    """Livre et crédite les fournisseurs ; le débit de l'acheteur est fait par l'appelant.
+    ``discount`` (lot D) : remise sur le volume, part du prix unitaire non payée (0 : prix plein,
+    calcul inchangé)."""
     suppliers = [c for c in companies if c.active and c.sector == "energy" and c.id != buyer.id]
     supply = sum(c.energy_available for c in suppliers)
     wanted = max(0.0, wanted)
@@ -89,7 +91,12 @@ def deliver_energy(buyer: Company, wanted: float, budget: float,
             units = quantity * supplier.energy_available / supply
             supplier.energy_available = max(0.0, supplier.energy_available - units)
             supplier.energy_delivered += units
-            credit_supplier(buyer, supplier, units * resources.energy_unit_price)
+            if discount > 0.0:
+                credit_supplier(buyer, supplier, units * resources.energy_unit_price * (1.0 - discount))
+            else:
+                credit_supplier(buyer, supplier, units * resources.energy_unit_price)
+    if discount > 0.0:
+        return quantity * resources.energy_unit_price * (1.0 - discount)
     return quantity * resources.energy_unit_price
 
 
