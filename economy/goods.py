@@ -118,7 +118,10 @@ def sell_food(
     people: list[Person],
     market_price: float,
     config: SimulationConfig | None = None,
+    affinity: Mapping[str, Mapping[str, float]] | None = None,
 ) -> tuple[float, float, float]:
+    """``affinity`` (lot G, préférences et magasins) : multiplicateur du poids de chaque entreprise
+    dans les achats de chaque ménage (ménage -> entreprise -> facteur) ; ``None`` : rien."""
     config = config or SimulationConfig()
     food_firms = [company for company in companies if company.active and company.sector == "food"]
     supply = sum(company.inventory for company in food_firms)
@@ -139,7 +142,7 @@ def sell_food(
     if not food_firms or supply <= 0 or not people:
         for person in people:
             person.last_food_bought = 0.0
-        record_addressed_demand(food_firms, demand, {}, config, market_price, desired, preferences)
+        record_addressed_demand(food_firms, demand, {}, config, market_price, desired, preferences, affinity)
         return 0.0, 0.0, demand
     sales_by_firm = _allocate_sales(
         food_firms,
@@ -150,6 +153,7 @@ def sell_food(
         desired,
         preferences,
         config.quality_preference_strength,
+        affinity,
     )
     sold = sum(sales_by_firm.values())
     ration = sold / demand if demand else 0.0
@@ -158,7 +162,7 @@ def sell_food(
         sales_by_firm, purchases, food_firms, people, 1.0 + config.vat_rate
     )
     sold = sum(sales_by_firm.values())
-    record_addressed_demand(food_firms, demand, sales_by_firm, config, market_price, desired, preferences)
+    record_addressed_demand(food_firms, demand, sales_by_firm, config, market_price, desired, preferences, affinity)
 
     # le ménage paie le prix toutes taxes comprises ; l'entreprise encaisse le prix
     # hors taxe et la TVA (``total_revenue`` × taux) revient à l'État
@@ -453,7 +457,9 @@ def sell_consumer_goods(
     people: list[Person],
     market_price: float,
     config: SimulationConfig | None = None,
+    affinity: Mapping[str, Mapping[str, float]] | None = None,
 ) -> tuple[float, float, float]:
+    """``affinity`` : voir ``sell_food``."""
     config = config or SimulationConfig()
     producers = [company for company in companies if company.active and company.sector == "goods"]
     supply = sum(company.goods_inventory for company in producers)
@@ -473,7 +479,7 @@ def sell_consumer_goods(
     if not producers or supply <= 0.0 or not people:
         for person in people:
             person.last_goods_bought = 0.0
-        record_addressed_demand(producers, demand, {}, config, market_price, desired, preferences)
+        record_addressed_demand(producers, demand, {}, config, market_price, desired, preferences, affinity)
         return 0.0, 0.0, demand
     sales_by_firm = _allocate_sales(
         producers,
@@ -484,6 +490,7 @@ def sell_consumer_goods(
         desired,
         preferences,
         config.quality_preference_strength,
+        affinity,
     )
     sold = sum(sales_by_firm.values())
     ration = sold / demand if demand else 0.0
@@ -492,7 +499,7 @@ def sell_consumer_goods(
         sales_by_firm, purchases, producers, people, 1.0 + config.vat_rate
     )
     sold = sum(sales_by_firm.values())
-    record_addressed_demand(producers, demand, sales_by_firm, config, market_price, desired, preferences)
+    record_addressed_demand(producers, demand, sales_by_firm, config, market_price, desired, preferences, affinity)
 
     for person in people:
         quantity = purchases[person.id]
@@ -555,9 +562,12 @@ def _sales_weights(
     household_demands: Mapping[str, float] | None,
     household_quality_preferences: Mapping[str, float] | None,
     quality_strength: float,
+    affinity: Mapping[str, Mapping[str, float]] | None = None,
 ) -> dict[str, float]:
     """Poids de chaque entreprise dans les achats : (qualité / prix relatif) ^ élasticité,
-    agrégés ménage par ménage selon sa préférence pour la qualité."""
+    agrégés ménage par ménage selon sa préférence pour la qualité. ``affinity`` (lot G) : facteur
+    propre à chaque couple ménage-entreprise (goût, magasins), appliqué au poids ; sans lui,
+    calcul inchangé."""
     if household_demands and household_quality_preferences:
         weights = {company.id: 0.0 for company in companies}
         # termes qui ne dépendent pas du ménage, calculés une fois par entreprise (mêmes
@@ -581,6 +591,13 @@ def _sales_weights(
                 (reference * quality ** exponent / price) ** elasticity
                 for _, quality, price in terms
             ]
+            if affinity is not None:
+                factors = affinity.get(household_id)
+                if factors:
+                    household_weights = [
+                        weight * factors.get(company_id, 1.0)
+                        for (company_id, _, _), weight in zip(terms, household_weights)
+                    ]
             household_total_weight = sum(household_weights)
             if household_total_weight <= 0.0:
                 continue
@@ -607,6 +624,7 @@ def record_addressed_demand(
     market_price: float,
     household_demands: Mapping[str, float] | None = None,
     household_quality_preferences: Mapping[str, float] | None = None,
+    affinity: Mapping[str, Mapping[str, float]] | None = None,
 ) -> None:
     """Demande adressée à chaque entreprise (avant rationnement par les stocks) et part
     qu'elle n'a pas servie (``Company.unmet_units``) : signal de prix de l'entreprise."""
@@ -614,7 +632,7 @@ def record_addressed_demand(
         return
     weights = _sales_weights(
         companies, config.consumer_price_elasticity, market_price, household_demands,
-        household_quality_preferences, config.quality_preference_strength,
+        household_quality_preferences, config.quality_preference_strength, affinity,
     )
     total = sum(weights.values())
     for company in companies:
@@ -631,6 +649,7 @@ def _allocate_sales(
     household_demands: Mapping[str, float] | None = None,
     household_quality_preferences: Mapping[str, float] | None = None,
     quality_strength: float = 1.0,
+    affinity: Mapping[str, Mapping[str, float]] | None = None,
 ) -> dict[str, float]:
     remaining = min(
         max(0.0, demand),
@@ -645,7 +664,7 @@ def _allocate_sales(
     while remaining > 1e-9 and active:
         weights = _sales_weights(
             active, price_elasticity, reference_price, household_demands,
-            household_quality_preferences, quality_strength,
+            household_quality_preferences, quality_strength, affinity,
         )
         total_weight = sum(weights.values())
         saturated = [

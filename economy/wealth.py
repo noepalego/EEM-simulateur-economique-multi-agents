@@ -22,7 +22,7 @@ def _net_worth(person: Person, stock_value: float, config: SimulationConfig) -> 
     housing_value = (
         int(person.owns_home) + person.investment_homes
     ) * config.housing_price
-    return (
+    worth = (
         person.cash
         + stock_value
         + person.bond_holdings
@@ -30,6 +30,10 @@ def _net_worth(person: Person, stock_value: float, config: SimulationConfig) -> 
         - max(0.0, person.mortgage_debt)
         - max(0.0, person.consumer_debt)
     )
+    if person.fund_value:
+        # lot G8 : parts de fonds à leur valeur liquidative (nulle sans le réglage)
+        worth += person.fund_value
+    return worth
 
 
 def company_net_worth(

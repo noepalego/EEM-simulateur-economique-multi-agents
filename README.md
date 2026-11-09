@@ -22,7 +22,7 @@ des décisions des agents.**
   l'État prélève des droits de succession.
 - **Interface Streamlit** : on peut tout observer et intervenir en cours de route, par exemple
   donner de l'argent à un ménage, imposer un gouvernement ou forcer un taux d'impôt.
-- **Moteur en Python pur** (bibliothèque standard), environ 15 000 lignes, et plus de 400 tests.
+- **Moteur en Python pur** (bibliothèque standard), environ 16 000 lignes, et plus de 500 tests.
 
 > Les crises, faillites, pénuries et récessions font partie des résultats possibles : le modèle
 > n'est pas recalibré pour les éviter.
@@ -264,6 +264,27 @@ c'est ce qui permet une reproduction exacte.
   laisser à 0 hors étude.
 - **Fin de vie** : une entreprise insolvable fait faillite. Une entreprise restée sans salarié et
   sans perspective est liquidée à l'amiable, et sa trésorerie revient aux actionnaires.
+
+### Groupes, magasins, fonds et expérience (lot G, désactivés par défaut)
+
+Huit mécanismes d'entreprise (`economy/enterprise.py`), chacun derrière sa case de la rubrique
+« Groupes, magasins, fonds & expérience » de la barre latérale. Tant qu'aucun n'est coché, la
+simulation est identique au bit près. Cochés, ils agissent dès la période de chauffe.
+
+| Réglage | Ce qui se passe |
+|---|---|
+| `experience_learning` | **Expérience.** Compétence = n / (n + 3). Un fondateur qui a déjà créé des entreprises démarre la suivante avec une productivité et une innovation relevées d'au plus 10 %, et la banque lui reconnaît une expérience de direction. À l'embauche, le salaire se négocie dans une bande de ± 5 % autour de l'offre : le salarié qui a souvent changé d'employeur obtient plus, l'employeur qui a beaucoup recruté concède moins. Un acquéreur expérimenté attend moins entre deux opérations et garde les meilleures pratiques. L'expérience disparaît à la succession. |
+| `property_upkeep` | **Gros entretien des logements**, en plus de l'entretien courant (0,12 % du prix par mois, déjà payé par tous les propriétaires). L'état de chaque parc s'use de 0,2 % par mois ; le propriétaire paie les travaux aux services et aux matières s'il en a les moyens ; un logement dégradé se loue moins cher (loyer × état, au moins 30 %). |
+| `consumer_preferences` | **Préférences et données.** Chaque ménage a un goût, chaque producteur d'alimentation ou de biens un style ; l'affinité relève jusqu'à 50 % le poids du producteur dans les achats du ménage. Les entreprises technologiques vendent les données des ménages équipés : un producteur bénéficiaire y consacre 1 % de son chiffre d'affaires et rapproche son offre du goût de ses clients (connaissance oubliée de 5 % par mois). |
+| `diversification` | **Filiales.** Une entreprise n'a qu'un secteur ; pour vendre plusieurs produits, une entreprise rentable crée une filiale dans le secteur le plus attractif autre que le sien (mêmes signaux que les ménages fondateurs), lui apporte la moitié de sa trésorerie libre et en détient tout le capital. Au plus une création par mois dans l'économie ; les dividendes remontent à la société mère. |
+| `conglomerate_takeovers` | **Rachats entre secteurs.** Offre publique aux règles existantes (cours + 30 %, seuil de contrôle), sur une entreprise plus petite d'un autre secteur, qui devient une filiale sans fusion. L'acquéreur n'offre que s'il apporte quelque chose : il est plus productif que la cible (elle rattrape un quart de l'écart une fois rachetée) ou ses magasins lui apportent des ventes. |
+| `retail_stores` | **Magasins.** Un producteur d'alimentation ou de biens ouvre un magasin (40 000 € de départ, 600 € de charges par mois, indexés sur les salaires) quand les ventes ajoutées rapportent plus que le coût de ses fonds propres. n magasins multiplient son poids dans les achats par 1 + 0,5 × n / (n + 3). Les magasins déplacent des ventes, ils ne créent pas de demande. |
+| `group_distribution` | **Distribution de groupe.** Les magasins d'un groupe vendent les produits de toutes ses entreprises, et l'acquéreur compte ce gain dans la valeur d'une cible : une grande entreprise bien distribuée a intérêt à racheter un petit producteur. Demande des magasins et des groupes. |
+| `private_startups` | **Non cotées et fonds des banques.** Une entreprise fondée par un ménage n'est plus cotée à sa création. Chaque banque gère un fonds d'investissement où les ménages placent environ 5 % de leur épargne (selon leur goût du risque), contre 1,8 % de frais par an ; le fonds finance les besoins des non cotées, relève leur productivité de 5 % à son premier apport, et leur valeur est estimée sans Bourse. L'introduction en Bourse n'arrive que si le besoin restant dépasse la moitié des fonds propres, ou quand le fonds sort après cinq ans ; il revend alors ses titres à la séance et reverse le produit aux porteurs de parts. |
+
+Mesure (5 graines × 400 mois, chaque mécanisme seul puis les huit ensemble, contre le témoin) :
+aucun effondrement, comptes exacts, mais des effets du même ordre que l'écart entre graines ;
+tableaux et réserves dans `results/lot_g_entreprises/RESUME.md`.
 
 ### Banques et banque centrale
 - Les banques prêtent dans la limite de leurs **fonds propres** (8 % des prêts et titres). Les
@@ -538,7 +559,7 @@ surtout sur le **niveau** de production et sa **répartition**, pas sur le rythm
 |---|---|
 | **Vue d'ensemble** | PIB, chômage, inflation, salaires, prix, inégalités, logement, monnaie, événements du mois |
 | **État** | gouvernement et cabinet, budget, fonction publique, salaire minimum, industrie, journal des décisions |
-| **Entreprises & bourse** | tableau des entreprises, fiche détaillée par entreprise (historique des mois observés : bilan, flux du mois, dividendes versés dans un graphique à part, activité, cours), cours de Bourse, secteurs |
+| **Entreprises & bourse** | tableau des entreprises, fiche détaillée par entreprise (historique des mois observés : bilan, flux du mois, dividendes versés dans un graphique à part, activité, cours), cours de Bourse, secteurs ; avec un mécanisme du lot G activé, panneau « Groupes, magasins et fonds » (filiales et sociétés mères, magasins, non cotées, fonds des banques) |
 | **Ménages** | distribution des revenus et des patrimoines, fiche détaillée d'un ménage |
 
 La **répartition des fortunes** (onglet Ménages) recalcule ses classes chaque mois à partir des
@@ -630,6 +651,8 @@ economy/                   Moteur, sans dépendance à Streamlit
 │   consolidation.py, wealth.py, innovation.py
 ├── institutions.py        Doctrines, objectifs (principal, secondaire, cibles, leviers), élection (règles pures)
 ├── ownership.py           Régime de propriété selon l'orientation, parts salariées (lot E)
+├── enterprise.py          Expérience, gros entretien, préférences et données, filiales, rachats entre
+│                          secteurs, magasins, non cotées et fonds des banques (lot G)
 ├── state_government.py    Gouvernement, cabinet, journal
 ├── state_budget.py        Loi de finances, exécution, dette
 ├── state_services.py      Fonction publique, éducation
@@ -662,12 +685,14 @@ python experiences/gauche_droite_campagne.py 400 1001 1002 1003 1004 1005 --outp
 python experiences/gauche_droite_analyse.py lot_e_propriete/active
 ```
 
-Les nouveaux attributs ajoutés par les lots C à E sont neutres à leur valeur par défaut pour
+Les nouveaux attributs ajoutés par les lots C à G sont neutres à leur valeur par défaut pour
 l'empreinte d'identité ; la variante d'empreinte du parcours UI les compte tous, d'où
-`--exclusions results/lot_c_objectifs/exclusions_ui.json` pour comparer à une référence plus
-ancienne.
+`--exclusions results/lot_g_entreprises/exclusions_ui.json` (lots C à G) pour comparer à une
+référence plus ancienne. `python results/lot_g_entreprises/parcours_interface.py` parcourt
+l'interface avec les huit mécanismes du lot G activés ;
+`python results/lot_g_entreprises/comparaison.py 400 1001 1002 1003 1004 1005` refait la mesure.
 
-- La suite contient plus de 400 tests : mécanismes, cohérence comptable, stabilité, État,
+- La suite contient plus de 500 tests : mécanismes, cohérence comptable, stabilité, État,
   interventions et régression.
 - `identity_check.py` recalcule cinq simulations et compare leur empreinte à
   `identity_reference.json`. Le moindre changement dans l'ordre d'un calcul flottant ou d'un
@@ -698,6 +723,16 @@ ancienne.
 - **Économies d'échelle sans contrepoids.** Les frais de structure (`fixed_cost_share`) créent
   une boucle « plus gros, moins cher, plus gros » que rien ne freine rapidement : quasi-monopoles
   et récessions dès 10 %. La remise sur le volume ne s'applique pas aux matières premières.
+- **Lot G : mécanismes simplifiés et non validés à long terme.** Une entreprise garde un seul
+  secteur : la diversification passe par des filiales, pas par plusieurs produits dans la même
+  entreprise. Une société mère ne recapitalise pas sa filiale. Les magasins et les préférences
+  déplacent les ventes entre producteurs sans créer de demande, et les magasins n'emploient
+  personne. Le gros entretien retire du pouvoir d'achat aux ménages propriétaires : sur 5 graines,
+  chômage moyen de 6,1 % contre 4,9 % et récessions plus profondes dans trois graines. Les
+  rachats entre secteurs transmettent de la productivité sans autre coût que la prime payée, et
+  regroupent en 33 ans un tiers des entreprises dans des groupes. Les distributions d'un fonds
+  sont imposées comme des dividendes, remboursement de capital compris. Mesures sur 400 mois et
+  5 graines seulement (`results/lot_g_entreprises/RESUME.md`), sans évaluation à 800 mois.
 - **Démographie simplifiée.** Il n'y a ni retraites, ni enfants à charge, ni partage d'héritage.
   Un ménage est une lignée, et l'héritier garde l'emploi.
 - **Politique sur un seul axe.** Il n'y a ni partis, ni campagnes, ni coalitions. Les services

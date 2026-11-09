@@ -185,6 +185,10 @@ class DemographyMixin:
         self.institutions.lean[person.id] = political_lean(rng)
         person.career_months = 0
         person.leadership_experience = 0
+        # lot G1 : l'expérience de fondateur et de négociation disparaît avec le défunt (le contrat
+        # de travail en cours, donc le salaire négocié, est gardé)
+        person.ventures = 0
+        person.negotiations = 0
         person.employer_tenure = 0
         person.rank = -1
         person.lifetime_earnings = 0.0

@@ -26,16 +26,16 @@ from economy.wealth import _net_worth, company_balance_sheet, share_prices
 
 
 def expected_stock_returns(
-    companies: list[Company], config: SimulationConfig
+    companies: list[Company], config: SimulationConfig, unlisted: frozenset = frozenset()
 ) -> tuple[dict[str, float], dict[str, float], float]:
     """Rendement annuel anticipé de chaque titre coté, capitalisations et rendement du marché.
 
     Rendement = bénéfices annuels / capitalisation + croissance anticipée + tendance
     récente (variation du cours, bornée à ±15 %, annualisée) ; le marché est la
     moyenne pondérée par les capitalisations. Même formule pour les ménages et les
-    entreprises.
+    entreprises. ``unlisted`` (lot G8) : entreprises non cotées, hors du marché.
     """
-    active = [c for c in companies if c.active and c.shares_outstanding > 0.0]
+    active = [c for c in companies if c.active and c.shares_outstanding > 0.0 and c.id not in unlisted]
     expected: dict[str, float] = {}
     caps: dict[str, float] = {}
     for c in active:
@@ -68,6 +68,8 @@ def update_prices_and_trade(
     no_issue: frozenset = frozenset(),
     founders: dict[str, str] | None = None,
     primary_first: frozenset = frozenset(),
+    unlisted: frozenset = frozenset(),
+    strategic: dict[str, frozenset] | None = None,
 ) -> float:
     """Rééquilibre les portefeuilles, forme les cours et exécute les échanges.
 
@@ -83,13 +85,16 @@ def update_prices_and_trade(
     ``founders`` (entreprise -> fondateur) : décision de vente propre au fondateur, en plus du
     rééquilibrage commun (voir ``_founder_sale``). ``primary_first`` : jeunes entreprises en
     introduction en Bourse, dont les titres offerts servent la demande avant les vendeurs.
+    ``unlisted`` (lot G8) : entreprises non cotées, sans carnet d'ordres ni cours de marché.
+    ``strategic`` (lot G, groupes) : pour chaque société mère, ses filiales, dont elle ne vend
+    pas les titres en rééquilibrant son portefeuille.
     Retourne le volume d'échanges entre investisseurs (marché secondaire).
     """
     config = config or SimulationConfig()
     annual_rate = 12.0 * (config.loan_interest_rate if policy_rate is None else max(0.0, policy_rate))
     for company in companies:
         company.stock_trade_volume = 0.0
-    active = [c for c in companies if c.active and c.shares_outstanding > 0.0]
+    active = [c for c in companies if c.active and c.shares_outstanding > 0.0 and c.id not in unlisted]
     opening = {c.id: max(c.stock_price, 1.0) for c in active}
     prices = share_prices(companies)
     fundamentals = {
@@ -98,7 +103,7 @@ def update_prices_and_trade(
         for c in active
     }
     # rendement anticipé de chaque titre : bénéfices / cours + croissance + tendance
-    expected, caps, market_return = expected_stock_returns(companies, config)
+    expected, caps, market_return = expected_stock_returns(companies, config, unlisted)
     deposit_annual = 12.0 * max(0.0, deposit_rate)
     stock_share = max(
         0.0,
@@ -190,6 +195,10 @@ def update_prices_and_trade(
                 (cid, q) for cid, q in investor.shares.items()
                 if cid in opening and cid != investor.id and q > 0.0
             ]
+            if strategic:
+                kept = strategic.get(investor.id)
+                if kept:
+                    held = [(cid, q) for cid, q in held if cid not in kept]
             value = sum(q * opening[cid] for cid, q in held)
             if value > 0.0:
                 fraction = min(1.0, -order / value)

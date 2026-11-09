@@ -140,3 +140,45 @@ Réglage désactivé par défaut et neutre pour l'empreinte d'identité ; `BankO
 | Réglage | Défaut | Justification |
 |---|---|---|
 | `bank_own_funds` | `cash` | « equity » : en début de mois, la trésorerie propre est la part liquide des fonds propres (fonds propres − actifs réels − prêts interbancaires accordés + emprunts interbancaires, jamais négative), et l'excédent distribué est le capital au-delà de l'exigence et de son coussin (`capital_requirement` + `bank_recap_buffer`). Correction comptable : mesuré sur 800 mois, le compteur par défaut atteint 5 à 10 fois les fonds propres nets et 30 à 50 % des dividendes bancaires sont versés au-delà du bénéfice. Ne vise aucun résultat. |
+
+## Réglages du lot G : entreprises (novembre 2026)
+
+Huit mécanismes d'entreprise (`economy/enterprise.py`), chacun derrière son réglage, **désactivé par
+défaut** et neutre pour l'empreinte d'identité : sans réglage activé, aucun calcul, aucun tirage et
+aucun attribut de simulation n'est ajouté. `EnterpriseRegistryTests` (`tests/test_entreprises.py`)
+vérifie que la liste ci-dessous correspond aux réglages ajoutés. Aucun ne vise un résultat (nombre
+d'entreprises, concentration, patrimoine) : ce sont des règles de décision d'agents, des coûts et des
+vitesses, non calibrés sur des données. Seul ajout de tirages : un générateur propre aux goûts des
+ménages et aux styles des producteurs (G3), créé à l'activation. Constantes du module, non réglables :
+ancienneté de 24 mois avant de bâtir un groupe, cible d'au plus la moitié de la capitalisation de
+l'acquéreur, lien de filiale gardé jusqu'aux deux tiers du seuil de contrôle, loyer d'un logement
+dégradé d'au moins 30 % du loyer du marché, un quart de l'écart de productivité transmis par une
+société mère à une cible rachetée (ce que l'acquéreur apporte, et la raison de son offre).
+
+| Réglage | Défaut | Justification |
+|---|---|---|
+| `experience_learning` | faux (G1) | Apprentissage par la pratique : un fondateur qui a déjà créé des entreprises fonde mieux, un salarié qui a souvent changé d'employeur et un employeur qui a beaucoup recruté négocient mieux le salaire d'embauche, un acquéreur expérimenté intègre plus vite et garde les meilleures pratiques. L'expérience disparaît à la succession du ménage. |
+| `experience_gain` | 0,10 (G1) | Effet maximal de l'expérience : productivité et innovation de départ d'une entreprise relevées d'au plus 10 %, salaire d'embauche négocié dans une bande de ± 5 % autour de l'offre (jamais sous le salaire minimum). Ordre de grandeur d'une prime d'ancienneté, non calibré. |
+| `experience_half_count` | 3 (G1) | Nombre d'expériences qui donne la moitié de l'effet maximal (compétence = n / (n + 3)) : rendements décroissants, aucune croissance sans fin. Un employeur compte ses embauches par dizaines, car il recrute bien plus souvent qu'un salarié ne change de poste. |
+| `property_upkeep` | faux (G2) | Gros entretien des logements, en plus de l'entretien courant déjà payé (`housing_maintenance_rate`) : l'état du parc de chaque propriétaire s'use, il paie les travaux qui le rétablissent s'il en a les moyens, et un parc dégradé se loue moins cher (loyer × état, au moins 30 %). Dépense réelle versée aux services et aux matières. |
+| `property_wear_rate` | 0,002 (G2) | Usure mensuelle de l'état d'un logement (environ 2,4 % par an) : sans travaux, un logement perd la moitié de son état en une trentaine d'années. Ordre de grandeur d'un amortissement immobilier. |
+| `property_repair_cost_share` | 0,5 (G2) | Coût des travaux qui remettent à neuf un logement entièrement dégradé, en part du coût de construction : au rythme d'usure retenu, environ 70 € de départ par logement et par mois, la moitié de l'entretien courant. |
+| `consumer_preferences` | faux (G3) | Chaque ménage a un goût et chaque producteur d'alimentation ou de biens un style ; l'affinité déplace les achats entre producteurs sans changer la demande totale. Les entreprises technologiques vendent les données des ménages équipés, qui rapprochent l'offre de l'acheteur du goût de ses clients. |
+| `preference_strength` | 0,5 (G3) | Hausse maximale du poids d'un producteur dans les achats d'un ménage dont il rejoint exactement le goût (poids × 1,5), du même ordre que la préférence pour la qualité déjà présente. |
+| `data_budget_share` | 0,01 (G3) | Part du chiffre d'affaires du mois précédent qu'un producteur bénéficiaire consacre à l'achat de données, dans la limite de sa trésorerie libre : ordre de grandeur d'un budget d'études de marché, payé aux entreprises technologiques qui ont des salariés. |
+| `data_decay_rate` | 0,05 (G3) | Oubli mensuel de la connaissance des clients (les goûts connus se périment en un an et demi environ) : la connaissance doit être rachetée, ce qui fait des données une recette durable de la technologie. |
+| `diversification` | faux (G4) | Une entreprise indépendante, rentable et installée crée une filiale dans le secteur le plus attractif autre que le sien, d'après les signaux d'entrée que voient déjà les ménages fondateurs ; au plus une par mois dans l'économie. Le groupe vend alors plusieurs produits par ses filiales, qui peuvent échouer. |
+| `conglomerate_takeovers` | faux (G5) | Rachats entre secteurs aux règles des offres publiques existantes (prime, seuil de contrôle, acceptation par les actionnaires) : la cible, plus petite, devient une filiale sans fusion. L'État n'apporte pas ses titres, les entreprises publiques ne sont ni acquéreuses ni cibles. |
+| `retail_stores` | faux (G6) | Magasins des producteurs d'alimentation et de biens : un réseau relève le poids de l'entreprise dans les achats des ménages. Les magasins déplacent des ventes entre producteurs, ils ne créent pas de demande. Ouverture décidée sur le rendement attendu, comparé au coût des fonds propres. |
+| `store_opening_cost` | 40 000 (G6) | Coût d'ouverture d'un magasin en euros de départ, indexé sur le niveau des salaires, payé à l'immobilier, aux services et aux matières et capitalisé (amorti comme la capacité de production) : de l'ordre de seize unités de capacité. |
+| `store_running_cost` | 600 (G6) | Charges mensuelles d'un magasin en euros de départ (loyer et services), indexées sur les salaires ; la part que la trésorerie ne paie pas ferme. Proche du loyer d'un logement au départ. |
+| `store_reach` | 0,5 (G6) | Hausse maximale du poids d'un producteur dans les achats des ménages par son réseau (poids × 1,5 pour un réseau très étendu) : la portée d'un réseau est bornée, pour limiter la boucle « plus gros, plus de magasins, plus gros ». |
+| `store_half_count` | 3 (G6) | Nombre de magasins qui apporte la moitié de la portée maximale : rendements décroissants, chaque magasin de plus rapporte moins que le précédent et finit par ne plus couvrir ses charges. |
+| `group_distribution` | faux (G7) | Les magasins d'un groupe vendent les produits de toutes ses entreprises, et un acquéreur compte les ventes ainsi gagnées dans la valeur d'une cible : une grande entreprise bien distribuée a intérêt à racheter un petit producteur. Sans effet sans magasins ni groupes. |
+| `private_startups` | faux (G8) | Une entreprise fondée par un ménage n'est plus cotée dès sa création (sauf une banque). Chaque banque gère un fonds où les ménages placent une part de leur épargne ; le fonds finance les non cotées et les accompagne. L'introduction en Bourse n'arrive que pour un gros besoin de trésorerie ou à la sortie du fonds. |
+| `fund_savings_share` | 0,05 (G8) | Part de son épargne investissable qu'un ménage de goût du risque moyen vise dans les fonds (2,5 à 7,5 % selon ce goût), comblée à la vitesse de rééquilibrage des portefeuilles ; une souscription est bornée par ce que le fonds peut employer. |
+| `fund_fee_rate` | 0,0015 (G8) | Frais de gestion mensuels prélevés sur l'actif du fonds (environ 1,8 % par an), recette de la banque gérante comme un intérêt encaissé : ordre de grandeur des frais d'un fonds de capital-investissement. |
+| `fund_ticket_share` | 0,25 (G8) | Part maximale de l'actif d'un fonds apportée à une entreprise en une opération : le fonds reste diversifié et ne peut pas tout perdre sur une seule entreprise. |
+| `fund_support_gain` | 0,05 (G8) | Hausse de la productivité d'une entreprise au premier apport d'un fonds (appui de gestion, une seule fois, productivité bornée comme partout à 1,8) : petit effet de niveau, sans croissance composée. |
+| `fund_exit_months` | 60 (G8) | Durée après laquelle le fonds entré au capital demande l'introduction en Bourse pour sortir (cinq ans, horizon usuel du capital-investissement) ; il vend ensuite ses titres à la séance, par dixièmes. |
+| `ipo_need_share` | 0,5 (G8) | Besoin de trésorerie restant après l'apport du fonds, en part des fonds propres, au-delà duquel une entreprise non cotée demande son introduction en Bourse : seul un besoin que ni sa trésorerie ni le fonds ne couvrent l'y pousse. |

@@ -127,12 +127,19 @@ def plan_corporate_treasury(
     bond_rate: float,
     tax_rate: float,
     reserves: dict[str, float],
+    unlisted: frozenset = frozenset(),
+    strategic: dict[str, frozenset] | None = None,
 ) -> dict[str, TreasuryPlan]:
-    """Plans du mois des entreprises non bancaires actives."""
-    expected, caps, market_return = expected_stock_returns(companies, config)
+    """Plans du mois des entreprises non bancaires actives. ``unlisted`` (lot G8) : titres non
+    cotés, hors du portefeuille de placement ; ``strategic`` (lot G, groupes) : filiales de chaque
+    société mère, participations durables et non placements."""
+    expected, caps, market_return = expected_stock_returns(companies, config, unlisted)
     total_cap = sum(caps.values())
     weighted = sum(caps[cid] * expected[cid] for cid in caps)
-    prices = {c.id: max(c.stock_price, 1.0) for c in companies if c.active and c.shares_outstanding > 0.0}
+    prices = {
+        c.id: max(c.stock_price, 1.0) for c in companies
+        if c.active and c.shares_outstanding > 0.0 and c.id not in unlisted
+    }
     plans: dict[str, TreasuryPlan] = {}
     for company in companies:
         if not company.active or company.sector == "bank":
@@ -144,9 +151,16 @@ def plan_corporate_treasury(
             if total_cap - own_cap > 0.0
             else market_return
         )
-        equity_value = sum(
-            q * prices[cid] for cid, q in company.shares.items() if cid in prices and cid != company.id
-        )
+        kept = strategic.get(company.id) if strategic else None
+        if kept:
+            equity_value = sum(
+                q * prices[cid] for cid, q in company.shares.items()
+                if cid in prices and cid != company.id and cid not in kept
+            )
+        else:
+            equity_value = sum(
+                q * prices[cid] for cid, q in company.shares.items() if cid in prices and cid != company.id
+            )
         returns = treasury_returns(
             company, shares_return, config, policy_rate, deposit_rate, bond_rate, tax_rate
         )

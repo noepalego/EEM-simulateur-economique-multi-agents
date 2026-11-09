@@ -99,6 +99,7 @@ from economy.records import MonthFlows, build_record
 from economy.sectors import SECTORS, SKILL_SECTORS
 from economy.state_budget import StateBudgetMixin
 from economy.ownership import OwnershipMixin
+from economy.enterprise import EnterpriseMixin
 from economy.state_government import StateGovernmentMixin
 from economy.state_industry import StateIndustryMixin
 from economy.state_labor import StateLaborMixin
@@ -106,7 +107,7 @@ from economy.state_services import StateServicesMixin
 from economy.demography import DEMOGRAPHY_SEED_OFFSET, DemographyMixin
 
 
-class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin, StateBudgetMixin, StateServicesMixin, StateLaborMixin, StateIndustryMixin, BankingMixin, CentralBankMixin, PricingMixin, HousingMixin, WageMixin, DemographyMixin, ViewsMixin):
+class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin, EnterpriseMixin, StateBudgetMixin, StateServicesMixin, StateLaborMixin, StateIndustryMixin, BankingMixin, CentralBankMixin, PricingMixin, HousingMixin, WageMixin, DemographyMixin, ViewsMixin):
     def __init__(self, config: SimulationConfig | None = None) -> None:
         # ``config`` : paramètres choisis par l'utilisateur, jamais modifiés par le moteur.
         # ``live`` : copie de travail du mois, où vivent les prix de marché dérivés
@@ -652,7 +653,7 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
         )
         # entreprises sous contrôle public : pas de rémunération en actions nouvelles
         elect_executives(self.companies, self.people, live, self.random,
-                         no_dilution=self._public_controlled_ids())
+                         no_dilution=self._undiluted_ids())
         assign_ranks(self.companies, self.people, live)
         # taux votés, aucun ajustement fiscal automatique (economy/state_budget.py)
         self._collect_institutional_taxes(f)
@@ -769,7 +770,8 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
             regulated=self._regulated("food"),
         )
         f.sold_food, f.food_revenue, f.unmet_food_demand = sell_food(
-            self.companies, self.people, self.food_price, live
+            self.companies, self.people, self.food_price, live,
+            affinity=self._sales_affinity("food"),  # lot G : ``None`` sans réglage
         )
         goods_demand = self._goods_demand()
         produce_consumer_goods(self.companies, self.resources, live, goods_demand, f.worker_skills)
@@ -778,7 +780,8 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
             regulated=self._regulated("goods"),
         )
         f.sold_goods, f.goods_revenue, f.unmet_goods_demand = sell_consumer_goods(
-            self.companies, self.people, self.goods_price, live
+            self.companies, self.people, self.goods_price, live,
+            affinity=self._sales_affinity("goods"),
         )
         f.vat_revenue = (f.food_revenue + f.goods_revenue) * live.vat_rate
         self.public.cash += f.vat_revenue
@@ -938,8 +941,12 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
         )
         f.rental_revenue = allocate_housing_and_collect_rent(
             self.companies, self.people, self.rent, live.household_rent_income_share,
+            conditions=self._rent_conditions(),  # lot G2 : ``None`` sans réglage
         )
         maintain_housing(self.companies, self.people, self.resources, live)
+        if live.property_upkeep:
+            # lot G2 : usure du parc et gros travaux payés par les propriétaires
+            self._property_upkeep()
         settle_operating_inputs(self.companies, self.resources, live)
         self._adjust_rent()
         previous_price_index = self.price_index
@@ -962,6 +969,9 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
         # profit de la banque centrale reversé, recette classée du budget
         self.institutions.book.add("profit_banque_centrale", central_bank_profit)
         self.public.revenue += central_bank_profit
+        if live.retail_stores or live.consumer_preferences or live.private_startups:
+            # lot G : magasins, données clients, fonds des banques (charges avant la clôture)
+            self._enterprise_operations()
         self._refresh_profits()
         adjust_profit_sharing_wages(
             self.companies,
@@ -996,7 +1006,7 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
             live.working_capital_months,
             max(0.0, min(0.05, live.bank_excess_payout_rate)),
             live.bank_reserve_ratio,
-            (self.public.account,),
+            self._outside_shareholders(),
             retained=self._undercapitalized_banks(),
             planned_payouts={cid: p.distribution for cid, p in plans.items()},
             bank_capital_ratio=(
@@ -1017,8 +1027,13 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
         self._authorize_bank_rights_issues()
         # cessions décidées, vendues à de vrais acheteurs pendant la séance
         sales = self._privatization_orders()
+        fund_sales = self._fund_sell_orders()
+        if fund_sales:
+            # lot G8 : sortie des fonds sur leurs titres cotés
+            sales = [*sales, *fund_sales]
         shares_before = dict(self.public.account.shares)
         cash_before_sales = self.public.cash
+        unlisted = self._unlisted_ids()
         f.secondary_volume = update_prices_and_trade(
             self.companies,
             self.people,
@@ -1029,14 +1044,19 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
             bond_rate=self.policy_rate + live.bond_spread,
             corporate_orders={cid: p.equity_order for cid, p in plans.items()},
             extra_sells=sales,
-            no_issue=self._public_controlled_ids(),
+            no_issue=self._undiluted_ids(),
             founders={c.id: c.founder_id for c in self.companies
                       if c.active and c.founder_id is not None},
             primary_first=frozenset(
                 c.id for c in self.companies
                 if c.active and c.founder_id is not None and c.age_months <= live.ipo_window_months
-            ),
+            ) | self._recent_listings(),
+            # lot G : entreprises non cotées et filiales (ensembles vides sans réglage)
+            unlisted=unlisted,
+            strategic=self._strategic_holdings(),
         )
+        if unlisted:
+            self._value_private_companies()
         self._settle_privatizations(shares_before, cash_before_sales)
         self._sync_public_debt()
 
@@ -1113,7 +1133,7 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
                 continue
             if not any(o.active and o.id != company.id and o.sector == company.sector for o in self.companies):
                 continue
-            dissolve_company(company, self.people, self.companies, (self.public.account,),
+            dissolve_company(company, self.people, self.companies, self._outside_shareholders(),
                              self.month, self.resolution_events)
             dissolved += 1
         return dissolved
@@ -1168,6 +1188,8 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
             self.policy_rate + live.bond_spread,
             min(1.0, max(0.0, live.corporate_tax_rate)),
             reserves,
+            unlisted=self._unlisted_ids(),
+            strategic=self._strategic_holdings(),
         )
 
     def _execute_treasury(self, plans: dict) -> None:
@@ -1209,12 +1231,17 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
         # offres publiques, les entreprises qu'il contrôle n'en lancent ni n'en reçoivent
         self._rescue_public_companies()
         cash_before = self.public.cash  # boni de liquidation reçus par l'État
+        # porteurs hors ménages et entreprises : l'État, et les fonds des banques (lot G8)
+        holders = self._outside_shareholders()
         f.acquisitions, f.takeover_bids = takeover_by_value(
-            self.companies, self.people, live, self.month, state, self.policy_rate,
+            self.companies, self.people, live, self.month, holders, self.policy_rate,
             locked=state, excluded=self._public_controlled_ids(),
         )
+        if live.conglomerate_takeovers:
+            # lot G5 : rachats entre secteurs (la cible devient une filiale)
+            self._conglomerate_takeovers()
         _, f.bankruptcies = resolve_distressed_companies(
-            self.companies, self.people, 0.0, live, self.random, state,
+            self.companies, self.people, 0.0, live, self.random, holders,
             month=self.month, events=self.resolution_events,
             wind_down_bank=self._wind_down_bank,
         )
@@ -1253,6 +1280,19 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
                             "food": f.unmet_food_demand, "goods": f.unmet_goods_demand},
         )
         self.companies.extend(new_companies)
+        if self._enterprise_enabled():
+            # lot G : expérience des fondateurs, non cotées, filiales, liens de groupe, relevé
+            self._after_startups(new_companies)
+            if live.diversification:
+                self._create_subsidiaries({
+                    "unserved": {"food": (f.unmet_food_demand, self.food_price),
+                                 "goods": (f.unmet_goods_demand, self.goods_price)},
+                    "input_cost_index": self.resources.input_cost_index,
+                    "market_prices": {"food": self.food_price, "goods": self.goods_price},
+                    "refused_orders": {**self.resources.refused_orders,
+                                       "food": f.unmet_food_demand, "goods": f.unmet_goods_demand},
+                })
+            self._enterprise_housekeeping()
         # ventes de capacité après la clôture (défaut de comptes connu, voir ``_roll_over_firms``)
         f.production_capacity_investment = self._invest_in_capacity(f)
         # vieillissement, décès et successions (idée 3, economy/demography.py)

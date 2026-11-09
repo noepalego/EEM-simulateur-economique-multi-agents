@@ -640,6 +640,64 @@ class SimulationConfig:
     ownership_transition_months: float = field(default=48.0, metadata={"identity": "neutre"})
     cooperative_share_max: float = field(default=0.30, metadata={"identity": "neutre"})
     cooperative_purchase_rate: float = field(default=0.01, metadata={"identity": "neutre"})
+    # Lot G (novembre 2026) : huit mécanismes d'entreprise (economy/enterprise.py), chacun derrière
+    # son réglage, désactivé par défaut et neutre pour l'empreinte d'identité.
+    # G1 expérience : un fondateur qui a déjà créé des entreprises fonde mieux (productivité et
+    # innovation de départ relevées d'au plus ``experience_gain``, expérience de direction reconnue
+    # par la banque) ; un salarié qui a souvent changé d'employeur négocie mieux son salaire, un
+    # employeur qui a beaucoup recruté le négocie mieux aussi (écart d'au plus ± ``experience_gain``
+    # / 2, fixé à l'embauche) ; un acquéreur expérimenté intègre plus vite et garde les meilleures
+    # pratiques. Compétence = n / (n + ``experience_half_count``).
+    experience_learning: bool = field(default=False, metadata={"identity": "neutre"})
+    experience_gain: float = field(default=0.10, metadata={"identity": "neutre"})
+    experience_half_count: float = field(default=3.0, metadata={"identity": "neutre"})
+    # G2 gros entretien : l'état de chaque parc de logements (1 = neuf) s'use de
+    # ``property_wear_rate`` par mois ; le propriétaire paie les travaux qui le rétablissent
+    # (déficit × logements × coût de construction × ``property_repair_cost_share``) s'il en a les
+    # moyens ; un logement dégradé se loue moins cher (loyer × état).
+    property_upkeep: bool = field(default=False, metadata={"identity": "neutre"})
+    property_wear_rate: float = field(default=0.002, metadata={"identity": "neutre"})
+    property_repair_cost_share: float = field(default=0.5, metadata={"identity": "neutre"})
+    # G3 préférences et données : chaque ménage a un goût, chaque producteur d'alimentation ou de
+    # biens un style ; l'affinité relève jusqu'à ``preference_strength`` le poids du producteur
+    # dans les achats du ménage. Les entreprises technologiques vendent les données des ménages
+    # équipés : un producteur y consacre ``data_budget_share`` de son chiffre d'affaires et adapte
+    # son offre (connaissance des clients, oubliée de ``data_decay_rate`` par mois).
+    consumer_preferences: bool = field(default=False, metadata={"identity": "neutre"})
+    preference_strength: float = field(default=0.5, metadata={"identity": "neutre"})
+    data_budget_share: float = field(default=0.01, metadata={"identity": "neutre"})
+    data_decay_rate: float = field(default=0.05, metadata={"identity": "neutre"})
+    # G4 diversification : une entreprise rentable crée une filiale dans un autre secteur attractif
+    # (elle vend alors plusieurs produits par ses filiales).
+    diversification: bool = field(default=False, metadata={"identity": "neutre"})
+    # G5 rachats entre secteurs : une entreprise prend le contrôle d'une entreprise plus petite
+    # d'un autre secteur, qui devient sa filiale (sans fusion).
+    conglomerate_takeovers: bool = field(default=False, metadata={"identity": "neutre"})
+    # G6 magasins : un producteur d'alimentation ou de biens ouvre des magasins (coût d'ouverture
+    # et charges mensuelles indexés sur les salaires) ; n magasins multiplient son poids dans les
+    # achats des ménages par 1 + ``store_reach`` × n / (n + ``store_half_count``).
+    retail_stores: bool = field(default=False, metadata={"identity": "neutre"})
+    store_opening_cost: float = field(default=40000.0, metadata={"identity": "neutre"})
+    store_running_cost: float = field(default=600.0, metadata={"identity": "neutre"})
+    store_reach: float = field(default=0.5, metadata={"identity": "neutre"})
+    store_half_count: float = field(default=3.0, metadata={"identity": "neutre"})
+    # G7 distribution de groupe : les produits d'une filiale se vendent dans les magasins de tout
+    # son groupe ; un acquéreur compte ce gain dans la valeur d'une cible.
+    group_distribution: bool = field(default=False, metadata={"identity": "neutre"})
+    # G8 jeunes entreprises non cotées et fonds des banques : une entreprise fondée par un ménage
+    # n'est pas cotée ; chaque banque gère un fonds où les ménages placent une part de leur épargne
+    # (``fund_savings_share``, modulée par le goût du risque) contre des frais mensuels
+    # (``fund_fee_rate``) ; le fonds finance les besoins des non cotées (au plus
+    # ``fund_ticket_share`` de son actif par opération) et les accompagne (productivité relevée de
+    # ``fund_support_gain`` au premier apport). Introduction en Bourse quand le besoin restant
+    # dépasse ``ipo_need_share`` des fonds propres, ou quand le fonds sort (``fund_exit_months``).
+    private_startups: bool = field(default=False, metadata={"identity": "neutre"})
+    fund_savings_share: float = field(default=0.05, metadata={"identity": "neutre"})
+    fund_fee_rate: float = field(default=0.0015, metadata={"identity": "neutre"})
+    fund_ticket_share: float = field(default=0.25, metadata={"identity": "neutre"})
+    fund_support_gain: float = field(default=0.05, metadata={"identity": "neutre"})
+    fund_exit_months: int = field(default=60, metadata={"identity": "neutre"})
+    ipo_need_share: float = field(default=0.5, metadata={"identity": "neutre"})
     # Lot C (novembre 2026) : objectifs ministériels enrichis. Vrai : chaque ministre a un objectif
     # principal et un secondaire (nouveaux indicateurs), des cibles relevées quand la situation de
     # départ les remplit déjà, et chaque objectif en retard actionne un levier de son ministère avec
@@ -959,6 +1017,14 @@ class Person:
     age_months: int = 0
     generation: int = 1
     inherited_wealth: float = 0.0
+    # lot G (economy/enterprise.py), neutres à leur valeur par défaut
+    ventures: int = field(default=0, metadata={"identity": "neutre"})            # G1 : entreprises fondées
+    negotiations: int = field(default=0, metadata={"identity": "neutre"})        # G1 : embauches négociées
+    negotiated_factor: float = field(default=1.0, metadata={"identity": "neutre"})  # G1 : résultat de la dernière négociation
+    home_condition: float = field(default=1.0, metadata={"identity": "neutre"})  # G2 : état de ses logements
+    taste: float = field(default=-1.0, metadata={"identity": "neutre"})          # G3 : goût (< 0 : à tirer)
+    fund_units: dict = field(default_factory=dict, metadata={"identity": "neutre"})  # G8 : parts de fonds
+    fund_value: float = field(default=0.0, metadata={"identity": "neutre"})      # G8 : valeur de ses parts
 
 
 @dataclass
@@ -1210,6 +1276,16 @@ class Company:
     exit_reason: str = ""
     exit_month: int = -1                        # mois de fermeture (faillite, rachat, résolution)
     idle_months: int = 0                        # mois consécutifs sans salarié (idée 2, novembre 2026)
+    # lot G (economy/enterprise.py), neutres à leur valeur par défaut
+    recruitments: int = field(default=0, metadata={"identity": "neutre"})        # G1 : embauches négociées
+    property_condition: float = field(default=1.0, metadata={"identity": "neutre"})  # G2 : état de son parc
+    product_style: float = field(default=-1.0, metadata={"identity": "neutre"})  # G3 : style du produit (< 0 : à tirer)
+    market_insight: float = field(default=0.0, metadata={"identity": "neutre"})  # G3 : connaissance des clients (0 à 1)
+    parent_id: str | None = field(default=None, metadata={"identity": "neutre"})  # G4, G5 : société mère
+    stores: float = field(default=0.0, metadata={"identity": "neutre"})          # G6 : magasins
+    listed: bool = field(default=True, metadata={"identity": "neutre"})          # G8 : cotée en Bourse
+    listed_month: int = field(default=-1, metadata={"identity": "neutre"})       # G8 : mois de l'introduction
+    fund_backed_month: int = field(default=-1, metadata={"identity": "neutre"})  # G8 : premier apport d'un fonds
 
 
 def productivity_multiplier(company: "Company", config: SimulationConfig) -> float:

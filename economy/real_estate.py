@@ -168,8 +168,12 @@ def allocate_housing_and_collect_rent(
     people: list[Person],
     monthly_rent: float,
     rent_income_share: float = 1.0,
+    conditions: dict[str, float] | None = None,
 ) -> float:
     """Attribue les logements locatifs et encaisse les loyers ; retourne les loyers reçus.
+
+    ``conditions`` (lot G2, gros entretien) : état du parc de chaque bailleur (1 = neuf) ; le
+    loyer dû est le loyer du marché × cet état. ``None`` : loyer du marché.
 
     Un ménage qui détient des logements-patrimoine les loue aussi au loyer du marché, après le
     parc des promoteurs ; le loyer est un revenu du ménage bailleur.
@@ -223,7 +227,7 @@ def allocate_housing_and_collect_rent(
             continue
         payment = min(
             max(0.0, tenant.cash),
-            monthly_rent,
+            monthly_rent if conditions is None else monthly_rent * conditions.get(owner_id, 1.0),
             max(0.0, tenant.income_this_turn * rent_income_share),
         )
         owner = landlord_by_id[owner_id]

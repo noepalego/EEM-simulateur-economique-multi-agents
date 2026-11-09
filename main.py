@@ -42,6 +42,7 @@ from economy.interventions import (
     set_policy_rate,
 )
 from economy.ownership import regime_intensities
+from economy.enterprise import fund_assets
 from economy.politics import orientation_label
 from economy.wealth import (
     company_balance_sheet,
@@ -335,6 +336,25 @@ def new_simulation() -> EconomySimulation:
             countercyclical_capital=bool(st.session_state.countercyclical_capital),
             bank_capital_backstop=bool(st.session_state.bank_capital_backstop),
             stock_earnings_smoothing_months=int(st.session_state.stock_earnings_smoothing_months),
+            # lot G : huit mécanismes d'entreprise (désactivés par défaut)
+            experience_learning=bool(st.session_state.experience_learning),
+            experience_gain=st.session_state.experience_gain_percent / 100,
+            property_upkeep=bool(st.session_state.property_upkeep),
+            property_wear_rate=_annual_points(st.session_state.property_wear_annual, 12),
+            consumer_preferences=bool(st.session_state.consumer_preferences),
+            preference_strength=st.session_state.preference_strength_percent / 100,
+            data_budget_share=_annual_points(st.session_state.data_budget_percent, 1),
+            diversification=bool(st.session_state.diversification),
+            conglomerate_takeovers=bool(st.session_state.conglomerate_takeovers),
+            retail_stores=bool(st.session_state.retail_stores),
+            store_opening_cost=float(st.session_state.store_opening_cost),
+            store_running_cost=float(st.session_state.store_running_cost),
+            store_reach=st.session_state.store_reach_percent / 100,
+            group_distribution=bool(st.session_state.group_distribution),
+            private_startups=bool(st.session_state.private_startups),
+            fund_savings_share=st.session_state.fund_savings_percent / 100,
+            fund_fee_rate=_annual_points(st.session_state.fund_fee_annual, 12),
+            fund_exit_months=int(st.session_state.fund_exit_years) * 12,
         )
     )
 
@@ -1878,6 +1898,112 @@ def render_sidebar() -> None:
             st.slider("Probabilité mensuelle de lancement", min_value=0, max_value=50, value=8, format="%d %%", key="startup_founder_percent")
             st.slider("Part des ménages à l'esprit entrepreneurial", min_value=0, max_value=100, value=25, format="%d %%", key="entrepreneurial_share_percent", help="Seuls ces ménages (et seulement s'ils ont le capital) peuvent créer une entreprise ; la décision dépend de la rentabilité du secteur.")
             st.slider("Mois de pertes avant risque de faillite", min_value=1, max_value=24, value=6, key="bankruptcy_months")
+        with st.expander("Groupes, magasins, fonds & expérience", expanded=False):
+            st.caption(
+                "Huit mécanismes d'entreprise, désactivés par défaut : sans eux, la simulation est "
+                "identique à la version précédente. Ils agissent dès la période de chauffe."
+            )
+            st.checkbox(
+                "Expérience : fondateurs, négociation des salaires, acquéreurs", value=False,
+                key="experience_learning",
+                help="Plus on a créé d'entreprises, mieux on en crée (productivité et innovation de "
+                     "départ, crédit) ; un salarié qui a souvent changé d'employeur et un employeur qui "
+                     "a beaucoup recruté négocient mieux le salaire d'embauche ; un acquéreur "
+                     "expérimenté intègre plus vite. Rendements décroissants.",
+            )
+            st.slider(
+                "Effet maximal de l'expérience", min_value=0, max_value=30, value=10, format="%d %%",
+                key="experience_gain_percent",
+                disabled=not st.session_state.get("experience_learning", False),
+                help="Productivité de départ d'une entreprise relevée d'au plus ce pourcentage ; salaire "
+                     "d'embauche négocié dans une bande de la moitié, autour de l'offre.",
+            )
+            st.checkbox(
+                "Gros entretien des logements", value=False, key="property_upkeep",
+                help="En plus de l'entretien courant : l'état de chaque logement s'use, le propriétaire "
+                     "paie les travaux s'il en a les moyens, et un logement dégradé se loue moins cher.",
+            )
+            st.slider(
+                "Usure annuelle des logements", min_value=0.0, max_value=10.0, value=2.4, step=0.6,
+                format="%.1f %%", key="property_wear_annual",
+                disabled=not st.session_state.get("property_upkeep", False),
+            )
+            st.checkbox(
+                "Préférences des ménages et vente de données", value=False, key="consumer_preferences",
+                help="Chaque ménage a un goût, chaque producteur d'alimentation ou de biens un style. Les "
+                     "entreprises technologiques vendent les données des ménages équipés : l'acheteur "
+                     "adapte son offre au goût de ses clients.",
+            )
+            st.slider(
+                "Poids du goût dans les achats", min_value=0, max_value=150, value=50, format="%d %%",
+                key="preference_strength_percent",
+                disabled=not st.session_state.get("consumer_preferences", False),
+            )
+            st.slider(
+                "Budget de données (part du chiffre d'affaires)", min_value=0.0, max_value=5.0, value=1.0,
+                step=0.25, format="%.2f %%", key="data_budget_percent",
+                disabled=not st.session_state.get("consumer_preferences", False),
+            )
+            st.checkbox(
+                "Diversification : création de filiales", value=False, key="diversification",
+                help="Une entreprise rentable crée une filiale dans un autre secteur attractif ; le groupe "
+                     "vend alors plusieurs produits. Au plus une filiale par mois dans l'économie.",
+            )
+            st.checkbox(
+                "Rachats d'entreprises d'un autre secteur", value=False, key="conglomerate_takeovers",
+                help="Une entreprise prend le contrôle d'une entreprise plus petite d'un autre secteur, "
+                     "qui devient sa filiale (sans fusion), aux règles des offres publiques existantes.",
+            )
+            st.checkbox(
+                "Magasins des producteurs", value=False, key="retail_stores",
+                help="Un producteur d'alimentation ou de biens ouvre des magasins quand ils rapportent plus "
+                     "que le coût de ses fonds propres ; son réseau relève sa part des achats des ménages.",
+            )
+            st.number_input(
+                "Coût d'ouverture d'un magasin (€ de départ)", min_value=5000.0, max_value=500000.0,
+                value=40000.0, step=5000.0, key="store_opening_cost",
+                disabled=not st.session_state.get("retail_stores", False),
+            )
+            st.number_input(
+                "Charges mensuelles d'un magasin (€ de départ)", min_value=0.0, max_value=10000.0,
+                value=600.0, step=100.0, key="store_running_cost",
+                disabled=not st.session_state.get("retail_stores", False),
+            )
+            st.slider(
+                "Portée maximale d'un réseau de magasins", min_value=0, max_value=200, value=50,
+                format="%d %%", key="store_reach_percent",
+                disabled=not st.session_state.get("retail_stores", False),
+                help="Hausse maximale du poids du producteur dans les achats des ménages.",
+            )
+            st.checkbox(
+                "Distribution de groupe (les magasins vendent les produits des filiales)", value=False,
+                key="group_distribution",
+                help="Les magasins d'un groupe vendent les produits de toutes ses entreprises ; un "
+                     "acquéreur compte ce gain dans la valeur d'une cible. Demande des magasins et des "
+                     "groupes (filiales ou rachats entre secteurs).",
+            )
+            st.checkbox(
+                "Jeunes entreprises non cotées et fonds des banques", value=False, key="private_startups",
+                help="Une entreprise fondée par un ménage n'est plus cotée dès sa création. Chaque banque "
+                     "gère un fonds où les ménages placent une part de leur épargne ; le fonds finance et "
+                     "accompagne les non cotées. Introduction en Bourse pour un gros besoin de trésorerie "
+                     "ou à la sortie du fonds.",
+            )
+            st.slider(
+                "Épargne visée dans les fonds", min_value=0, max_value=30, value=5, format="%d %%",
+                key="fund_savings_percent",
+                disabled=not st.session_state.get("private_startups", False),
+            )
+            st.slider(
+                "Frais de gestion annuels des fonds", min_value=0.0, max_value=6.0, value=1.8, step=0.6,
+                format="%.1f %%", key="fund_fee_annual",
+                disabled=not st.session_state.get("private_startups", False),
+            )
+            st.slider(
+                "Sortie du fonds après", min_value=1, max_value=15, value=5, format="%d ans",
+                key="fund_exit_years",
+                disabled=not st.session_state.get("private_startups", False),
+            )
         with st.expander("Investissement, salaires & compétences", expanded=False):
             st.slider("Bénéfices versés en dividendes", min_value=0, max_value=50, value=12, format="%d %%", key="dividend_payout_percent")
             st.slider("Actions mises en vente à la création", min_value=5, max_value=50, value=25, format="%d %%", key="founder_public_shares_percent", help="Titres offerts par la jeune entreprise : non émis tant qu'aucun investisseur ne les souscrit (le fondateur détient alors tout le capital émis). Pendant ses 12 premiers mois, la demande est servie par ces titres avant les ventes du fondateur ; les achats alimentent directement sa trésorerie. Le fondateur revend ensuite ses titres pour se diversifier ou reconstituer sa trésorerie.")
@@ -2251,6 +2377,119 @@ def render_firm_tables(view_id: str, month: int, _simulation: EconomySimulation)
             "Trésorerie (€)": st.column_config.NumberColumn(format="localized", width="medium"),
         },
     )
+
+
+@st.cache_data(show_spinner=False, max_entries=4)
+def render_enterprise_panel(view_id: str, month: int, _simulation: EconomySimulation) -> None:
+    """Lot G : groupes, magasins, données clients, non cotées et fonds des banques (sans widget).
+    Affiché seulement quand un des huit mécanismes est activé."""
+    simulation = _simulation
+    state = getattr(simulation, "enterprise", None)
+    if state is None:
+        return
+    live = simulation.live
+    history = simulation.enterprise_history()
+    last = history[-1] if history else {}
+    active = [c for c in simulation.companies if c.active]
+    names = {c.id: c.name for c in simulation.companies}
+    labels = dict(SECTORS)
+    prices = {c.id: c.stock_price for c in active}
+    st.markdown("#### Groupes, magasins et fonds")
+    cols = st.columns(6)
+    cols[0].metric("Filiales", f"{sum(1 for c in active if c.parent_id is not None)}",
+                   help="Entreprises contrôlées par une société mère (créées ou rachetées).")
+    cols[1].metric("Magasins", f"{sum(c.stores for c in active):.1f}",
+                   help="Réseaux de vente des producteurs d'alimentation et de biens.")
+    cols[2].metric("Non cotées", f"{sum(1 for c in active if not c.listed)}",
+                   help="Entreprises hors de la Bourse (jeunes entreprises, filiales créées).")
+    cols[3].metric("Actif des fonds", compact(sum(fund_assets(f, prices) for f in state.funds), "€"),
+                   help="Trésorerie et titres des fonds gérés par les banques.")
+    cols[4].metric("Ménages porteurs de parts", f"{sum(1 for p in simulation.people if p.fund_units)}")
+    owned = sum(int(p.owns_home) + p.investment_homes for p in simulation.people)
+    cols[5].metric(
+        "État moyen des logements",
+        f"{last.get('etat_logements', 1.0):.0%}" if live.property_upkeep else "—",
+        help=f"Gros entretien : 100 % = neuf ; {owned} logements détenus par des ménages.",
+    )
+    if len(history) > 1:
+        left, right = st.columns(2)
+        with left:
+            st.caption("Filiales, magasins et entreprises non cotées")
+            line_chart(
+                [{"Période": row["periode"], "Filiales": row.get("filiales", 0),
+                  "Magasins": row.get("magasins", 0.0), "Non cotées": row.get("non_cotees", 0)}
+                 for row in history],
+                x="Période", y=["Filiales", "Magasins", "Non cotées"],
+            )
+        with right:
+            st.caption("Flux mensuels : apports des fonds, achats de données, gros travaux (€)")
+            line_chart(
+                [{"Période": row["periode"], "Apports des fonds": row.get("fonds_apports", 0.0),
+                  "Données": row.get("donnees", 0.0), "Travaux": row.get("travaux", 0.0)}
+                 for row in history],
+                x="Période", y=["Apports des fonds", "Données", "Travaux"],
+            )
+    rows = [
+        {
+            "Entreprise": c.name,
+            "Secteur": labels.get(c.sector, c.sector),
+            "Société mère": names.get(c.parent_id, "—") if c.parent_id else "—",
+            "Part de la mère": (
+                next((p.shares.get(c.id, 0.0) for p in active if p.id == c.parent_id), 0.0)
+                / max(c.shares_outstanding - c.treasury_shares, 1e-9) if c.parent_id else None
+            ),
+            "Cotée": "oui" if c.listed else "non",
+            "Magasins": c.stores,
+            "Connaissance des clients": c.market_insight if c.sector in ("food", "goods") else None,
+            "Soutenue par un fonds": "oui" if c.fund_backed_month >= 0 else "—",
+            "Employés": len(c.employees),
+            "Bénéfice (€)": c.profit,
+        }
+        for c in active
+        if c.parent_id is not None or not c.listed or c.stores > 0.0 or c.market_insight > 0.0
+        or c.fund_backed_month >= 0 or any(o.parent_id == c.id for o in active)
+    ]
+    if rows:
+        st.caption("Entreprises concernées : sociétés mères, filiales, réseaux de magasins, non cotées")
+        st.dataframe(
+            rows, hide_index=True, width="stretch", height=min(480, 38 + 35 * len(rows)),
+            column_config={
+                "Part de la mère": st.column_config.NumberColumn(format="percent", width="small"),
+                "Magasins": st.column_config.NumberColumn(format="%.1f", width="small"),
+                "Connaissance des clients": st.column_config.NumberColumn(format="percent", width="small"),
+                "Employés": st.column_config.NumberColumn(format="%d", width="small"),
+                "Bénéfice (€)": st.column_config.NumberColumn(format="localized"),
+            },
+        )
+    if state.funds:
+        st.caption(
+            "Fonds d'investissement des banques : les ménages y placent une part de leur épargne, les "
+            "fonds financent les entreprises non cotées et sortent après l'introduction en Bourse."
+        )
+        st.dataframe(
+            [
+                {
+                    "Fonds": fund.name,
+                    "Banque gérante": names.get(fund.bank_id, "—"),
+                    "Actif (€)": fund_assets(fund, prices),
+                    "Trésorerie (€)": fund.cash,
+                    "Participations": sum(1 for cid, q in fund.shares.items() if q > 0.0 and cid in prices),
+                    "Porteurs": sum(1 for p in simulation.people if p.fund_units.get(fund.id, 0.0) > 0.0),
+                }
+                for fund in state.funds
+            ],
+            hide_index=True, width="stretch",
+            column_config={
+                "Actif (€)": st.column_config.NumberColumn(format="localized"),
+                "Trésorerie (€)": st.column_config.NumberColumn(format="localized"),
+            },
+        )
+    if live.experience_learning:
+        founders = sum(1 for p in simulation.people if p.ventures > 0)
+        st.caption(
+            f"Expérience : {founders} ménage(s) ont déjà fondé une entreprise ; salaire d'embauche négocié "
+            f"en moyenne à {last.get('negociation', 1.0):.1%} de l'offre."
+        )
 
 
 @st.cache_data(show_spinner=False, max_entries=16)
@@ -2790,6 +3029,8 @@ if not lazy_tabs or firms_tab.open:
             )
 
         render_firm_tables(st.session_state._view_id, simulation.month, simulation)
+        # lot G : rien n'est affiché tant qu'aucun des huit mécanismes n'est activé
+        render_enterprise_panel(st.session_state._view_id, simulation.month, simulation)
 
         selected_company = simulation.company_profile(selected_company_id) if selected_company_id else None
         if selected_company:

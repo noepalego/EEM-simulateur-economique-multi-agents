@@ -58,12 +58,17 @@ class Ledger:
     # -- agrégats -----------------------------------------------------------
     @staticmethod
     def nonbank_cash(sim: "EconomySimulation") -> float:
-        return (
+        total = (
             sum(p.cash for p in sim.people)
             + sum(c.cash for c in sim.companies if c.sector != "bank")
             + sim.public.cash
             + sim.resources.market_cash
         )
+        enterprise = getattr(sim, "enterprise", None)
+        if enterprise is not None and enterprise.funds:
+            # lot G8 : les fonds gérés par les banques détiennent des dépôts comme tout agent
+            total += sum(fund.cash for fund in enterprise.funds)
+        return total
 
     @staticmethod
     def banking(sim: "EconomySimulation") -> dict[str, float]:

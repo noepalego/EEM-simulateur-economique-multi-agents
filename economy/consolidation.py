@@ -67,7 +67,11 @@ def takeover_by_value(
     for buyer in sorted(companies, key=lambda company: company.cash, reverse=True):
         if not buyer.active or buyer.sector == "bank" or buyer.id in excluded:
             continue
-        if month - buyer.last_acquisition_month < INTEGRATION_MONTHS:
+        integration = INTEGRATION_MONTHS
+        if config.experience_learning:
+            # lot G1 : un acquéreur expérimenté intègre plus vite (jamais moins de deux mois)
+            integration = max(2, INTEGRATION_MONTHS - buyer.acquisition_count)
+        if month - buyer.last_acquisition_month < integration:
             continue
         free_cash = buyer.cash - working_capital(buyer, config)
         sector_firms = [c for c in companies if c.active and c.sector == buyer.sector]
@@ -121,7 +125,12 @@ def takeover_by_value(
                 buyer.shares[target.id] = buyer.shares.get(target.id, 0.0) + bought
             # achat de titres existants : un transfert, pas un investissement (hors PIB)
             buyer.secondary_asset_purchases += need * offer
-        _merge_into(buyer, target, people, companies, extra_holders)
+        skill = 0.0
+        if config.experience_learning:
+            # lot G1 : meilleures pratiques gardées selon l'expérience de l'acquéreur
+            count = float(buyer.acquisition_count)
+            skill = count / (count + max(config.experience_half_count, 1e-9))
+        _merge_into(buyer, target, people, companies, extra_holders, skill)
         target.exit_month = month
         buyer.last_acquisition_month = month
         buyer.acquisition_count += 1
@@ -154,7 +163,10 @@ def _merge_into(
     people: list[Person],
     companies: list[Company],
     extra_holders: tuple = (),
+    experience: float = 0.0,
 ) -> None:
+    """``experience`` (lot G1, 0 à 1) : part de l'écart entre la productivité moyenne et la
+    meilleure des deux que l'acquéreur conserve (0 : moyenne, comme avant)."""
     issued_target_shares = sum(
         holder.shares.get(target.id, 0.0)
         for holder in [*people, *companies, *extra_holders]
@@ -213,7 +225,18 @@ def _merge_into(
     buyer.technology_asset_value += target.technology_asset_value
     buyer.grid_level = max(buyer.grid_level, target.grid_level)
     buyer.storage_level = max(buyer.storage_level, target.storage_level)
+    best_practice = max(buyer.productivity_trait, target.productivity_trait)
     buyer.productivity_trait = min(1.8, (buyer.productivity_trait + target.productivity_trait) / 2.0)
+    if experience > 0.0:
+        buyer.productivity_trait = min(
+            1.8, buyer.productivity_trait + experience * (best_practice - buyer.productivity_trait)
+        )
+    if target.stores:
+        # lot G6 : les magasins de la cible rejoignent le réseau de l'acquéreur
+        buyer.stores += target.stores
+        target.stores = 0.0
+    if target.market_insight > buyer.market_insight:
+        buyer.market_insight = target.market_insight  # lot G3 : données clients reprises
     buyer.innovation = min(1.0, (buyer.innovation + target.innovation) / 2.0)
 
     for holder in [*people, *companies, *extra_holders]:

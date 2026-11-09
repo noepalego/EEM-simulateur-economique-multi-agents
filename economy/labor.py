@@ -334,6 +334,9 @@ def allocate_and_pay_labor(
             continue
         person, slot_trade = choice
         person.job_trade = slot_trade
+        if config.experience_learning and previous_employers[person.id] != company.id:
+            # lot G1 : salaire négocié à l'embauche selon l'expérience des deux parties
+            negotiate_hire(company, person, config)
         person.trade_wage_factor = (trade_factors or {}).get(
             slot_trade, config.trade_base_wage.get(slot_trade, 1.0)
         )
@@ -428,7 +431,31 @@ def _pay(company: Company, person: Person, role: str, config: SimulationConfig) 
         scale = min(1.0, size / max(1.0, config.executive_full_pay_headcount))
         multiplier = 1.0 + (multiplier - 1.0) * scale
     wage = company.wage_offer * multiplier * skill_factor * person.trade_wage_factor
+    if config.experience_learning:
+        # lot G1 : résultat de la négociation d'embauche (1 sans le réglage)
+        wage *= person.negotiated_factor
     return max(wage, config.minimum_wage)
+
+
+def experience_skill(count: float, config: SimulationConfig) -> float:
+    """Lot G1 : compétence acquise par la pratique, n / (n + ``experience_half_count``), de 0
+    (jamais fait) vers 1 ; rendements décroissants, aucune croissance sans fin."""
+    count = max(0.0, count)
+    return count / (count + max(config.experience_half_count, 1e-9))
+
+
+def negotiate_hire(company: Company, person: Person, config: SimulationConfig) -> None:
+    """Lot G1 : négociation d'un salaire d'embauche. Le candidat qui a déjà négocié plusieurs
+    embauches obtient davantage, l'employeur qui a beaucoup recruté concède moins : facteur
+    1 + ``experience_gain`` / 2 × (compétence du candidat − compétence de l'employeur), gardé
+    tant que le salarié reste chez cet employeur. Un employeur recrute bien plus souvent qu'un
+    salarié ne change de poste : son expérience compte par dizaines d'embauches. Le salaire
+    minimum reste dû (``_pay``)."""
+    worker = experience_skill(person.negotiations, config)
+    employer = experience_skill(company.recruitments / 10.0, config)
+    person.negotiated_factor = 1.0 + 0.5 * config.experience_gain * (worker - employer)
+    person.negotiations += 1
+    company.recruitments += 1
 
 
 def assign_ranks(companies: list[Company], people: list[Person], config: SimulationConfig) -> None:
