@@ -143,6 +143,8 @@ Réglage désactivé par défaut et neutre pour l'empreinte d'identité ; `BankO
 
 ## Réglages du lot G : entreprises (novembre 2026)
 
+Le lot H (salariés obligatoires, conseil d'actionnaires) est inscrit dans le même tableau.
+
 Huit mécanismes d'entreprise (`economy/enterprise.py`), chacun derrière son réglage, **désactivé par
 défaut** et neutre pour l'empreinte d'identité : sans réglage activé, aucun calcul, aucun tirage et
 aucun attribut de simulation n'est ajouté. `EnterpriseRegistryTests` (`tests/test_entreprises.py`)
@@ -181,4 +183,8 @@ société mère à une cible rachetée (ce que l'acquéreur apporte, et la raiso
 | `fund_ticket_share` | 0,25 (G8) | Part maximale de l'actif d'un fonds apportée à une entreprise en une opération : le fonds reste diversifié et ne peut pas tout perdre sur une seule entreprise. |
 | `fund_support_gain` | 0,05 (G8) | Hausse de la productivité d'une entreprise au premier apport d'un fonds (appui de gestion, une seule fois, productivité bornée comme partout à 1,8) : petit effet de niveau, sans croissance composée. |
 | `fund_exit_months` | 60 (G8) | Durée après laquelle le fonds entré au capital demande l'introduction en Bourse pour sortir (cinq ans, horizon usuel du capital-investissement) ; il vend ensuite ses titres à la séance, par dixièmes. |
+| `staffless_closure_months` | 0 (lot H) | Salariés obligatoires : une entreprise non bancaire restée ce nombre de mois sans aucun salarié est fermée (liquidation amiable sans dette ni actif, sinon liquidation avec vente des actifs et remboursement des banques). 0 : jamais. Jamais la dernière de son secteur ni une participation de l'État. Règle de droit des sociétés, ne vise aucun nombre d'entreprises. |
+| `shareholder_governance` | faux (lot H) | Conseil d'actionnaires : les plus gros actionnaires nomment le dirigeant parmi les salariés (un actionnaire salarié vote pour lui-même), le révoquent après un an si l'entreprise perd de l'argent plus longtemps que leur patience, et orientent la part des bénéfices réinvestie selon leur goût du risque. Vote pondéré par les titres, aucun tirage. |
+| `board_seats` | 4 (lot H) | Nombre d'actionnaires qui siègent au conseil : les quatre plus gros porteurs (ménages, entreprises, État, fonds), dont la société mère d'une filiale ; au-delà, les petits porteurs ne pèsent pas sur la direction. |
+| `board_patience_months` | 6 (lot H) | Mois de pertes consécutives au-delà desquels un membre du conseil vote la révocation du dirigeant (un ménage : 3 à 9 mois selon son goût du risque), jamais avant douze mois de mandat. Même durée que le délai de cessation de paiements (`bankruptcy_months`). |
 | `ipo_need_share` | 0,5 (G8) | Besoin de trésorerie restant après l'apport du fonds, en part des fonds propres, au-delà duquel une entreprise non cotée demande son introduction en Bourse : seul un besoin que ni sa trésorerie ni le fonds ne couvrent l'y pousse. |

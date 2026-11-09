@@ -286,6 +286,28 @@ Mesure (5 graines × 400 mois, chaque mécanisme seul puis les huit ensemble, co
 aucun effondrement, comptes exacts, mais des effets du même ordre que l'écart entre graines ;
 tableaux et réserves dans `results/lot_g_entreprises/RESUME.md`.
 
+### Salariés obligatoires et conseil d'actionnaires (lot H, désactivés par défaut)
+
+Deux réglages de la même rubrique de la barre latérale :
+
+- **Salariés obligatoires** (`staffless_closure_months`, 0 = jamais) : une entreprise non bancaire
+  restée ce nombre de mois sans aucun salarié est fermée. Sans dette ni actif, sa trésorerie est
+  versée aux actionnaires ; sinon ses actifs sont vendus à un concurrent, ses banques remboursées
+  et le reste revient aux actionnaires (la dette non remboursée est une perte des banques, comptée
+  parmi les faillites). Jamais la dernière entreprise de son secteur, une banque ou une
+  participation de l'État. Sans ce réglage, une entreprise peut rester une coquille vide jusqu'à
+  24 mois, et indéfiniment si elle a des dettes ou des actifs.
+- **Conseil d'actionnaires** (`shareholder_governance`) : les quatre plus gros actionnaires de
+  chaque entreprise (ménages, entreprises, État, fonds) votent selon leurs titres. Ils nomment le
+  dirigeant parmi les salariés (un actionnaire salarié vote pour lui-même, les autres pour le
+  salarié le mieux noté), le révoquent après un an de mandat si l'entreprise perd de l'argent
+  depuis plus longtemps que leur patience (6 mois, 3 à 9 pour un ménage selon son goût du risque),
+  et orientent la part des bénéfices réinvestie (entre la moitié et une fois et demie de sa
+  valeur de départ). Sans ce réglage, le dirigeant est le salarié le mieux noté, à un tirage près,
+  et n'est jamais révoqué.
+
+Mesure : `results/lot_g_entreprises/RESUME.md`, section « Lot H ».
+
 ### Banques et banque centrale
 - Les banques prêtent dans la limite de leurs **fonds propres** (8 % des prêts et titres). Les
   **réserves** exigées (10 % des dépôts) ne limitent pas le crédit : la banque centrale les fournit
@@ -559,8 +581,15 @@ surtout sur le **niveau** de production et sa **répartition**, pas sur le rythm
 |---|---|
 | **Vue d'ensemble** | PIB, chômage, inflation, salaires, prix, inégalités, logement, monnaie, événements du mois |
 | **État** | gouvernement et cabinet, budget, fonction publique, salaire minimum, industrie, journal des décisions |
-| **Entreprises & bourse** | tableau des entreprises, fiche détaillée par entreprise (historique des mois observés : bilan, flux du mois, dividendes versés dans un graphique à part, activité, cours), cours de Bourse, secteurs ; avec un mécanisme du lot G activé, panneau « Groupes, magasins et fonds » (filiales et sociétés mères, magasins, non cotées, fonds des banques) |
+| **Entreprises & bourse** | cinq sous-onglets : **Toutes les entreprises** (résumé par secteur, une ligne par entreprise en activité), **Fiche d'une entreprise** (indicateurs, bilan, principaux actionnaires ou conseil, groupe : société mère, filiales, entreprises absorbées, équipe, historiques), **Groupes & filiales** (ce que chaque filiale a coûté et rapporté, poids des groupes dans l'emploi, filiales sorties, fusions, magasins), **Fonds d'investissement** (actif, valeur de la part, épargne confiée, apports, frais, participations en portefeuille et soldées), **Bourse** (cours des entreprises cotées) |
 | **Ménages** | distribution des revenus et des patrimoines, fiche détaillée d'un ménage |
+
+Les entreprises fermées ou absorbées ne sont plus listées ; une entreprise absorbée par fusion
+apparaît dans la fiche de son acquéreur et dans « Groupes & filiales ». L'interface affiche des
+**noms courts** (`company_labels`, sans toucher aux noms du moteur) : « Tech 2 » pour une entreprise
+de départ, « Biens Martin » pour une entreprise fondée par le ménage Martin, « Alimentation 2 ·
+Tech » pour une filiale créée par Alimentation 2, « Énergie 1 (groupe Matières 3) » pour une
+entreprise rachetée, « Fonds Banque 1 » pour un fonds.
 
 La **répartition des fortunes** (onglet Ménages) recalcule ses classes chaque mois à partir des
 montants observés : une classe pour les patrimoines négatifs, une pour les patrimoines nuls,
@@ -685,10 +714,14 @@ python experiences/gauche_droite_campagne.py 400 1001 1002 1003 1004 1005 --outp
 python experiences/gauche_droite_analyse.py lot_e_propriete/active
 ```
 
-Les nouveaux attributs ajoutés par les lots C à G sont neutres à leur valeur par défaut pour
+Les nouveaux attributs ajoutés par les lots C à H sont neutres à leur valeur par défaut pour
 l'empreinte d'identité ; la variante d'empreinte du parcours UI les compte tous, d'où
-`--exclusions results/lot_g_entreprises/exclusions_ui.json` (lots C à G) pour comparer à une
-référence plus ancienne. `python results/lot_g_entreprises/parcours_interface.py` parcourt
+`--exclusions results/lot_g_entreprises/exclusions_ui.json` (lots C à H) pour comparer à une
+référence plus ancienne. Une exception depuis le lot H : `Company.acquired_by` (l'acquéreur d'une
+entreprise absorbée, pour l'affichage) est renseigné à chaque fusion, réglages désactivés
+compris. `identity_check.py` et les trajectoires restent identiques, mais la comparaison d'états
+exacte de `performance_probe.py identity` diffère d'une référence antérieure dès la première
+fusion ; le parcours UI, comparé avec les exclusions, reste identique. `python results/lot_g_entreprises/parcours_interface.py` parcourt
 l'interface avec les huit mécanismes du lot G activés ;
 `python results/lot_g_entreprises/comparaison.py 400 1001 1002 1003 1004 1005` refait la mesure.
 

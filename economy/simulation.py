@@ -651,6 +651,9 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
             if self.people
             else 0.0
         )
+        if live.shareholder_governance:
+            # lot H : les plus gros actionnaires nomment ou révoquent le dirigeant
+            self._shareholder_governance()
         # entreprises sous contrôle public : pas de rémunération en actions nouvelles
         elect_executives(self.companies, self.people, live, self.random,
                          no_dilution=self._undiluted_ids())
@@ -1240,11 +1243,15 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
         if live.conglomerate_takeovers:
             # lot G5 : rachats entre secteurs (la cible devient une filiale)
             self._conglomerate_takeovers()
+        # lot H : entreprises restées sans salarié, fermées d'office (ensemble vide sans réglage)
+        closures = self._staffless_closures(holders) if live.staffless_closure_months > 0 else frozenset()
         _, f.bankruptcies = resolve_distressed_companies(
             self.companies, self.people, 0.0, live, self.random, holders,
             month=self.month, events=self.resolution_events,
-            wind_down_bank=self._wind_down_bank,
+            wind_down_bank=self._wind_down_bank, forced=closures,
         )
+        if closures:
+            self._mark_staffless_closures(closures)
         self._write_off_defaulted_bank_loans()
         self._sync_public_debt()  # titres émis pour recapitaliser une banque
         # entreprises sans salarié ni perspective : liquidation amiable (boni compris ci-dessous)

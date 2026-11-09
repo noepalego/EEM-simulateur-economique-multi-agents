@@ -6,8 +6,103 @@ from economy.wealth import wealth_leaderboards
 from economy.sectors import SECTORS
 
 
+SHORT_SECTORS = {
+    "food": "Alimentation", "goods": "Biens", "technology": "Tech", "real_estate": "Immobilier",
+    "materials": "Matières", "energy": "Énergie", "bank": "Banque", "services": "Services",
+}
+EXIT_LABELS = {
+    "acquired": "absorbée", "bankrupt": "faillite", "dissolved": "liquidée à l'amiable",
+    "idle": "fermée sans salarié",
+}
+
+
 class ViewsMixin:
     """Lectures destinées à l'interface : tableaux, profils, palmarès."""
+
+    def company_labels(self) -> dict[str, str]:
+        """Nom court d'affichage de chaque entreprise (lot H), sans toucher à ``Company.name``
+        (lu par le journal de l'État et les tests) :
+
+        - entreprise de départ : secteur court et numéro (« Tech 2 ») ;
+        - entreprise fondée par un ménage : secteur court et nom du fondateur (« Biens Martin »),
+          numérotée si le même ménage en fonde plusieurs dans le secteur ;
+        - filiale créée : nom de la société qui l'a créée, puis son secteur (« Alimentation 2 ·
+          Tech ») ;
+        - entreprise contrôlée par une autre : suivie de « (groupe …) ».
+        """
+        from economy.institutions import display_name
+
+        base: dict[str, str] = {}
+        seen: dict[str, int] = {}
+        by_id = {company.id: company for company in self.companies}
+        for company in self.companies:
+            short = SHORT_SECTORS.get(company.sector, company.sector)
+            parts = company.id.split("_")
+            if company.id.startswith("startup_") and company.founder_id:
+                label = f"{short} {display_name(company.founder_id).split(' ', 1)[-1]}"
+            elif company.id.startswith("filiale_"):
+                creator = company.id.split("_", 2)[2]
+                label = f"{base.get(creator, creator)} · {short}"
+            elif parts[-1].isdigit() and "_".join(parts[:-1]) == company.sector:
+                label = f"{short} {parts[-1]}"
+            else:
+                label = company.name
+            seen[label] = seen.get(label, 0) + 1
+            base[company.id] = label if seen[label] == 1 else f"{label} {seen[label]}"
+        labels: dict[str, str] = {}
+        for company in self.companies:
+            label = base[company.id]
+            parent = by_id.get(company.parent_id) if company.parent_id else None
+            created_by = company.id.split("_", 2)[2] if company.id.startswith("filiale_") else None
+            if parent is not None and company.active and parent.id != created_by:
+                label = f"{label} (groupe {base[parent.id]})"
+            labels[company.id] = label
+        return labels
+
+    def company_label(self, company_id: str | None) -> str:
+        """Nom court d'une entreprise (voir ``company_labels``)."""
+        if company_id is None:
+            return "—"
+        if company_id == "state":
+            return "Fonction publique"
+        if company_id.startswith("fonds_"):
+            return self.fund_label(company_id)
+        return self.company_labels().get(company_id, company_id)
+
+    def fund_label(self, fund_id: str, labels: dict[str, str] | None = None) -> str:
+        """Nom court d'un fonds : « Fonds » suivi du nom court de la banque qui l'a créé."""
+        labels = labels if labels is not None else self.company_labels()
+        bank_id = fund_id.removeprefix("fonds_")
+        return f"Fonds {labels.get(bank_id, bank_id)}"
+
+    def absorbed_companies(self, company_id: str) -> list[dict[str, object]]:
+        """Entreprises que ``company_id`` a absorbées par fusion (``Company.acquired_by``)."""
+        labels = self.company_labels()
+        offset = self.warmup_offset
+        return [
+            {"Entreprise": labels[c.id], "Secteur": dict(SECTORS)[c.sector],
+             "Période du rachat": c.exit_month - offset}
+            for c in self.companies if c.acquired_by == company_id
+        ]
+
+    def shareholder_rows(self, company: Company, seats: int = 4) -> list[dict[str, object]]:
+        """Les plus gros actionnaires d'une entreprise (son conseil avec le lot H)."""
+        labels = self.company_labels()
+        rows = []
+        for holder, quantity, share in self.shareholder_board(company, seats):
+            if isinstance(holder, Person):
+                name, kind = holder.name, "Ménage"
+                if holder.id == company.founder_id:
+                    kind = "Ménage fondateur"
+            elif holder.id == "state":
+                name, kind = "État", "État"
+            elif holder.sector == "fund":
+                name, kind = self.fund_label(holder.id, labels), "Fonds"
+            else:
+                name = labels.get(holder.id, holder.name)
+                kind = "Société mère" if company.parent_id == holder.id else "Entreprise"
+            rows.append({"Actionnaire": name, "Type": kind, "Titres": quantity, "Part du capital émis": share})
+        return rows
 
     def trade_table(self) -> list[dict[str, object]]:
         """Offre, demande, salaire moyen et chômage par métier."""

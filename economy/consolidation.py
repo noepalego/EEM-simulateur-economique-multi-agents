@@ -256,6 +256,7 @@ def _merge_into(
     target.shares.clear()
     target.active = False
     target.exit_reason = "acquired"
+    target.acquired_by = buyer.id  # lot H : mémoire de l'acquéreur (affichage seulement)
     target.cash = 0.0
     target.bank_loan_accounts.clear()
     target.debt = 0.0

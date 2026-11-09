@@ -876,8 +876,12 @@ def resolve_distressed_companies(
     month: int = 0,
     events: list | None = None,
     wind_down_bank=None,
+    forced: frozenset = frozenset(),
 ) -> tuple[float, int]:
-    """Faillites : liquidation (actifs vendus aux enchères), y compris du dernier acteur d'un
+    """``forced`` (lot H, salariés obligatoires) : entreprises fermées d'office ce mois, liquidées
+    par la même procédure qu'une entreprise insolvable (vide par défaut : rien ne change).
+
+    Faillites : liquidation (actifs vendus aux enchères), y compris du dernier acteur d'un
     secteur (le secteur disparaît alors jusqu'à l'arrivée d'un entrant) ; seules l'insolvabilité
     et la cessation de paiements ferment une entreprise. Chaque résolution est consignée dans
     ``events``.
@@ -915,7 +919,7 @@ def resolve_distressed_companies(
             and company.loss_streak >= config.bankruptcy_months
         )
         insolvent = company.debt > assets or illiquid
-        if not insolvent:
+        if not insolvent and company.id not in forced:
             continue
         survivors = [
             other

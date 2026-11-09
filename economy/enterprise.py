@@ -82,6 +82,17 @@ class InvestmentFund(Company):
     bank_id: str = ""
     units: float = 0.0
     requests: float = 0.0
+    # suivi (mesures seules) : cumuls depuis la création du fonds
+    subscribed: float = 0.0       # épargne confiée par les ménages
+    redeemed: float = 0.0         # parts rachetées aux ménages
+    distributed: float = 0.0      # trésorerie reversée aux porteurs
+    fees: float = 0.0             # frais de gestion payés à la banque
+    invested: float = 0.0         # apports aux entreprises non cotées
+    received: float = 0.0         # dividendes et produits de cession encaissés (nets)
+    cost: dict = field(default_factory=dict)      # entreprise -> apports cumulés
+    bought: dict = field(default_factory=dict)    # entreprise -> titres reçus contre ces apports
+    entry: dict = field(default_factory=dict)     # entreprise -> mois du premier apport
+    exits: list = field(default_factory=list)     # participations soldées
 
 
 @dataclass
@@ -92,6 +103,12 @@ class EnterpriseState:
     random: random.Random | None = None
     homes: dict = field(default_factory=dict)      # propriétaire -> logements le mois précédent (G2)
     bids: dict = field(default_factory=dict)       # acquéreur -> mois de sa dernière offre entre secteurs (G5)
+    # suivi des groupes (mesures seules) : filiale -> origine, mois, coût, dividendes remontés
+    group_log: dict = field(default_factory=dict)
+    group_exits: list = field(default_factory=list)   # filiales sorties d'un groupe
+    fund_history: list = field(default_factory=list)  # un relevé par fonds et par mois
+    boards: dict = field(default_factory=dict)        # entreprise -> conseil du mois (lot H)
+    retention: dict = field(default_factory=dict)     # entreprise -> part réinvestie avant le conseil (lot H)
     month_stats: dict = field(default_factory=dict)
     history: list = field(default_factory=list)    # un relevé par mois (mesures seules)
 
@@ -125,6 +142,7 @@ class EnterpriseMixin:
             live.experience_learning or live.property_upkeep or live.consumer_preferences
             or live.diversification or live.conglomerate_takeovers or live.retail_stores
             or live.group_distribution or live.private_startups
+            or live.staffless_closure_months > 0 or live.shareholder_governance
         )
 
     def _enterprise_state(self) -> EnterpriseState:
@@ -463,6 +481,7 @@ class EnterpriseMixin:
         unit_price: dict[str, float] = {}
         targets: dict[str, float] = {}
         for fund in funds:
+            self._close_fund_positions(fund, prices)
             assets = fund_assets(fund, prices)
             bank = banks.get(fund.bank_id)
             if bank is not None and assets > 0.0:
@@ -473,6 +492,7 @@ class EnterpriseMixin:
                     bank.cash += fee
                     bank.revenue += fee
                     assets -= fee
+                    fund.fees += fee
                     self._enterprise_count("fonds_frais", fee)
             targets[fund.id] = dry_powder + 3.0 * fund.requests
             unit_price[fund.id] = assets / fund.units if fund.units > 1e-9 and assets > 0.0 else 1.0
@@ -493,6 +513,39 @@ class EnterpriseMixin:
                 )
             elif person.fund_value:
                 person.fund_value = 0.0
+        history = self._enterprise_state().fund_history
+        for fund in funds:
+            # dividendes et produits de cession encaissés, nets : ce qui explique sa trésorerie
+            # une fois comptés l'épargne confiée, les rachats, les distributions, les frais et
+            # les apports (identité de trésorerie, exacte par construction)
+            fund.received = fund.cash - (
+                fund.subscribed - fund.redeemed - fund.distributed - fund.fees - fund.invested
+            )
+            history.append({
+                "mois": self.month, "fonds": fund.id, "actif": fund_assets(fund, prices),
+                "tresorerie": fund.cash, "valeur_part": final[fund.id], "parts": fund.units,
+                "participations": sum(1 for cid, q in fund.shares.items() if q > 0.0 and cid in prices),
+                "porteurs": sum(1 for p in self.people if p.fund_units.get(fund.id, 0.0) > 0.0),
+            })
+
+    def _close_fund_positions(self, fund, prices: dict[str, float]) -> None:
+        """Participations soldées d'un fonds (titres vendus, entreprise fermée ou absorbée) :
+        retirées du suivi et consignées dans ``fund.exits`` (mesure seule)."""
+        companies = {c.id: c for c in self.companies}
+        for company_id in list(fund.cost):
+            if fund.shares.get(company_id, 0.0) > 1e-9 and company_id in prices:
+                continue
+            company = companies.get(company_id)
+            if company is None or not company.active:
+                outcome = {"bankrupt": "faillite", "acquired": "absorbée", "dissolved": "liquidée",
+                           "idle": "fermée sans salarié"}.get(company.exit_reason if company else "", "fermée")
+            else:
+                outcome = "cédée en Bourse" if company.listed else "cédée"
+            fund.exits.append({
+                "entreprise": company_id, "entree": fund.entry.pop(company_id, self.month),
+                "sortie": self.month, "investi": fund.cost.pop(company_id), "issue": outcome,
+            })
+            fund.bought.pop(company_id, None)
 
     def _distribute_fund_cash(self, funds, targets, unit_price, prices) -> None:
         """La trésorerie d'un fonds au-delà de sa réserve d'attente (dividendes reçus, produit des
@@ -508,6 +561,7 @@ class EnterpriseMixin:
             for person, units in holders:
                 payment = excess * units / held
                 transfer_cash(fund, person, payment)
+                fund.distributed += payment
                 person.income_this_turn += payment
                 person.dividend_income_this_turn += payment
                 person.lifetime_earnings += payment
@@ -540,6 +594,7 @@ class EnterpriseMixin:
                     units = amount / unit_price[fund.id]
                     fund.units += units
                     person.fund_units[fund.id] = person.fund_units.get(fund.id, 0.0) + units
+                    fund.subscribed += amount
                     self._enterprise_count("fonds_souscriptions", amount)
             elif order < -1.0 and held:
                 remaining = -order
@@ -556,6 +611,7 @@ class EnterpriseMixin:
                     else:
                         person.fund_units.pop(fund.id, None)
                     remaining -= amount
+                    fund.redeemed += amount
                     self._enterprise_count("fonds_rachats", amount)
 
     def _fund_private_companies(self, funds, prices) -> None:
@@ -600,6 +656,10 @@ class EnterpriseMixin:
                             1.8, company.productivity_trait * (1.0 + max(0.0, live.fund_support_gain))
                         )
                     remaining = need - amount
+                    fund.invested += amount
+                    fund.cost[company.id] = fund.cost.get(company.id, 0.0) + amount
+                    fund.bought[company.id] = fund.bought.get(company.id, 0.0) + quantity
+                    fund.entry.setdefault(company.id, self.month)
                     self._enterprise_count("fonds_apports", amount)
             equity = max(1.0, company_balance_sheet(company, self.companies, live)["Capitaux propres"])
             if exit_due or remaining > max(0.0, live.ipo_need_share) * equity:
@@ -771,6 +831,10 @@ class EnterpriseMixin:
             # achat de titres existants : un transfert, pas un investissement (hors PIB)
             buyer.secondary_asset_purchases += need * offer
             target.parent_id = buyer.id
+            self._enterprise_state().group_log[target.id] = {
+                "mere": buyer.id, "mois": month, "origine": "rachetée", "cout": need * offer,
+                "productivite": target.productivity_trait, "dividendes": 0.0,
+            }
             if buyer.productivity_trait > target.productivity_trait:
                 # la société mère transmet ses méthodes : part de l'écart de productivité comblée
                 share = MANAGEMENT_TRANSFER
@@ -878,6 +942,10 @@ class EnterpriseMixin:
             )
             transfer_cash(parent, subsidiary, contribution)
             parent.shares[subsidiary.id] = 1000.0
+            self._enterprise_state().group_log[subsidiary.id] = {
+                "mere": parent.id, "mois": month, "origine": "créée", "cout": contribution,
+                "productivite": subsidiary.productivity_trait, "dividendes": 0.0,
+            }
             parent.last_acquisition_month = month
             self.companies.append(subsidiary)
             self._enterprise_count("filiales_creees")
@@ -891,12 +959,24 @@ class EnterpriseMixin:
         orphelines introduites en Bourse, puis relevé du mois (mesures seules)."""
         live = self.live
         by_id = {c.id: c for c in self.companies}
+        log = self._enterprise_state().group_log
+        upstream = 0.0
         for company in self.companies:
             if not company.active:
                 if company.stores:
                     company.stores = 0.0
+                if company.id in log:
+                    self._close_group_link(company, log.pop(company.id))
                 continue
             if company.parent_id is not None:
+                entry = log.get(company.id)
+                holder = by_id.get(company.parent_id)
+                held = company.shares_outstanding - company.treasury_shares
+                if entry is not None and holder is not None and held > 0.0 and company.dividend_paid > 0.0:
+                    # dividende du mois remonté à la société mère (mesure seule)
+                    paid = company.dividend_paid * min(1.0, holder.shares.get(company.id, 0.0) / held)
+                    entry["dividendes"] += paid
+                    upstream += paid
                 circulating = company.shares_outstanding - company.treasury_shares
                 control = live.control_threshold * circulating - 1e-9
                 parent = by_id.get(company.parent_id)
@@ -911,6 +991,13 @@ class EnterpriseMixin:
                         key=lambda c: (c.shares[company.id], c.id), default=None,
                     )
                     company.parent_id = owner.id if owner is not None else None
+                    if company.id in log:
+                        self._close_group_link(company, log.pop(company.id))
+                    if owner is not None:
+                        log[company.id] = {
+                            "mere": owner.id, "mois": self.month, "origine": "reprise", "cout": 0.0,
+                            "productivite": company.productivity_trait, "dividendes": 0.0,
+                        }
             if company.parent_id is None and not company.listed and company.founder_id is None:
                 # ancienne filiale sans société mère : ses titres doivent pouvoir s'échanger
                 self._list_company(company)
@@ -919,8 +1006,18 @@ class EnterpriseMixin:
         prices = {c.id: c.stock_price for c in self.companies if c.active}
         active = [c for c in self.companies if c.active]
         employed = [p for p in self.people if p.employer_id not in (None, "state")]
+        heads = {c.parent_id for c in active if c.parent_id is not None}
+        grouped = [c for c in active if c.parent_id is not None or c.id in heads]
+        firms = [c for c in active if c.sector != "bank"]
         stats.update(
             mois=self.month,
+            groupes=len(heads),
+            emploi_groupes=(
+                sum(len(c.employees) for c in grouped) / max(1, sum(len(c.employees) for c in firms))
+            ),
+            ca_groupes=sum(c.revenue for c in grouped) / max(1.0, sum(c.revenue for c in firms)),
+            dividendes_filiales=upstream,
+            sans_salarie=sum(1 for c in firms if not c.employees),
             magasins=sum(c.stores for c in active),
             filiales=sum(1 for c in active if c.parent_id is not None),
             non_cotees=sum(1 for c in active if not c.listed),
@@ -937,6 +1034,147 @@ class EnterpriseMixin:
         )
         state.history.append(stats)
         state.month_stats = {}
+
+    def _close_group_link(self, company, entry: dict) -> None:
+        """Filiale sortie de son groupe : consignée avec son issue (mesure seule)."""
+        if not company.active:
+            outcome = {"bankrupt": "faillite", "acquired": "absorbée", "dissolved": "liquidée",
+                       "idle": "fermée sans salarié"}.get(company.exit_reason, "fermée")
+        else:
+            outcome = "contrôle perdu"
+        self._enterprise_state().group_exits.append(
+            {**entry, "filiale": company.id, "sortie": self.month, "issue": outcome}
+        )
+
+    # ------------------------------------------------------------------ lot H : salariés obligatoires
+    def _staffless_closures(self, holders: tuple) -> frozenset:
+        """Entreprises non bancaires restées ``staffless_closure_months`` mois sans salarié.
+
+        Sans dette ni actif physique, elle est liquidée à l'amiable tout de suite (trésorerie
+        versée aux actionnaires, ``finance.dissolve_company``). Sinon son identifiant est rendu :
+        ``finance.resolve_distressed_companies`` la liquide comme une entreprise insolvable (actifs
+        vendus à un concurrent, banques remboursées, reste aux actionnaires). Jamais une banque,
+        une participation de l'État, ni la dernière entreprise active de son secteur."""
+        from economy.finance import can_dissolve, dissolve_company
+
+        months = self.live.staffless_closure_months
+        inst = getattr(self, "institutions", None)
+        protected = set(inst.holdings) if inst is not None else set()
+        forced = []
+        for company in self.companies:
+            if (
+                not company.active or company.sector == "bank" or company.employees
+                or company.idle_months < months or company.id in protected
+            ):
+                continue
+            if not any(o.active and o.id != company.id and o.sector == company.sector for o in self.companies):
+                continue
+            if can_dissolve(company):
+                dissolve_company(company, self.people, self.companies, holders,
+                                 self.month, self.resolution_events)
+                company.exit_reason = "idle"
+                self._enterprise_count("fermetures_sans_salarie")
+            else:
+                forced.append(company.id)
+        return frozenset(forced)
+
+    def _mark_staffless_closures(self, closures: frozenset) -> None:
+        """Motif de fermeture des entreprises liquidées d'office (affichage et relevés)."""
+        for company in self.companies:
+            if company.id in closures and not company.active:
+                company.exit_reason = "idle"
+                self._enterprise_count("fermetures_sans_salarie")
+
+    # ------------------------------------------------------------------ lot H : conseil d'actionnaires
+    def shareholder_board(self, company, seats: int | None = None) -> list[tuple]:
+        """Les plus gros actionnaires d'une entreprise : (porteur, titres, part du capital émis),
+        du plus gros au plus petit (ménages, entreprises, État, fonds). Lecture seule."""
+        seats = self.live.board_seats if seats is None else seats
+        held = [
+            (holder, holder.shares[company.id])
+            for holder in (*self.people, *self.companies, *self._outside_shareholders())
+            if holder is not company and holder.shares.get(company.id, 0.0) > 0.0
+        ]
+        total = sum(quantity for _, quantity in held)
+        held.sort(key=lambda item: (-item[1], item[0].id))
+        return [(holder, quantity, quantity / total) for holder, quantity in held[:max(1, seats)]]
+
+    def _shareholder_governance(self) -> None:
+        """Conseil d'actionnaires de chaque entreprise active (avant ``elect_executives``).
+
+        - **Révocation** : après douze mois de mandat, chaque membre vote la révocation du
+          dirigeant si l'entreprise perd de l'argent depuis plus longtemps que sa patience
+          (``board_patience_months`` ; un ménage : × (0,5 + son goût du risque)). Majorité des
+          titres du conseil.
+        - **Nomination** (poste vacant ou dirigeant révoqué) : un membre salarié de l'entreprise
+          vote pour lui-même ; les autres pour le salarié le mieux noté (compétence, ancienneté,
+          expérience de direction, sans tirage). Le plus de titres l'emporte.
+        - **Bénéfices** : la part réinvestie se rapproche de 5 % par mois de celle que veut le
+          conseil : la préférence de l'entreprise avant le conseil × (0,5 + goût du risque moyen
+          pondéré de ses membres ; 0,5 pour l'État, une entreprise ou un fonds : neutre). Elle
+          reste donc entre la moitié et une fois et demie de sa valeur de départ.
+        Sans salarié, le poste reste vacant."""
+        from economy.models import Person
+
+        live = self.live
+        people = {p.id: p for p in self.people}
+        patience = max(1, live.board_patience_months)
+        boards = self._enterprise_state().boards
+        boards.clear()
+        retention = self._enterprise_state().retention
+        holdings: dict[str, list] = {}
+        for holder in (*self.people, *self.companies, *self._outside_shareholders()):
+            for company_id, quantity in holder.shares.items():
+                if quantity > 0.0 and company_id != holder.id:
+                    holdings.setdefault(company_id, []).append((holder, quantity))
+        seats = max(1, live.board_seats)
+        for company in self.companies:
+            held = holdings.get(company.id)
+            if not company.active or not held:
+                continue
+            held.sort(key=lambda item: (-item[1], item[0].id))
+            board = held[:seats]
+            weight = sum(quantity for _, quantity in board)
+            boards[company.id] = [(holder.id, quantity) for holder, quantity in board]
+            current = people.get(company.executive_id or "")
+            in_office = current is not None and current.employer_id == company.id
+            dismissed = False
+            if in_office and company.ceo_tenure >= 12 and company.loss_streak > 0:
+                against = sum(
+                    quantity for holder, quantity in board
+                    if company.loss_streak >= (
+                        max(1, round(patience * (0.5 + holder.risk_tolerance)))
+                        if isinstance(holder, Person) else patience
+                    )
+                )
+                dismissed = against > 0.5 * weight
+            if dismissed or not in_office:
+                candidates = [
+                    people[pid] for pid in company.employees
+                    if pid in people and not (dismissed and pid == current.id)
+                ]
+                if candidates:
+                    best = max(candidates, key=lambda p: (
+                        p.skill * (1.0 + min(p.employer_tenure, 120) / 240.0)
+                        + p.leadership_experience / 600.0, p.id,
+                    ))
+                    eligible = {p.id for p in candidates}
+                    votes: dict[str, float] = {}
+                    for holder, quantity in board:
+                        choice = holder.id if holder.id in eligible else best.id
+                        votes[choice] = votes.get(choice, 0.0) + quantity
+                    company.executive_id = max(votes, key=lambda pid: (votes[pid], pid))
+                    company.ceo_tenure = 0
+                    self._enterprise_count("dirigeants_nommes")
+                    if dismissed:
+                        self._enterprise_count("dirigeants_revoques")
+            appetite = sum(
+                quantity * (holder.risk_tolerance if isinstance(holder, Person) else 0.5)
+                for holder, quantity in board
+            ) / weight
+            wanted = max(0.05, min(1.0, retention.setdefault(
+                company.id, company.reinvestment_preference) * (0.5 + appetite)))
+            company.reinvestment_preference += 0.05 * (wanted - company.reinvestment_preference)
 
     def enterprise_history(self) -> list[dict]:
         """Relevés mensuels du lot G depuis la période 0 (``periode`` : mois observé)."""

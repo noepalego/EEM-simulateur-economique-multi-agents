@@ -65,7 +65,9 @@ class EnterpriseRegistryTests(unittest.TestCase):
              "property_repair_cost_share", "preference_strength", "data_budget_share", "data_decay_rate",
              "store_opening_cost", "store_running_cost", "store_reach", "store_half_count",
              "fund_savings_share", "fund_fee_rate", "fund_ticket_share", "fund_support_gain",
-             "fund_exit_months", "ipo_need_share"}
+             "fund_exit_months", "ipo_need_share",
+             # lot H
+             "staffless_closure_months", "shareholder_governance", "board_seats", "board_patience_months"}
 
     def test_settings_are_registered_and_neutral(self) -> None:
         path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "AUTONOMIE.md")
@@ -95,7 +97,8 @@ class EnterpriseRegistryTests(unittest.TestCase):
 
     def test_disabled_is_identical_and_creates_no_state(self) -> None:
         reference = simulation()
-        explicit = simulation(**{name: False for name in SWITCHES})
+        explicit = simulation(**{name: False for name in SWITCHES}, staffless_closure_months=0,
+                              shareholder_governance=False)
         for _ in range(5):
             self.assertEqual(reference.step(), explicit.step())
         for sim in (reference, explicit):
@@ -593,11 +596,251 @@ class PrivateCompanyTests(unittest.TestCase):
         self.assertGreater(sum(row.get("fonds_frais", 0.0) for row in sim.enterprise.history), 0.0)
 
 
+class StaffRequirementTests(unittest.TestCase):
+    """Lot H : une entreprise restée sans salarié est fermée."""
+
+    def _idle(self, sim, sector: str, **fields):
+        company = next(c for c in sim.companies if c.active and c.sector == sector)
+        for person in sim.people:
+            if person.employer_id == company.id:
+                person.employer_id = None
+        company.employees.clear()
+        company.idle_months = 6
+        for name, value in fields.items():
+            setattr(company, name, value)
+        return company
+
+    def test_disabled_by_default(self) -> None:
+        self.assertEqual(SimulationConfig().staffless_closure_months, 0)
+
+    def test_idle_company_without_debt_is_wound_up_and_money_is_conserved(self) -> None:
+        sim = simulation(months=2, staffless_closure_months=6)
+        company = self._idle(sim, "services", debt=0.0, inventory=0.0, goods_inventory=0.0,
+                             production_capacity=0.0, energy_capacity=0.0, bond_holdings=0.0)
+        company.bank_loan_accounts.clear()
+        for bank in sim.companies:
+            bank.bank_loan_accounts.pop(company.id, None)
+        before = money(sim)
+        forced = sim._staffless_closures(sim._outside_shareholders())
+        self.assertEqual(forced, frozenset())
+        self.assertFalse(company.active)
+        self.assertEqual(company.exit_reason, "idle")
+        self.assertAlmostEqual(money(sim), before, delta=1e-6)
+
+    def test_idle_company_with_debt_goes_through_liquidation(self) -> None:
+        sim = simulation(months=2, staffless_closure_months=6)
+        company = self._idle(sim, "real_estate")   # parc de logements et dette : pas de liquidation amiable
+        self.assertGreater(company.debt, 0.0)
+        self.assertEqual(sim._staffless_closures(sim._outside_shareholders()), frozenset({company.id}))
+        self.assertTrue(company.active)
+        company.idle_months, company.cash = 6, 0.0   # sans trésorerie, elle ne réembauche pas ce mois
+        sim.ledger.calibrate(sim)
+        homes =sum(c.property_inventory for c in sim.companies if c.sector == "real_estate")
+        record = sim.step()
+        self.assertFalse(company.active)
+        self.assertEqual(company.exit_reason, "idle")
+        self.assertLess(abs(record.ledger_residual), 1e-3)
+        self.assertGreaterEqual(   # le parc est repris par un concurrent, pas détruit
+            sum(c.property_inventory for c in sim.companies if c.active and c.sector == "real_estate"),
+            homes - sum(p.owns_home for p in sim.people))
+
+    def test_young_staffed_bank_and_last_company_are_spared(self) -> None:
+        sim = simulation(months=2, staffless_closure_months=6)
+        holders = sim._outside_shareholders()
+        young = self._idle(sim, "goods", idle_months=5)
+        bank = self._idle(sim, "bank")
+        last = self._idle(sim, "energy")
+        for other in sim.companies:
+            if other.sector == "energy" and other is not last:
+                other.active = False
+        staffed = next(c for c in sim.companies if c.active and c.sector == "food" and c.employees)
+        staffed.idle_months = 99
+        self.assertEqual(sim._staffless_closures(holders), frozenset())
+        self.assertTrue(all(c.active for c in (young, bank, last, staffed)))
+
+    def test_run_leaves_fewer_companies_without_staff(self) -> None:
+        idle = {}
+        for months in (0, 3):
+            sim = simulation(months=60, staffless_closure_months=months)
+            idle[months] = max(c.idle_months for c in sim.companies if c.active and c.sector != "bank")
+            self.assertLess(abs(sim.ledger.residual(sim)), 1e-3)
+        self.assertLessEqual(idle[3], idle[0])
+
+
+class ShareholderBoardTests(unittest.TestCase):
+    """Lot H : les plus gros actionnaires nomment et révoquent le dirigeant."""
+
+    def _company(self, sim):
+        company = next(c for c in sim.companies if c.active and c.sector == "food" and len(c.employees) >= 3)
+        for holder in (*sim.people, *sim.companies, sim.public.account):
+            holder.shares.pop(company.id, None)
+        return company
+
+    def test_board_is_the_largest_shareholders(self) -> None:
+        sim = simulation(months=2)
+        company = self._company(sim)
+        for index, quantity in enumerate((50.0, 400.0, 10.0, 200.0, 100.0, 5.0)):
+            sim.people[index].shares[company.id] = quantity
+        board = sim.shareholder_board(company, 4)
+        self.assertEqual([holder.id for holder, _, _ in board],
+                         [sim.people[i].id for i in (1, 3, 4, 0)])
+        self.assertAlmostEqual(board[0][2], 400.0 / 765.0)
+        rows = sim.shareholder_rows(company, 4)
+        self.assertEqual([row["Titres"] for row in rows], [400.0, 200.0, 100.0, 50.0])
+
+    def test_board_dismisses_a_losing_executive_and_names_its_own_member(self) -> None:
+        sim = simulation(months=2, shareholder_governance=True)
+        company = self._company(sim)
+        staff = [p for p in sim.people if p.employer_id == company.id]
+        outsiders = [p for p in sim.people if p.employer_id != company.id]
+        chief, owner = staff[0], staff[1]
+        company.executive_id, company.ceo_tenure, company.loss_streak = chief.id, 12, 24
+        owner.shares[company.id] = 600.0          # actionnaire salarié : il vote pour lui-même
+        outsiders[0].shares[company.id] = 300.0
+        outsiders[1].shares[company.id] = 100.0
+        sim._shareholder_governance()
+        self.assertEqual(company.executive_id, owner.id)
+        self.assertEqual(company.ceo_tenure, 0)
+        self.assertEqual([hid for hid, _ in sim.enterprise.boards[company.id]],
+                         [owner.id, outsiders[0].id, outsiders[1].id])
+        self.assertEqual(sim.enterprise.month_stats.get("dirigeants_revoques"), 1.0)
+
+    def test_executive_is_kept_when_profitable_or_in_first_year(self) -> None:
+        for tenure, losses in ((12, 0), (5, 24)):
+            sim = simulation(months=2, shareholder_governance=True)
+            company = self._company(sim)
+            chief = next(p for p in sim.people if p.employer_id == company.id)
+            company.executive_id, company.ceo_tenure, company.loss_streak = chief.id, tenure, losses
+            sim.people[0].shares[company.id] = 100.0
+            sim._shareholder_governance()
+            self.assertEqual(company.executive_id, chief.id)
+
+    def test_outside_board_names_the_best_employee_and_steers_retention(self) -> None:
+        sim = simulation(months=2, shareholder_governance=True)
+        company = self._company(sim)
+        staff = [p for p in sim.people if p.employer_id == company.id]
+        outsider = next(p for p in sim.people if p.employer_id != company.id)
+        outsider.shares[company.id], outsider.risk_tolerance = 500.0, 1.0
+        best = staff[-1]
+        best.skill, best.leadership_experience = 1.99, 500
+        company.executive_id, company.reinvestment_preference = None, 0.5
+        sim.enterprise.retention.pop(company.id, None)   # préférence de départ : celle du test
+        sim._shareholder_governance()
+        self.assertEqual(company.executive_id, best.id)
+        self.assertAlmostEqual(company.reinvestment_preference, 0.5125)   # vers 0,75 : conseil qui aime le risque
+        outsider.risk_tolerance = 0.0
+        sim._shareholder_governance()
+        self.assertLess(company.reinvestment_preference, 0.5125)           # vers 0,25
+        for _ in range(400):
+            sim._shareholder_governance()
+        self.assertAlmostEqual(company.reinvestment_preference, 0.25, places=3)   # bornée, sans dérive
+        self.assertEqual(company.executive_id, best.id)
+
+    def test_run_keeps_accounts_exact(self) -> None:
+        sim = simulation(months=36, shareholder_governance=True)
+        self.assertLess(abs(sim.ledger.residual(sim)), 1e-3)
+        people = {p.id: p for p in sim.people}
+        for company in sim.companies:
+            if company.active and company.executive_id is not None:
+                self.assertIn(company.executive_id, people)
+
+
+class DisplayAndTrackingTests(unittest.TestCase):
+    """Lot H : noms courts, mémoire des rachats, suivi des groupes et des fonds."""
+
+    def test_short_names_show_the_sector_the_founder_and_the_group(self) -> None:
+        sim = simulation(diversification=True)
+        food, tech = (next(c for c in sim.companies if c.sector == s) for s in ("food", "technology"))
+        founder = sim.people[0]
+        startup = Company("startup_5_1_" + founder.id, "Biens courants X (5)", "goods", 0.0, 1.0,
+                          founder_id=founder.id)
+        twin = Company("startup_9_1_" + founder.id, "Biens courants X (9)", "goods", 0.0, 1.0,
+                       founder_id=founder.id)
+        created = Company(f"filiale_7_{food.id}", "long", "services", 0.0, 1.0, parent_id=food.id)
+        sim.companies.extend([startup, twin, created])
+        tech.parent_id = food.id
+        labels = sim.company_labels()
+        from economy.institutions import display_name
+        surname = display_name(founder.id).split(" ", 1)[-1]
+        self.assertEqual(labels[food.id], "Alimentation 1")
+        self.assertEqual(labels[startup.id], f"Biens {surname}")
+        self.assertEqual(labels[twin.id], f"Biens {surname} 2")
+        self.assertEqual(labels[created.id], "Alimentation 1 · Services")
+        self.assertEqual(labels[tech.id], "Tech 1 (groupe Alimentation 1)")
+        self.assertEqual(len(set(labels.values())), len(labels))
+        self.assertEqual(sim.company_label("state"), "Fonction publique")
+        self.assertEqual(sim.company_label("fonds_" + food.id), "Fonds Alimentation 1")
+        self.assertEqual(food.name, "Alimentation 1")   # le nom du moteur n'est pas touché
+
+    def test_merger_remembers_the_acquirer(self) -> None:
+        sim = simulation()
+        buyer, target = [c for c in sim.companies if c.sector == "goods"][:2]
+        _merge_into(buyer, target, sim.people, sim.companies, (sim.public.account,))
+        target.exit_month = sim.month
+        self.assertEqual(target.acquired_by, buyer.id)
+        rows = sim.absorbed_companies(buyer.id)
+        self.assertEqual([row["Entreprise"] for row in rows], ["Biens 2"])
+        self.assertEqual(sim.absorbed_companies(target.id), [])
+
+    def test_group_log_follows_a_subsidiary_from_entry_to_exit(self) -> None:
+        sim = simulation(months=2, diversification=True, entry_signal_scale=0.0)
+        parent = next(c for c in sim.companies if c.active and c.sector == "food" and c.employees)
+        parent.cash, parent.previous_profit, parent.age_months = 1e7, 50_000.0, 30
+        parent.last_acquisition_month = -1000
+        sim._create_subsidiaries(GroupTests.ENTRY)
+        subsidiary = sim.companies[-1]
+        entry = sim.enterprise.group_log[subsidiary.id]
+        self.assertEqual((entry["mere"], entry["origine"]), (parent.id, "créée"))
+        self.assertAlmostEqual(entry["cout"], subsidiary.cash)
+        subsidiary.dividend_paid = 100.0
+        sim._enterprise_housekeeping()
+        self.assertAlmostEqual(entry["dividendes"], 100.0)
+        self.assertEqual(sim.enterprise.history[-1]["groupes"], 1)
+        self.assertGreater(sim.enterprise.history[-1]["emploi_groupes"], 0.0)
+        parent.shares[subsidiary.id] = 0.0   # contrôle perdu
+        sim._enterprise_housekeeping()
+        self.assertNotIn(subsidiary.id, sim.enterprise.group_log)
+        self.assertEqual(sim.enterprise.group_exits[-1]["issue"], "contrôle perdu")
+        self.assertEqual(sim.enterprise.group_exits[-1]["filiale"], subsidiary.id)
+
+    def test_fund_tracks_what_it_invests_and_closes_positions(self) -> None:
+        sim = simulation(months=3, private_startups=True)
+        company = next(c for c in sim.companies if c.active and c.sector == "services" and c.employees)
+        company.listed, company.cash, company.founder_id = False, 0.0, sim.people[0].id
+        for person in sim.people:
+            person.cash += 50_000.0
+        sim._fund_operations()
+        sim._fund_operations()
+        fund = next(f for f in sim.enterprise.funds if f.shares.get(company.id, 0.0) > 0.0)
+        self.assertGreater(fund.cost[company.id], 0.0)
+        self.assertAlmostEqual(fund.cost[company.id], fund.invested)
+        self.assertAlmostEqual(fund.bought[company.id], fund.shares[company.id])
+        self.assertEqual(fund.entry[company.id], sim.month)
+        self.assertGreater(fund.subscribed, 0.0)
+        self.assertGreaterEqual(sum(f.fees for f in sim.enterprise.funds),
+                                sim.enterprise.month_stats["fonds_frais"])
+        for each in sim.enterprise.funds:   # identité de trésorerie de chaque fonds
+            self.assertAlmostEqual(
+                each.cash,
+                each.subscribed - each.redeemed - each.distributed - each.fees - each.invested + each.received,
+                places=6)
+        rows = [row for row in sim.enterprise.fund_history if row["fonds"] == fund.id]
+        self.assertEqual(len(rows), 5)   # trois mois simulés, deux appels directs
+        self.assertGreater(rows[-1]["actif"], 0.0)
+        invested = fund.cost[company.id]
+        fund.shares.pop(company.id)   # participation vendue
+        sim._fund_operations()
+        self.assertNotIn(company.id, fund.cost)
+        self.assertEqual(fund.exits[-1]["entreprise"], company.id)
+        self.assertAlmostEqual(fund.exits[-1]["investi"], invested)
+        self.assertEqual(fund.exits[-1]["issue"], "cédée")
+
+
 class EverythingTogetherTests(unittest.TestCase):
     """Les huit mécanismes ensemble : comptes rapprochés, grandeurs finies, relevés tenus."""
 
     def test_all_mechanisms_run_together(self) -> None:
-        sim = simulation(months=0, **EVERYTHING)
+        sim = simulation(months=0, **EVERYTHING, staffless_closure_months=6, shareholder_governance=True)
         for _ in range(72):
             record = sim.step()   # ``validate_financial_accounts`` lève à la moindre incohérence
             self.assertLess(abs(record.ledger_residual), 1e-3)

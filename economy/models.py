@@ -698,6 +698,20 @@ class SimulationConfig:
     fund_support_gain: float = field(default=0.05, metadata={"identity": "neutre"})
     fund_exit_months: int = field(default=60, metadata={"identity": "neutre"})
     ipo_need_share: float = field(default=0.5, metadata={"identity": "neutre"})
+    # Lot H (novembre 2026), désactivés par défaut (neutres pour l'identité).
+    # Salariés obligatoires : une entreprise non bancaire restée ``staffless_closure_months`` mois
+    # sans aucun salarié est fermée (liquidation amiable si elle n'a ni dette ni actif, sinon
+    # liquidation avec vente des actifs et remboursement des banques) ; jamais la dernière de son
+    # secteur ni une participation de l'État. 0 : jamais (seule la règle des 24 mois s'applique).
+    staffless_closure_months: int = field(default=0, metadata={"identity": "neutre"})
+    # Conseil d'actionnaires : les ``board_seats`` plus gros actionnaires de chaque entreprise
+    # nomment le dirigeant (vote pondéré par les titres), le révoquent après un an de mandat si
+    # l'entreprise perd de l'argent depuis plus longtemps que leur patience
+    # (``board_patience_months``, modulée par le goût du risque des ménages), et orientent la
+    # part des bénéfices réinvestie.
+    shareholder_governance: bool = field(default=False, metadata={"identity": "neutre"})
+    board_seats: int = field(default=4, metadata={"identity": "neutre"})
+    board_patience_months: int = field(default=6, metadata={"identity": "neutre"})
     # Lot C (novembre 2026) : objectifs ministériels enrichis. Vrai : chaque ministre a un objectif
     # principal et un secondaire (nouveaux indicateurs), des cibles relevées quand la situation de
     # départ les remplit déjà, et chaque objectif en retard actionne un levier de son ministère avec
@@ -1286,6 +1300,8 @@ class Company:
     listed: bool = field(default=True, metadata={"identity": "neutre"})          # G8 : cotée en Bourse
     listed_month: int = field(default=-1, metadata={"identity": "neutre"})       # G8 : mois de l'introduction
     fund_backed_month: int = field(default=-1, metadata={"identity": "neutre"})  # G8 : premier apport d'un fonds
+    # lot H : acquéreur qui a absorbé l'entreprise (fusion) ; mémoire pour l'affichage, lue par aucune règle
+    acquired_by: str | None = field(default=None, metadata={"identity": "neutre"})
 
 
 def productivity_multiplier(company: "Company", config: SimulationConfig) -> float:

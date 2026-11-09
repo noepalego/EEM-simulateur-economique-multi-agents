@@ -355,6 +355,9 @@ def new_simulation() -> EconomySimulation:
             fund_savings_share=st.session_state.fund_savings_percent / 100,
             fund_fee_rate=_annual_points(st.session_state.fund_fee_annual, 12),
             fund_exit_months=int(st.session_state.fund_exit_years) * 12,
+            # lot H : salariés obligatoires, conseil d'actionnaires (désactivés par défaut)
+            staffless_closure_months=int(st.session_state.staffless_closure_months),
+            shareholder_governance=bool(st.session_state.shareholder_governance),
         )
     )
 
@@ -1030,7 +1033,7 @@ def render_state_industry(view_id: str, month: int, _simulation: EconomySimulati
         st.dataframe(
             [
                 {
-                    "Entreprise": companies[cid].name if cid in companies else cid, "Origine": h.origin,
+                    "Entreprise": simulation.company_label(cid), "Origine": h.origin,
                     "Part du capital": state_shares.get(cid, 0.0) / max(companies[cid].shares_outstanding, 1.0) if cid in companies else 0.0,
                     "Contrôle": "oui" if h.controlled else "non", "Mandat": h.mandate,
                     "Dirigeant": display_name(h.director) if h.director else "—",
@@ -1377,7 +1380,7 @@ def render_overview(view_id: str, month: int, _simulation: EconomySimulation) ->
         for row in top_companies:
             with st.container(border=True):
                 st.markdown(
-                    f"**{row['Entreprise']}** · **{row['Fortune nette']:,.0f} €**  \n"
+                    f"**{simulation.company_label(row['id'])}** · **{row['Fortune nette']:,.0f} €**  \n"
                     f"{dict(SECTORS)[row['Secteur']]} · Trésorerie {row['Trésorerie']:,.0f} € · "
                     f"Dette {row['Dettes']:,.0f} € · Bénéfice {row['Profit']:,.0f} €"
                 )
@@ -1903,6 +1906,21 @@ def render_sidebar() -> None:
                 "Huit mécanismes d'entreprise, désactivés par défaut : sans eux, la simulation est "
                 "identique à la version précédente. Ils agissent dès la période de chauffe."
             )
+            st.slider(
+                "Fermer une entreprise restée sans salarié après", min_value=0, max_value=24, value=0,
+                format="%d mois", key="staffless_closure_months",
+                help="0 : jamais (seule la liquidation amiable après 24 mois existe). Au-delà : une "
+                     "entreprise non bancaire sans aucun salarié pendant cette durée est fermée, ses "
+                     "actifs vendus, ses banques remboursées et le reste versé aux actionnaires. Jamais "
+                     "la dernière de son secteur ni une participation de l'État.",
+            )
+            st.checkbox(
+                "Conseil d'actionnaires : les 4 plus gros nomment et révoquent le dirigeant", value=False,
+                key="shareholder_governance",
+                help="Les quatre plus gros actionnaires votent, selon leurs titres : nomination du "
+                     "dirigeant, révocation après un an si l'entreprise perd de l'argent trop longtemps, "
+                     "et part des bénéfices réinvestie.",
+            )
             st.checkbox(
                 "Expérience : fondateurs, négociation des salaires, acquéreurs", value=False,
                 key="experience_learning",
@@ -2311,8 +2329,8 @@ def render_firm_tables(view_id: str, month: int, _simulation: EconomySimulation)
         sector_summary.append(
             {
                 "Secteur": label,
-                "Actives": len(sector_active),
-                "Fermées": len(sector_firms) - len(sector_active),
+                "Entreprises": len(sector_active),
+                "Sans salarié": sum(1 for c in sector_active if not c.employees),
                 "Employés": sum(len(c.employees) for c in sector_active),
                 "Chiffre d’affaires (€)": sector_revenue,
                 "Part du CA": sector_revenue / revenue_total,
@@ -2334,14 +2352,19 @@ def render_firm_tables(view_id: str, month: int, _simulation: EconomySimulation)
 
     st.markdown("#### Résumé des entreprises")
     st.caption(
-        "Une ligne par entreprise (survolez une valeur pour la lire en entier ; "
-        "le détail s'ouvre via le sélecteur ci-dessus)."
+        "Une ligne par entreprise en activité (les entreprises fermées ou absorbées ne sont plus "
+        "listées ; une entreprise absorbée apparaît dans la fiche de celle qui l'a rachetée). "
+        "Le détail s'ouvre dans le sous-onglet « Fiche d'une entreprise »."
     )
+    labels = simulation.company_labels()
+    by_id = {company.id: company for company in simulation.companies}
     summary_rows = [
         {
-            "Entreprise": row["Entreprise"],
-            "Secteur": row["Secteur"],
-            "Statut": "Active" if row["Statut"] == "Active" else "Fermée",
+            "Entreprise": labels[row["_id"]],
+            "Secteur": row["Secteur"].split(" (")[0],
+            "Groupe": labels.get(by_id[row["_id"]].parent_id, "—") if by_id[row["_id"]].parent_id else "—",
+            "Bourse": "cotée" if by_id[row["_id"]].listed else "non cotée",
+            "Dirigeant": row["CEO"] if row["CEO"] != "Aucun" else "—",
             "Fondateur": row["Fondateur"],
             "Part du fondateur": row["Part du fondateur"],
             "Employés": row["Employés"],
@@ -2355,7 +2378,8 @@ def render_firm_tables(view_id: str, month: int, _simulation: EconomySimulation)
             "Salaire moyen (€)": row["Salaire moyen"],
             "Trésorerie (€)": row["Trésorerie"],
         }
-        for row in sorted(firm_rows, key=lambda r: (r["Statut"] != "Active", r["Secteur"], r["Entreprise"]))
+        for row in sorted(firm_rows, key=lambda r: (r["Secteur"], labels[r["_id"]]))
+        if row["Statut"] == "Active"
     ]
     st.dataframe(
         summary_rows,
@@ -2379,117 +2403,344 @@ def render_firm_tables(view_id: str, month: int, _simulation: EconomySimulation)
     )
 
 
+def _money_columns(*names: str) -> dict:
+    return {name: st.column_config.NumberColumn(format="localized") for name in names}
+
+
+def _percent_columns(*names: str) -> dict:
+    return {name: st.column_config.NumberColumn(format="percent", width="small") for name in names}
+
+
 @st.cache_data(show_spinner=False, max_entries=4)
-def render_enterprise_panel(view_id: str, month: int, _simulation: EconomySimulation) -> None:
-    """Lot G : groupes, magasins, données clients, non cotées et fonds des banques (sans widget).
-    Affiché seulement quand un des huit mécanismes est activé."""
+def render_groups_panel(view_id: str, month: int, _simulation: EconomySimulation) -> None:
+    """Sous-onglet « Groupes & filiales » : sociétés mères, filiales créées ou rachetées, ce
+    qu'elles ont coûté et rapporté, entreprises absorbées, magasins et données (sans widget)."""
     simulation = _simulation
     state = getattr(simulation, "enterprise", None)
-    if state is None:
-        return
-    live = simulation.live
-    history = simulation.enterprise_history()
-    last = history[-1] if history else {}
+    live, offset = simulation.live, simulation.warmup_offset
+    labels = simulation.company_labels()
+    sectors = {key: label.split(" (")[0] for key, label in SECTORS}
     active = [c for c in simulation.companies if c.active]
-    names = {c.id: c.name for c in simulation.companies}
-    labels = dict(SECTORS)
-    prices = {c.id: c.stock_price for c in active}
-    st.markdown("#### Groupes, magasins et fonds")
-    cols = st.columns(6)
-    cols[0].metric("Filiales", f"{sum(1 for c in active if c.parent_id is not None)}",
-                   help="Entreprises contrôlées par une société mère (créées ou rachetées).")
-    cols[1].metric("Magasins", f"{sum(c.stores for c in active):.1f}",
-                   help="Réseaux de vente des producteurs d'alimentation et de biens.")
-    cols[2].metric("Non cotées", f"{sum(1 for c in active if not c.listed)}",
-                   help="Entreprises hors de la Bourse (jeunes entreprises, filiales créées).")
-    cols[3].metric("Actif des fonds", compact(sum(fund_assets(f, prices) for f in state.funds), "€"),
-                   help="Trésorerie et titres des fonds gérés par les banques.")
-    cols[4].metric("Ménages porteurs de parts", f"{sum(1 for p in simulation.people if p.fund_units)}")
-    owned = sum(int(p.owns_home) + p.investment_homes for p in simulation.people)
-    cols[5].metric(
-        "État moyen des logements",
-        f"{last.get('etat_logements', 1.0):.0%}" if live.property_upkeep else "—",
-        help=f"Gros entretien : 100 % = neuf ; {owned} logements détenus par des ménages.",
+    by_id = {c.id: c for c in simulation.companies}
+    history = simulation.enterprise_history()
+    subsidiaries = [c for c in active if c.parent_id in by_id]
+    heads = sorted({c.parent_id for c in subsidiaries}, key=lambda cid: labels[cid])
+    absorbed = [c for c in simulation.companies if c.acquired_by is not None]
+    log = state.group_log if state is not None else {}
+    st.markdown("#### Groupes et filiales")
+    if not (live.diversification or live.conglomerate_takeovers):
+        st.info(
+            "Aucun groupe ne peut se former : cochez « Diversification : création de filiales » ou "
+            "« Rachats d'entreprises d'un autre secteur » dans la barre latérale (rubrique « Groupes, "
+            "magasins, fonds & expérience »), puis réinitialisez. Les fusions dans un même secteur "
+            "restent listées plus bas."
+        )
+    firms = [c for c in active if c.sector != "bank"]
+    grouped = [c for c in active if c.parent_id in by_id or c.id in heads]
+    cols = st.columns(5)
+    cols[0].metric("Groupes", f"{len(heads)}", help="Sociétés mères qui contrôlent au moins une filiale.")
+    cols[1].metric("Filiales", f"{len(subsidiaries)}")
+    cols[2].metric(
+        "Emploi dans les groupes",
+        f"{sum(len(c.employees) for c in grouped) / max(1, sum(len(c.employees) for c in firms)):.0%}",
+        help="Part des salariés des entreprises non bancaires qui travaillent dans un groupe.",
     )
-    if len(history) > 1:
+    cols[3].metric(
+        "Dividendes remontés (cumul)",
+        compact(sum(entry["dividendes"] for entry in log.values())
+                + sum(row["dividendes"] for row in (state.group_exits if state is not None else [])), " €"),
+        help="Dividendes versés par les filiales à leur société mère depuis leur entrée dans le groupe.",
+    )
+    cols[4].metric("Entreprises absorbées", f"{len(absorbed)}",
+                   help="Fusions dans un même secteur depuis le début de la simulation, chauffe comprise.")
+    if len(history) > 1 and any(row.get("filiales", 0) for row in history):
         left, right = st.columns(2)
         with left:
-            st.caption("Filiales, magasins et entreprises non cotées")
+            st.caption("Nombre de groupes et de filiales")
             line_chart(
-                [{"Période": row["periode"], "Filiales": row.get("filiales", 0),
-                  "Magasins": row.get("magasins", 0.0), "Non cotées": row.get("non_cotees", 0)}
-                 for row in history],
-                x="Période", y=["Filiales", "Magasins", "Non cotées"],
+                [{"Période": row["periode"], "Groupes": row.get("groupes", 0), "Filiales": row.get("filiales", 0)}
+                 for row in history], x="Période", y=["Groupes", "Filiales"],
             )
         with right:
-            st.caption("Flux mensuels : apports des fonds, achats de données, gros travaux (€)")
+            st.caption("Poids des groupes dans l'économie (%, entreprises non bancaires)")
             line_chart(
-                [{"Période": row["periode"], "Apports des fonds": row.get("fonds_apports", 0.0),
-                  "Données": row.get("donnees", 0.0), "Travaux": row.get("travaux", 0.0)}
-                 for row in history],
-                x="Période", y=["Apports des fonds", "Données", "Travaux"],
+                [{"Période": row["periode"], "Emploi": 100.0 * row.get("emploi_groupes", 0.0),
+                  "Chiffre d'affaires": 100.0 * row.get("ca_groupes", 0.0)} for row in history],
+                x="Période", y=["Emploi", "Chiffre d'affaires"],
             )
-    rows = [
-        {
-            "Entreprise": c.name,
-            "Secteur": labels.get(c.sector, c.sector),
-            "Société mère": names.get(c.parent_id, "—") if c.parent_id else "—",
-            "Part de la mère": (
-                next((p.shares.get(c.id, 0.0) for p in active if p.id == c.parent_id), 0.0)
-                / max(c.shares_outstanding - c.treasury_shares, 1e-9) if c.parent_id else None
-            ),
-            "Cotée": "oui" if c.listed else "non",
-            "Magasins": c.stores,
-            "Connaissance des clients": c.market_insight if c.sector in ("food", "goods") else None,
-            "Soutenue par un fonds": "oui" if c.fund_backed_month >= 0 else "—",
-            "Employés": len(c.employees),
-            "Bénéfice (€)": c.profit,
-        }
-        for c in active
-        if c.parent_id is not None or not c.listed or c.stores > 0.0 or c.market_insight > 0.0
-        or c.fund_backed_month >= 0 or any(o.parent_id == c.id for o in active)
-    ]
-    if rows:
-        st.caption("Entreprises concernées : sociétés mères, filiales, réseaux de magasins, non cotées")
+    for head_id in heads:
+        head = by_id[head_id]
+        members = [c for c in subsidiaries if c.parent_id == head_id]
+        everyone = [head, *members]
+        st.markdown(
+            f"**Groupe {labels[head_id]}** · {len(everyone)} entreprises · "
+            f"{sum(len(c.employees) for c in everyone)} salariés · chiffre d'affaires du mois "
+            f"{compact(sum(c.revenue for c in everyone), ' €')} · bénéfice "
+            f"{compact(sum(c.profit for c in everyone), ' €')}"
+        )
+        rows = []
+        for company in members:
+            entry = log.get(company.id, {})
+            issued = max(company.shares_outstanding - company.treasury_shares, 1e-9)
+            stake = head.shares.get(company.id, 0.0)
+            value, cost = stake * company.stock_price, entry.get("cout", 0.0)
+            rows.append({
+                "Filiale": labels[company.id],
+                "Secteur": sectors.get(company.sector, company.sector),
+                "Origine": entry.get("origine", "—"),
+                "Depuis la période": entry["mois"] - offset if entry else None,
+                "Part détenue": stake / issued,
+                "Coût (€)": cost if entry else None,
+                "Valeur de la part (€)": value,
+                "Dividendes reçus (€)": entry.get("dividendes", 0.0),
+                "Gain total": (value + entry.get("dividendes", 0.0) - cost) / cost if cost > 0.0 else None,
+                "Productivité à l'entrée": entry.get("productivite"),
+                "Productivité": company.productivity_trait,
+                "Magasins": company.stores,
+                "Salariés": len(company.employees),
+                "Bénéfice du mois (€)": company.profit,
+            })
         st.dataframe(
-            rows, hide_index=True, width="stretch", height=min(480, 38 + 35 * len(rows)),
+            rows, hide_index=True, width="stretch",
             column_config={
-                "Part de la mère": st.column_config.NumberColumn(format="percent", width="small"),
+                **_percent_columns("Part détenue", "Gain total"),
+                **_money_columns("Coût (€)", "Valeur de la part (€)", "Dividendes reçus (€)", "Bénéfice du mois (€)"),
+                "Depuis la période": st.column_config.NumberColumn(format="%d", width="small"),
+                "Productivité à l'entrée": st.column_config.NumberColumn(format="%.2f", width="small"),
+                "Productivité": st.column_config.NumberColumn(format="%.2f", width="small"),
                 "Magasins": st.column_config.NumberColumn(format="%.1f", width="small"),
-                "Connaissance des clients": st.column_config.NumberColumn(format="percent", width="small"),
-                "Employés": st.column_config.NumberColumn(format="%d", width="small"),
-                "Bénéfice (€)": st.column_config.NumberColumn(format="localized"),
+                "Salariés": st.column_config.NumberColumn(format="%d", width="small"),
+                "Gain total": st.column_config.NumberColumn(
+                    format="percent", width="small",
+                    help="(valeur de la part + dividendes reçus − coût) / coût.",
+                ),
             },
         )
-    if state.funds:
-        st.caption(
-            "Fonds d'investissement des banques : les ménages y placent une part de leur épargne, les "
-            "fonds financent les entreprises non cotées et sortent après l'introduction en Bourse."
-        )
+        merged = [labels[c.id] for c in absorbed if c.acquired_by == head_id]
+        if merged:
+            st.caption("Entreprises absorbées par la société mère (fusions) : " + ", ".join(merged))
+    exits = state.group_exits if state is not None else []
+    if exits:
+        st.markdown("**Filiales sorties d'un groupe**")
         st.dataframe(
             [
                 {
-                    "Fonds": fund.name,
-                    "Banque gérante": names.get(fund.bank_id, "—"),
-                    "Actif (€)": fund_assets(fund, prices),
-                    "Trésorerie (€)": fund.cash,
-                    "Participations": sum(1 for cid, q in fund.shares.items() if q > 0.0 and cid in prices),
-                    "Porteurs": sum(1 for p in simulation.people if p.fund_units.get(fund.id, 0.0) > 0.0),
+                    "Filiale": labels.get(row["filiale"], row["filiale"]),
+                    "Société mère": labels.get(row["mere"], row["mere"]),
+                    "Origine": row["origine"],
+                    "Entrée (période)": row["mois"] - offset,
+                    "Sortie (période)": row["sortie"] - offset,
+                    "Issue": row["issue"],
+                    "Coût (€)": row["cout"],
+                    "Dividendes reçus (€)": row["dividendes"],
                 }
-                for fund in state.funds
+                for row in reversed(exits[-40:])
+            ],
+            hide_index=True, width="stretch",
+            column_config=_money_columns("Coût (€)", "Dividendes reçus (€)"),
+        )
+    if absorbed:
+        st.markdown("**Fusions : entreprises absorbées par un concurrent**")
+        st.dataframe(
+            [
+                {
+                    "Entreprise absorbée": labels[c.id],
+                    "Secteur": sectors.get(c.sector, c.sector),
+                    "Absorbée par": labels.get(c.acquired_by, c.acquired_by),
+                    "Période": c.exit_month - offset,
+                }
+                for c in sorted(absorbed, key=lambda c: -c.exit_month)[:40]
+            ],
+            hide_index=True, width="stretch",
+        )
+    networks = [c for c in active if c.stores > 0.0 or c.market_insight > 0.0]
+    if networks:
+        st.markdown("**Magasins et connaissance des clients**")
+        st.dataframe(
+            [
+                {
+                    "Entreprise": labels[c.id],
+                    "Secteur": sectors.get(c.sector, c.sector),
+                    "Magasins": c.stores,
+                    "Connaissance des clients": c.market_insight,
+                    "Salariés": len(c.employees),
+                    "Bénéfice du mois (€)": c.profit,
+                }
+                for c in sorted(networks, key=lambda c: -c.stores)
             ],
             hide_index=True, width="stretch",
             column_config={
-                "Actif (€)": st.column_config.NumberColumn(format="localized"),
-                "Trésorerie (€)": st.column_config.NumberColumn(format="localized"),
+                "Magasins": st.column_config.NumberColumn(format="%.1f", width="small"),
+                **_percent_columns("Connaissance des clients"),
+                **_money_columns("Bénéfice du mois (€)"),
             },
         )
-    if live.experience_learning:
+    if live.experience_learning and history:
         founders = sum(1 for p in simulation.people if p.ventures > 0)
         st.caption(
             f"Expérience : {founders} ménage(s) ont déjà fondé une entreprise ; salaire d'embauche négocié "
-            f"en moyenne à {last.get('negociation', 1.0):.1%} de l'offre."
+            f"en moyenne à {history[-1].get('negociation', 1.0):.1%} de l'offre."
         )
+
+
+@st.cache_data(show_spinner=False, max_entries=4)
+def render_funds_panel(view_id: str, month: int, _simulation: EconomySimulation) -> None:
+    """Sous-onglet « Fonds d'investissement » : fonds gérés par les banques, épargne des ménages,
+    participations, sorties et rendement (sans widget)."""
+    simulation = _simulation
+    state = getattr(simulation, "enterprise", None)
+    offset = simulation.warmup_offset
+    st.markdown("#### Fonds d'investissement des banques")
+    if state is None or not state.funds:
+        st.info(
+            "Aucun fonds : cochez « Jeunes entreprises non cotées et fonds des banques » dans la barre "
+            "latérale (rubrique « Groupes, magasins, fonds & expérience »), puis réinitialisez. Chaque "
+            "banque gère alors un fonds où les ménages placent une part de leur épargne ; le fonds "
+            "finance les jeunes entreprises non cotées, puis revend ses titres après leur introduction "
+            "en Bourse."
+        )
+        return
+    labels = simulation.company_labels()
+    sectors = {key: label.split(" (")[0] for key, label in SECTORS}
+    by_id = {c.id: c for c in simulation.companies}
+    prices = {c.id: c.stock_price for c in simulation.companies if c.active}
+    funds = state.funds
+    assets = {fund.id: fund_assets(fund, prices) for fund in funds}
+    holders = [p for p in simulation.people if p.fund_units]
+    placed = sum(p.fund_value for p in holders)
+    cols = st.columns(5)
+    cols[0].metric("Actif des fonds", compact(sum(assets.values()), " €"),
+                   help="Trésorerie et participations, au cours ou à la valeur estimée.")
+    cols[1].metric("Dont trésorerie en attente", compact(sum(f.cash for f in funds), " €"))
+    cols[2].metric("Participations", f"{sum(1 for f in funds for cid, q in f.shares.items() if q > 0.0 and cid in prices)}")
+    cols[3].metric("Ménages porteurs de parts", f"{len(holders)}",
+                   help=f"Sur {len(simulation.people)} ménages.")
+    cols[4].metric("Épargne placée par porteur", compact(placed / len(holders), " €") if holders else "—")
+    cols = st.columns(5)
+    cols[0].metric("Épargne confiée (cumul)", compact(sum(f.subscribed for f in funds), " €"))
+    cols[1].metric("Apports aux entreprises (cumul)", compact(sum(f.invested for f in funds), " €"))
+    cols[2].metric("Dividendes et cessions encaissés", compact(sum(f.received for f in funds), " €"))
+    cols[3].metric("Reversé aux porteurs (cumul)", compact(sum(f.distributed + f.redeemed for f in funds), " €"),
+                   help="Distributions de trésorerie et rachats de parts.")
+    cols[4].metric("Frais versés aux banques (cumul)", compact(sum(f.fees for f in funds), " €"))
+    series = [row for row in state.fund_history if row["mois"] - offset >= 0]
+    names = {fund.id: simulation.fund_label(fund.id, labels) for fund in funds}
+    if len({row["mois"] for row in series}) > 1:
+        by_month: dict[int, dict] = {}
+        totals: dict[int, dict] = {}
+        for row in series:
+            period = row["mois"] - offset
+            by_month.setdefault(period, {"Période": period})[names.get(row["fonds"], row["fonds"])] = row["valeur_part"]
+            total = totals.setdefault(period, {"Période": period, "Participations": 0.0, "Trésorerie": 0.0})
+            total["Participations"] += row["actif"] - row["tresorerie"]
+            total["Trésorerie"] += row["tresorerie"]
+        left, right = st.columns(2)
+        with left:
+            st.caption("Valeur d'une part de chaque fonds (1 € à la création ; baisse après une distribution)")
+            line_chart([by_month[p] for p in sorted(by_month)], x="Période")
+        with right:
+            st.caption("Actif des fonds : participations et trésorerie en attente (€)")
+            area_chart([totals[p] for p in sorted(totals)], x="Période", y=["Participations", "Trésorerie"])
+    history = simulation.enterprise_history()
+    if len(history) > 1:
+        st.caption("Flux mensuels : épargne confiée, apports aux entreprises, reversements aux porteurs (€)")
+        line_chart(
+            [{"Période": row["periode"], "Épargne confiée": row.get("fonds_souscriptions", 0.0),
+              "Apports aux entreprises": row.get("fonds_apports", 0.0),
+              "Reversé aux porteurs": row.get("fonds_distributions", 0.0) + row.get("fonds_rachats", 0.0)}
+             for row in history],
+            x="Période", y=["Épargne confiée", "Apports aux entreprises", "Reversé aux porteurs"],
+        )
+    st.markdown("**Les fonds**")
+    st.dataframe(
+        [
+            {
+                "Fonds": names[fund.id],
+                "Banque gérante": labels.get(fund.bank_id, "—"),
+                "Actif (€)": assets[fund.id],
+                "Trésorerie (€)": fund.cash,
+                "Valeur de la part": assets[fund.id] / fund.units if fund.units > 1e-9 else 1.0,
+                "Porteurs": sum(1 for p in holders if p.fund_units.get(fund.id, 0.0) > 0.0),
+                "Participations": sum(1 for cid, q in fund.shares.items() if q > 0.0 and cid in prices),
+                "Épargne confiée (€)": fund.subscribed,
+                "Investi (€)": fund.invested,
+                "Encaissé (€)": fund.received,
+                "Reversé (€)": fund.distributed + fund.redeemed,
+                "Frais (€)": fund.fees,
+                "Résultat pour les porteurs (€)": assets[fund.id] + fund.distributed + fund.redeemed - fund.subscribed,
+            }
+            for fund in funds
+        ],
+        hide_index=True, width="stretch",
+        column_config={
+            **_money_columns("Actif (€)", "Trésorerie (€)", "Épargne confiée (€)", "Investi (€)", "Encaissé (€)",
+                             "Reversé (€)", "Frais (€)"),
+            "Valeur de la part": st.column_config.NumberColumn(format="%.3f", width="small"),
+            "Résultat pour les porteurs (€)": st.column_config.NumberColumn(
+                format="localized",
+                help="Actif actuel + sommes déjà reversées − épargne confiée : ce que les ménages ont "
+                     "gagné ou perdu, frais déduits.",
+            ),
+        },
+    )
+    positions = []
+    for fund in funds:
+        for company_id, quantity in fund.shares.items():
+            company = by_id.get(company_id)
+            if company is None or not company.active or quantity <= 0.0:
+                continue
+            bought = fund.bought.get(company_id, 0.0)
+            cost = fund.cost.get(company_id, 0.0) * min(1.0, quantity / bought) if bought > 0.0 else None
+            value = quantity * company.stock_price
+            positions.append({
+                "Fonds": names[fund.id],
+                "Entreprise": labels[company_id],
+                "Secteur": sectors.get(company.sector, company.sector),
+                "Bourse": "cotée (en cours de cession)" if company.listed else "non cotée",
+                "Entrée (période)": fund.entry[company_id] - offset if company_id in fund.entry else None,
+                "Part du capital": quantity / max(company.shares_outstanding - company.treasury_shares, 1e-9),
+                "Coût des titres détenus (€)": cost,
+                "Valeur (€)": value,
+                "Plus-value latente": (value - cost) / cost if cost else None,
+                "Salariés": len(company.employees),
+                "Bénéfice du mois (€)": company.profit,
+            })
+    st.markdown("**Participations en portefeuille**")
+    if positions:
+        st.dataframe(
+            sorted(positions, key=lambda row: -row["Valeur (€)"]), hide_index=True, width="stretch",
+            height=min(480, 38 + 35 * len(positions)),
+            column_config={
+                **_percent_columns("Part du capital", "Plus-value latente"),
+                **_money_columns("Coût des titres détenus (€)", "Valeur (€)", "Bénéfice du mois (€)"),
+                "Entrée (période)": st.column_config.NumberColumn(format="%d", width="small"),
+                "Salariés": st.column_config.NumberColumn(format="%d", width="small"),
+            },
+        )
+    else:
+        st.caption("Aucune participation : aucune entreprise non cotée n'a encore eu besoin de trésorerie.")
+    exits = [(fund, row) for fund in funds for row in fund.exits]
+    if exits:
+        st.markdown("**Participations soldées**")
+        st.dataframe(
+            [
+                {
+                    "Fonds": names[fund.id],
+                    "Entreprise": labels.get(row["entreprise"], row["entreprise"]),
+                    "Entrée (période)": row["entree"] - offset,
+                    "Sortie (période)": row["sortie"] - offset,
+                    "Durée (mois)": row["sortie"] - row["entree"],
+                    "Investi (€)": row["investi"],
+                    "Issue": row["issue"],
+                }
+                for fund, row in sorted(exits, key=lambda item: -item[1]["sortie"])[:60]
+            ],
+            hide_index=True, width="stretch", column_config=_money_columns("Investi (€)"),
+        )
+        outcomes: dict[str, int] = {}
+        for _, row in exits:
+            outcomes[row["issue"]] = outcomes.get(row["issue"], 0) + 1
+        st.caption("Issues : " + " · ".join(f"{label} {count}" for label, count in sorted(outcomes.items())))
 
 
 @st.cache_data(show_spinner=False, max_entries=16)
@@ -2503,12 +2754,14 @@ def render_company_profile(
         simulation.company_profile(selected_company_id) if selected_company_id else None
     )
     if selected_company:
-        st.divider()
-        st.subheader(f"Profil détaillé · {selected_company.name}")
+        labels = simulation.company_labels()
+        st.subheader(labels[selected_company.id])
         founder_label, founder_share = simulation.founder_stake(selected_company)
         st.caption(
-            f"{dict(SECTORS)[selected_company.sector]} · "
-            f"{'Active' if selected_company.active else 'Absorbée / fermée'} · "
+            f"{dict(SECTORS)[selected_company.sector].split(' (')[0]} · "
+            + (f"filiale de {labels[selected_company.parent_id]} · "
+               if selected_company.parent_id in labels else "")
+            + f"{'cotée en Bourse' if selected_company.listed else 'non cotée'} · "
             f"PDG : {simulation.person_name(selected_company.executive_id)}"
             + (
                 f" · Fondateur : {founder_label}"
@@ -2708,7 +2961,7 @@ def render_company_profile(
                         values.items(), key=lambda item: item[1], reverse=True
                     ):
                         st.write(
-                            f"{simulation.company_name(partner_id)} · "
+                            f"{simulation.company_label(partner_id)} · "
                             f"{transaction_label} {amount:,.0f} €"
                         )
 
@@ -2767,7 +3020,50 @@ def render_company_profile_end(
     simulation = _simulation
     companies_by_id = {company.id: company for company in simulation.companies}
     selected_company = simulation.company_profile(selected_company_id)
+    labels = simulation.company_labels()
     if selected_company:
+        board = simulation.shareholder_rows(selected_company, simulation.live.board_seats)
+        if board:
+            st.markdown(
+                "**Conseil d'actionnaires**" if simulation.live.shareholder_governance
+                else "**Principaux actionnaires**"
+            )
+            st.caption(
+                "Les plus gros actionnaires nomment et révoquent le dirigeant, et orientent la part des "
+                "bénéfices réinvestie." if simulation.live.shareholder_governance else
+                "Le dirigeant est choisi parmi les salariés ; cochez « Conseil d'actionnaires » dans la "
+                "barre latérale pour que ces actionnaires le nomment et le révoquent."
+            )
+            st.dataframe(
+                board, hide_index=True, width="stretch",
+                column_config={
+                    "Titres": st.column_config.NumberColumn(format="%.1f", width="small"),
+                    "Part du capital émis": st.column_config.NumberColumn(format="percent", width="small"),
+                },
+            )
+        subsidiaries = [
+            c for c in simulation.companies if c.active and c.parent_id == selected_company.id
+        ]
+        absorbed = simulation.absorbed_companies(selected_company.id)
+        if subsidiaries or absorbed or selected_company.parent_id in labels:
+            st.markdown("**Groupe**")
+            if selected_company.parent_id in labels:
+                st.markdown(f"- Société mère : **{labels[selected_company.parent_id]}**")
+            for company in subsidiaries:
+                issued = max(company.shares_outstanding - company.treasury_shares, 1e-9)
+                st.markdown(
+                    f"- Filiale : **{labels[company.id]}** · "
+                    f"{dict(SECTORS)[company.sector].split(' (')[0]} · "
+                    f"{selected_company.shares.get(company.id, 0.0) / issued:.0%} du capital · "
+                    f"{len(company.employees)} salariés · bénéfice du mois {company.profit:,.0f} €"
+                )
+            if absorbed:
+                st.markdown("Entreprises rachetées et absorbées (fusions) :")
+                for row in absorbed:
+                    st.markdown(
+                        f"- **{row['Entreprise']}** · {row['Secteur'].split(' (')[0]} · "
+                        f"période {row['Période du rachat']}"
+                    )
         if selected_company.employees:
             with st.expander(f"Voir l'équipe ({len(selected_company.employees)} personnes)"):
                 for employee_id in selected_company.employees:
@@ -2786,7 +3082,7 @@ def render_company_profile_end(
         st.markdown("**Participations détenues par cette entreprise**")
         for issuer_id, shares in sorted(selected_company.shares.items()):
             issuer = companies_by_id.get(issuer_id)
-            if issuer is None:
+            if issuer is None or not issuer.active:
                 continue
             ownership = (
                 shares / issuer.shares_outstanding
@@ -2794,7 +3090,7 @@ def render_company_profile_end(
                 else 0.0
             )
             st.markdown(
-                f"- **{issuer.name}** · {shares:.1f} actions · "
+                f"- **{labels[issuer.id]}** · {shares:.1f} actions · "
                 f"{ownership:.1%} du capital · valeur estimée "
                 f"{shares * issuer.stock_price:,.0f} €"
             )
@@ -2814,7 +3110,7 @@ def render_company_profile_end(
                 )
                 borrower_type = "Prêt immobilier"
             else:
-                borrower_name = simulation.company_name(borrower_id)
+                borrower_name = simulation.company_label(borrower_id)
                 borrower_type = "Prêt entreprise"
             st.markdown(
                 f"- **{borrower_name}** · {borrower_type} · solde "
@@ -2829,12 +3125,12 @@ def render_stock_chart(
     """Courbe des cours des entreprises choisies, mémorisée par simulation, mois et sélection."""
     simulation = _simulation
     observed_history = simulation.observed_history
-    companies_by_id = {company.id: company for company in simulation.companies}
+    companies_by_id = simulation.company_labels()
     stock_history = [
         {
             "Période": record.month,
             **{
-                companies_by_id[company_id].name: record.company_prices.get(
+                companies_by_id[company_id]: record.company_prices.get(
                     company_id, 0.0
                 )
                 for company_id in stock_selection
@@ -3000,89 +3296,108 @@ if not lazy_tabs or state_tab.open:
 
 if not lazy_tabs or firms_tab.open:
     with firms_tab:
-        st.subheader("Performance des entreprises")
-        st.markdown(
-            '<p class="section-note">Chaque fiche résume une entreprise. Choisissez-en une pour ouvrir son historique.</p>',
-            unsafe_allow_html=True,
-        )
         active_companies = [company for company in simulation.companies if company.active]
         companies_by_id = {company.id: company for company in simulation.companies}
-        company_options = [company.id for company in active_companies]
-        selected_company_id = None
-        if company_options:
-            previous_selection = st.session_state.get("company_selector")
-            default_selection = (
-                previous_selection
-                if previous_selection in company_options
-                else company_options[0]
+        company_labels = simulation.company_labels()
+        company_options = sorted(
+            (company.id for company in active_companies),
+            key=lambda company_id: (companies_by_id[company_id].sector, company_labels[company_id]),
+        )
+        firms_list, firm_sheet, groups_tab, funds_tab, market_tab = st.tabs(
+            ["Toutes les entreprises", "Fiche d'une entreprise", "Groupes & filiales",
+             "Fonds d'investissement", "Bourse"]
+        )
+        with firms_list:
+            st.markdown(
+                '<p class="section-note">Entreprises en activité, par secteur. Les entreprises fermées ou '
+                "absorbées ne sont plus affichées.</p>",
+                unsafe_allow_html=True,
             )
-            st.session_state["company_selector"] = default_selection
-            selected_company_id = st.selectbox(
-                "Entreprise à détailler",
-                company_options,
-                format_func=lambda company_id: (
-                    f"{companies_by_id[company_id].name} · "
-                    f"{dict(SECTORS)[companies_by_id[company_id].sector]} · "
-                    f"Cours {companies_by_id[company_id].stock_price:,.2f} €"
-                ),
-                key="company_selector",
-            )
+            render_firm_tables(st.session_state._view_id, simulation.month, simulation)
 
-        render_firm_tables(st.session_state._view_id, simulation.month, simulation)
-        # lot G : rien n'est affiché tant qu'aucun des huit mécanismes n'est activé
-        render_enterprise_panel(st.session_state._view_id, simulation.month, simulation)
-
-        selected_company = simulation.company_profile(selected_company_id) if selected_company_id else None
-        if selected_company:
-            view = (st.session_state._view_id, simulation.month, selected_company_id, simulation)
-            render_company_profile(*view)
-            company = companies_by_id[selected_company_id]
-            if company.sector != "bank":
-                with st.expander(f"🛠 Intervenir sur la trésorerie de l'entreprise ({company.cash:,.0f} €)".replace(",", " "),
-                                 **({"key": "company_intervention_panel"} if lazy_expanders else {})):
-                    show_intervention_message()
-                    render_cash_intervention("company", company.id, company.cash)
-            if selected_company.financial_history:
-                # volet fermé par défaut : les huit courbes ne sont calculées qu'à l'ouverture
-                # (versions de Streamlit sans volet paresseux : toujours calculées)
-                history_panel = st.expander(
-                    "Historiques de l'entreprise (trésorerie, activité, dividendes, effectifs, dette, cours)",
-                    **({"key": "company_history_panel", "on_change": "rerun"} if lazy_expanders else {}),
+        with firm_sheet:
+            selected_company_id = None
+            if company_options:
+                previous_selection = st.session_state.get("company_selector")
+                default_selection = (
+                    previous_selection
+                    if previous_selection in company_options
+                    else company_options[0]
                 )
-                if not lazy_expanders or history_panel.open:
-                    with history_panel:
-                        render_company_history(*view)
-            render_company_profile_end(*view)
-
-
-        st.subheader("Cours boursiers")
-        if company_options:
-            if "stock_chart_companies" in st.session_state:
-                st.session_state["stock_chart_companies"] = [
-                    company_id for company_id in st.session_state["stock_chart_companies"]
-                    if company_id in company_options
-                ]
-                stock_defaults = None
-            else:
-                stock_defaults = company_options[: min(6, len(company_options))]
-            stock_selection = st.multiselect(
-                "Entreprises à afficher",
-                company_options,
-                default=stock_defaults,
-                format_func=lambda company_id: companies_by_id[company_id].name,
-                key="stock_chart_companies",
-            )
-            if len(observed_history) > 1 and stock_selection:
-                render_stock_chart(
-                    st.session_state._view_id, simulation.month, tuple(stock_selection), simulation
+                st.session_state["company_selector"] = default_selection
+                selected_company_id = st.selectbox(
+                    "Entreprise à détailler",
+                    company_options,
+                    format_func=lambda company_id: (
+                        f"{company_labels[company_id]} · "
+                        f"{len(companies_by_id[company_id].employees)} salariés · "
+                        f"cours {companies_by_id[company_id].stock_price:,.2f} €"
+                    ),
+                    key="company_selector",
                 )
-            elif len(observed_history) <= 1:
-                st.caption("La courbe se dessine après deux mois de simulation.")
+            selected_company = simulation.company_profile(selected_company_id) if selected_company_id else None
+            if selected_company:
+                view = (st.session_state._view_id, simulation.month, selected_company_id, simulation)
+                render_company_profile(*view)
+                company = companies_by_id[selected_company_id]
+                if company.sector != "bank":
+                    with st.expander(f"🛠 Intervenir sur la trésorerie de l'entreprise ({company.cash:,.0f} €)".replace(",", " "),
+                                     **({"key": "company_intervention_panel"} if lazy_expanders else {})):
+                        show_intervention_message()
+                        render_cash_intervention("company", company.id, company.cash)
+                if selected_company.financial_history:
+                    # volet fermé par défaut : les huit courbes ne sont calculées qu'à l'ouverture
+                    # (versions de Streamlit sans volet paresseux : toujours calculées)
+                    history_panel = st.expander(
+                        "Historiques de l'entreprise (trésorerie, activité, dividendes, effectifs, dette, cours)",
+                        **({"key": "company_history_panel", "on_change": "rerun"} if lazy_expanders else {}),
+                    )
+                    if not lazy_expanders or history_panel.open:
+                        with history_panel:
+                            render_company_history(*view)
+                render_company_profile_end(*view)
             else:
-                st.info("Sélectionnez au moins une entreprise pour afficher son cours.")
-        else:
-            st.info("Aucune entreprise active à afficher.")
-        st.caption("La légende identifie chaque entreprise ; les cours réagissent aux bénéfices et aux événements.")
+                st.info("Aucune entreprise active à afficher.")
+
+        with groups_tab:
+            render_groups_panel(st.session_state._view_id, simulation.month, simulation)
+
+        with funds_tab:
+            render_funds_panel(st.session_state._view_id, simulation.month, simulation)
+
+        with market_tab:
+            st.markdown("#### Cours boursiers")
+            listed_options = [cid for cid in company_options if companies_by_id[cid].listed]
+            if listed_options:
+                if "stock_chart_companies" in st.session_state:
+                    st.session_state["stock_chart_companies"] = [
+                        company_id for company_id in st.session_state["stock_chart_companies"]
+                        if company_id in listed_options
+                    ]
+                    stock_defaults = None
+                else:
+                    stock_defaults = listed_options[: min(6, len(listed_options))]
+                stock_selection = st.multiselect(
+                    "Entreprises à afficher",
+                    listed_options,
+                    default=stock_defaults,
+                    format_func=lambda company_id: company_labels[company_id],
+                    key="stock_chart_companies",
+                )
+                if len(observed_history) > 1 and stock_selection:
+                    render_stock_chart(
+                        st.session_state._view_id, simulation.month, tuple(stock_selection), simulation
+                    )
+                elif len(observed_history) <= 1:
+                    st.caption("La courbe se dessine après deux mois de simulation.")
+                else:
+                    st.info("Sélectionnez au moins une entreprise pour afficher son cours.")
+            else:
+                st.info("Aucune entreprise cotée à afficher.")
+            st.caption(
+                "Seules les entreprises cotées ont un cours de Bourse ; la légende identifie chaque "
+                "entreprise ; les cours réagissent aux bénéfices et aux événements."
+            )
 
 if not lazy_tabs or households_tab.open:
     with households_tab:
@@ -3116,7 +3431,7 @@ if not lazy_tabs or households_tab.open:
             format_func=lambda person_id: (
                 f"{people_by_id[person_id].name} · "
                 f"Fortune {simulation.household_wealth(people_by_id[person_id]):,.0f} € · "
-                f"{simulation.company_name(people_by_id[person_id].employer_id)}"
+                f"{simulation.company_label(people_by_id[person_id].employer_id)}"
             ),
             key="household_selector",
         )
@@ -3129,7 +3444,7 @@ if not lazy_tabs or households_tab.open:
             st.divider()
             st.subheader(f"Profil détaillé · {person.name}")
             st.caption(
-                f"Employeur : {simulation.company_name(person.employer_id)} · "
+                f"Employeur : {simulation.company_label(person.employer_id)} · "
                 f"Rôle : {person.employment_role} · "
                 f"Logement : {'propriétaire' if person.owns_home else 'locataire' if person.rental_owner_id else 'aucun'} · "
                 f"Compétence : {person.skill:.2f} · ancienneté : {person.employer_tenure} mois"
