@@ -4,7 +4,7 @@ from typing import Literal, Mapping
 
 from economy import diagnostics
 from economy.expectations import planned_production
-from economy.intersector import pay_business_suppliers
+from economy.intersector import pay_business_suppliers, business_suppliers
 from economy.labor import effective_worker_count
 from economy.models import (
     Company,
@@ -63,6 +63,11 @@ def produce_food(
     worker_skills: Mapping[str, float | tuple[float, float]] | None = None,
 ) -> float:
     config = config or SimulationConfig()
+    suppliers_by_sector = business_suppliers(companies)
+    material_capacities = {
+        c.id: _effective_workers(c, worker_skills) * config.raw_material_extraction_productivity
+        for c in companies if c.active and c.sector == "materials"
+    }
     food_firms = [company for company in companies if company.active and company.sector == "food"]
     capacities = {
         company.id: (
@@ -79,7 +84,7 @@ def produce_food(
         # prévision propre de l'entreprise (economy.expectations), pas la demande agrégée
         wanted = min(capacities[company.id], planned_production(company, config))
         available_materials = _available_raw_materials(
-            companies, resources, config, worker_skills
+            companies, resources, config, worker_skills, material_capacities
         )
         maximum_production = min(wanted, available_materials)
         base_cost = config.food_input_cost
@@ -103,6 +108,8 @@ def produce_food(
             resources,
             config,
             worker_skills,
+            material_capacities,
+            suppliers_by_sector,
         )
         company.inventory += produced
         company.units_produced += produced
@@ -144,10 +151,12 @@ def sell_food(
         desired = {person_id: quantity * (1.0 + demand_boost) for person_id, quantity in desired.items()}
     demand = sum(desired.values())
     preferences = {person.id: person.quality_preference for person in people}
+    weights_for = _SalesWeights(food_firms, config.consumer_price_elasticity, market_price,
+                                desired, preferences, config.quality_preference_strength, affinity)
     if not food_firms or supply <= 0 or not people:
         for person in people:
             person.last_food_bought = 0.0
-        record_addressed_demand(food_firms, demand, {}, config, market_price, desired, preferences, affinity)
+        record_addressed_demand(food_firms, demand, {}, config, market_price, desired, preferences, affinity, weights_for)
         return 0.0, 0.0, demand
     sales_by_firm = _allocate_sales(
         food_firms,
@@ -159,6 +168,7 @@ def sell_food(
         preferences,
         config.quality_preference_strength,
         affinity,
+        weights_for,
     )
     sold = sum(sales_by_firm.values())
     ration = sold / demand if demand else 0.0
@@ -167,7 +177,7 @@ def sell_food(
         sales_by_firm, purchases, food_firms, people, 1.0 + config.vat_rate
     )
     sold = sum(sales_by_firm.values())
-    record_addressed_demand(food_firms, demand, sales_by_firm, config, market_price, desired, preferences, affinity)
+    record_addressed_demand(food_firms, demand, sales_by_firm, config, market_price, desired, preferences, affinity, weights_for)
 
     # le ménage paie le prix toutes taxes comprises ; l'entreprise encaisse le prix
     # hors taxe et la TVA (``total_revenue`` × taux) revient à l'État
@@ -195,6 +205,11 @@ def produce_consumer_goods(
     worker_skills: Mapping[str, float | tuple[float, float]] | None = None,
 ) -> float:
     config = config or SimulationConfig()
+    suppliers_by_sector = business_suppliers(companies)
+    material_capacities = {
+        c.id: _effective_workers(c, worker_skills) * config.raw_material_extraction_productivity
+        for c in companies if c.active and c.sector == "materials"
+    }
     producers = [company for company in companies if company.active and company.sector == "goods"]
     capacities = {
         company.id: (
@@ -212,7 +227,7 @@ def produce_consumer_goods(
         capacity = min(capacities[company.id], planned_production(company, config))
         material_per_unit = config.goods_material_per_unit
         raw_materials_available = _available_raw_materials(
-            companies, resources, config, worker_skills
+            companies, resources, config, worker_skills, material_capacities
         )
         maximum_production = min(
             capacity,
@@ -239,6 +254,8 @@ def produce_consumer_goods(
             resources,
             config,
             worker_skills,
+            material_capacities,
+            suppliers_by_sector,
         )
         company.goods_inventory += produced
         company.units_produced += produced
@@ -333,6 +350,7 @@ def _available_raw_materials(
     resources: Resources,
     config: SimulationConfig,
     worker_skills: Mapping[str, float | tuple[float, float]] | None = None,
+    material_capacities: dict[str, float] | None = None,
 ) -> float:
     suppliers = [
         company
@@ -346,8 +364,8 @@ def _available_raw_materials(
     remaining_capacity = sum(
         max(
             0.0,
-            _effective_workers(company, worker_skills)
-            * config.raw_material_extraction_productivity
+            (material_capacities[company.id] if material_capacities is not None else
+             _effective_workers(company, worker_skills) * config.raw_material_extraction_productivity)
             - company.materials_supplied_this_turn,
         )
         for company in suppliers
@@ -364,6 +382,8 @@ def _purchase_raw_materials(
     resources: Resources,
     config: SimulationConfig,
     worker_skills: Mapping[str, float | tuple[float, float]] | None = None,
+    material_capacities: dict[str, float] | None = None,
+    suppliers_by_sector: dict[str, list[Company]] | None = None,
 ) -> float:
     """Paie matières et intrants ; retourne la part payée aux secteurs fournisseurs selon
     ``input_cost_split`` (à prix de base, avant leurs facteurs de prix)."""
@@ -393,15 +413,15 @@ def _purchase_raw_materials(
     )
     if not suppliers or virgin_used <= 0.0:
         pay_business_suppliers(
-            buyer, total_input_cost, config.input_cost_split, companies, resources, deduct=False
+            buyer, total_input_cost, config.input_cost_split, companies, resources, deduct=False, suppliers_by_sector=suppliers_by_sector
         )
         return total_input_cost
 
     supplier_capacities = {
         supplier.id: max(
             0.0,
-            _effective_workers(supplier, worker_skills)
-            * config.raw_material_extraction_productivity
+            (material_capacities[supplier.id] if material_capacities is not None else
+             _effective_workers(supplier, worker_skills) * config.raw_material_extraction_productivity)
             - supplier.materials_supplied_this_turn,
         )
         for supplier in suppliers
@@ -442,7 +462,8 @@ def _purchase_raw_materials(
         extraction_cost = supplied * extraction_cost_per_unit + exploration_cost
         # extraction et exploration : prestations de services (forage, logistique)
         pay_business_suppliers(
-            supplier, extraction_cost, {"services": 1.0}, companies, resources
+            supplier, extraction_cost, {"services": 1.0}, companies, resources,
+            suppliers_by_sector=suppliers_by_sector,
         )
         resources.raw_materials += explored
     # intrants non matériels : achats réels aux secteurs fournisseurs
@@ -453,6 +474,7 @@ def _purchase_raw_materials(
         companies,
         resources,
         deduct=False,
+        suppliers_by_sector=suppliers_by_sector,
     )
     return total_input_cost - raw_material_payment
 
@@ -484,10 +506,12 @@ def sell_consumer_goods(
         desired = {person_id: quantity * (1.0 + demand_boost) for person_id, quantity in desired.items()}
     demand = sum(desired.values())
     preferences = {person.id: person.quality_preference for person in people}
+    weights_for = _SalesWeights(producers, config.consumer_price_elasticity, market_price,
+                                desired, preferences, config.quality_preference_strength, affinity)
     if not producers or supply <= 0.0 or not people:
         for person in people:
             person.last_goods_bought = 0.0
-        record_addressed_demand(producers, demand, {}, config, market_price, desired, preferences, affinity)
+        record_addressed_demand(producers, demand, {}, config, market_price, desired, preferences, affinity, weights_for)
         return 0.0, 0.0, demand
     sales_by_firm = _allocate_sales(
         producers,
@@ -499,6 +523,7 @@ def sell_consumer_goods(
         preferences,
         config.quality_preference_strength,
         affinity,
+        weights_for,
     )
     sold = sum(sales_by_firm.values())
     ration = sold / demand if demand else 0.0
@@ -507,7 +532,7 @@ def sell_consumer_goods(
         sales_by_firm, purchases, producers, people, 1.0 + config.vat_rate
     )
     sold = sum(sales_by_firm.values())
-    record_addressed_demand(producers, demand, sales_by_firm, config, market_price, desired, preferences, affinity)
+    record_addressed_demand(producers, demand, sales_by_firm, config, market_price, desired, preferences, affinity, weights_for)
 
     for person in people:
         quantity = purchases[person.id]
@@ -563,6 +588,64 @@ def _limit_sales_to_household_budgets(
     )
 
 
+class _SalesWeights:
+    """Poids bruts immuables pendant une vente, réutilisés après chaque saturation.
+
+    Chaque sous-marché refait sa normalisation dans l'ordre d'origine. Le cache
+    disparaît à la fin de la vente ; prix, goûts et demandes ne changent pas ici.
+    """
+
+    def __init__(self, companies, price_elasticity, reference_price, household_demands,
+                 household_quality_preferences, quality_strength, affinity=None):
+        self.indices = {company.id: i for i, company in enumerate(companies)}
+        self.cache = {}
+        self.rows = None
+        if household_demands and household_quality_preferences:
+            reference = max(reference_price, 0.01)
+            strength = max(0.0, quality_strength)
+            elasticity = max(0.0, price_elasticity)
+            terms = [(c.id, max(0.5, c.quality_trait), max(c.price, 0.01)) for c in companies]
+            self.rows = []
+            for household_id, household_demand in household_demands.items():
+                preference = max(0.0, household_quality_preferences.get(household_id, 1.0))
+                exponent = preference * strength
+                weights = [(reference * quality ** exponent / price) ** elasticity
+                           for _, quality, price in terms]
+                if affinity is not None:
+                    factors = affinity.get(household_id)
+                    if factors:
+                        weights = [weight * factors.get(cid, 1.0)
+                                   for (cid, _, _), weight in zip(terms, weights)]
+                self.rows.append((household_demand, weights))
+        else:
+            self.simple = {
+                c.id: (max(reference_price, 0.01)
+                       * max(0.5, c.quality_trait) ** max(0.0, quality_strength)
+                       / max(c.price, 0.01)) ** max(0.0, price_elasticity)
+                for c in companies
+            }
+
+    def __call__(self, companies):
+        ids = tuple(c.id for c in companies)
+        if ids in self.cache:
+            return self.cache[ids]
+        if self.rows is None:
+            result = {cid: self.simple[cid] for cid in ids}
+        else:
+            indices = [self.indices[cid] for cid in ids]
+            result = dict.fromkeys(ids, 0.0)
+            for household_demand, row in self.rows:
+                weights = [row[i] for i in indices]
+                total = sum(weights)
+                if total <= 0.0:
+                    continue
+                demand = max(0.0, household_demand)
+                for cid, weight in zip(ids, weights):
+                    result[cid] += demand * weight / total
+        self.cache[ids] = result
+        return result
+
+
 def _sales_weights(
     companies: list[Company],
     price_elasticity: float,
@@ -572,56 +655,8 @@ def _sales_weights(
     quality_strength: float,
     affinity: Mapping[str, Mapping[str, float]] | None = None,
 ) -> dict[str, float]:
-    """Poids de chaque entreprise dans les achats : (qualité / prix relatif) ^ élasticité,
-    agrégés ménage par ménage selon sa préférence pour la qualité. ``affinity`` (lot G) : facteur
-    propre à chaque couple ménage-entreprise (goût, magasins), appliqué au poids ; sans lui,
-    calcul inchangé."""
-    if household_demands and household_quality_preferences:
-        weights = {company.id: 0.0 for company in companies}
-        # termes qui ne dépendent pas du ménage, calculés une fois par entreprise (mêmes
-        # opérations, même ordre : résultats identiques bit à bit)
-        reference = max(reference_price, 0.01)
-        strength = max(0.0, quality_strength)
-        elasticity = max(0.0, price_elasticity)
-        terms = [
-            (company.id, max(0.5, company.quality_trait), max(company.price, 0.01))
-            for company in companies
-        ]
-        for household_id, household_demand in household_demands.items():
-            preference = max(
-                0.0,
-                household_quality_preferences.get(household_id, 1.0),
-            )
-            exponent = preference * strength
-            # liste dans l'ordre des entreprises (auparavant un dictionnaire relu par
-            # identifiant) : mêmes termes, même somme, même expression
-            household_weights = [
-                (reference * quality ** exponent / price) ** elasticity
-                for _, quality, price in terms
-            ]
-            if affinity is not None:
-                factors = affinity.get(household_id)
-                if factors:
-                    household_weights = [
-                        weight * factors.get(company_id, 1.0)
-                        for (company_id, _, _), weight in zip(terms, household_weights)
-                    ]
-            household_total_weight = sum(household_weights)
-            if household_total_weight <= 0.0:
-                continue
-            demand = max(0.0, household_demand)
-            for (company_id, _, _), weight in zip(terms, household_weights):
-                weights[company_id] += demand * weight / household_total_weight
-        return weights
-    return {
-        company.id: (
-            max(reference_price, 0.01)
-            * max(0.5, company.quality_trait) ** max(0.0, quality_strength)
-            / max(company.price, 0.01)
-        )
-        ** max(0.0, price_elasticity)
-        for company in companies
-    }
+    return _SalesWeights(companies, price_elasticity, reference_price, household_demands,
+                         household_quality_preferences, quality_strength, affinity)(companies)
 
 
 def record_addressed_demand(
@@ -633,12 +668,13 @@ def record_addressed_demand(
     household_demands: Mapping[str, float] | None = None,
     household_quality_preferences: Mapping[str, float] | None = None,
     affinity: Mapping[str, Mapping[str, float]] | None = None,
+    weights_for: _SalesWeights | None = None,
 ) -> None:
     """Demande adressée à chaque entreprise (avant rationnement par les stocks) et part
     qu'elle n'a pas servie (``Company.unmet_units``) : signal de prix de l'entreprise."""
     if not companies:
         return
-    weights = _sales_weights(
+    weights = weights_for(companies) if weights_for is not None else _sales_weights(
         companies, config.consumer_price_elasticity, market_price, household_demands,
         household_quality_preferences, config.quality_preference_strength, affinity,
     )
@@ -658,6 +694,7 @@ def _allocate_sales(
     household_quality_preferences: Mapping[str, float] | None = None,
     quality_strength: float = 1.0,
     affinity: Mapping[str, Mapping[str, float]] | None = None,
+    weights_for: _SalesWeights | None = None,
 ) -> dict[str, float]:
     remaining = min(
         max(0.0, demand),
@@ -669,11 +706,11 @@ def _allocate_sales(
         if getattr(company, inventory_field) > 0.0
     ]
     sales = {company.id: 0.0 for company in companies}
+    if weights_for is None:
+        weights_for = _SalesWeights(companies, price_elasticity, reference_price, household_demands,
+                                    household_quality_preferences, quality_strength, affinity)
     while remaining > 1e-9 and active:
-        weights = _sales_weights(
-            active, price_elasticity, reference_price, household_demands,
-            household_quality_preferences, quality_strength, affinity,
-        )
+        weights = weights_for(active)
         total_weight = sum(weights.values())
         saturated = [
             company

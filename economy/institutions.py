@@ -667,6 +667,9 @@ FLOW_LABELS = {
     "formation": "Formations financées", "interets": "Intérêts de la dette",
     "acquisitions_financieres": "Acquisitions financières (titres, capital)",
     "arrieres_payes": "Arriérés réglés",
+    # lot K (economy/power.py)
+    "aides_entreprises": "Aides aux entreprises",
+    "amendes_favoritisme": "Aides indues remboursées et amendes",
 }
 
 
@@ -903,10 +906,13 @@ def challenger_orientation(voters: list[Voter], incumbent: float, config) -> flo
     return camp[len(camp) // 2] if len(camp) % 2 else 0.5 * (camp[len(camp) // 2 - 1] + camp[len(camp) // 2])
 
 
-def incumbent_support(voter: Voter, incumbent: float, challenger: float, config, record: float | None) -> float:
+def incumbent_support(voter: Voter, incumbent: float, challenger: float, config, record: float | None,
+                      shift: float = 0.0) -> float:
     """Probabilité qu'un ménage vote pour le sortant : logit = avantage du sortant + sensibilité ×
     (proximité au sortant − proximité à l'opposition) + poids × croissance de son revenu réel
-    (bornée à ±50 %) − poids × fréquence de ses mois sans emploi + bilan des objectifs."""
+    (bornée à ±50 %) − poids × fréquence de ses mois sans emploi + bilan des objectifs.
+    ``shift`` (lot K, élection à candidats) : avantage de popularité du candidat sortant, ajouté
+    au logit ; 0 par défaut."""
     lean = effective_lean(voter, config)
     logit = (
         config.vote_incumbent_advantage
@@ -916,18 +922,20 @@ def incumbent_support(voter: Voter, incumbent: float, challenger: float, config,
     )
     if record is not None:
         logit += config.vote_record_weight * (record - 0.5)
+    if shift:
+        logit += shift
     return 1.0 / (1.0 + math.exp(-max(-60.0, min(60.0, logit))))
 
 
 def individual_election(rng: random.Random, incumbent: float, voters: list[Voter], config,
-                        record: float | None) -> tuple[float, bool, float, float]:
+                        record: float | None, shift: float = 0.0) -> tuple[float, bool, float, float]:
     """Élection par les ménages (idée 4) : part des voix du sortant = moyenne des probabilités
     individuelles, plus un écart national (``vote_swing_sd``, un tirage) ; réélu au-delà de la
     moitié. L'orientation élue est celle du sortant ou de l'opposition, plus un écart propre au
     nouveau gouvernement (un tirage), réfléchie aux bornes. Retourne (orientation, réélection,
     part des voix du sortant, programme de l'opposition)."""
     challenger = challenger_orientation(voters, incumbent, config)
-    share = sum(incumbent_support(v, incumbent, challenger, config, record) for v in voters) / max(1, len(voters))
+    share = sum(incumbent_support(v, incumbent, challenger, config, record, shift) for v in voters) / max(1, len(voters))
     share = max(0.0, min(1.0, share + rng.gauss(0.0, config.vote_swing_sd)))
     reelected = share > 0.5
     base = incumbent if reelected else challenger

@@ -68,6 +68,9 @@ class Ledger:
         if enterprise is not None and enterprise.funds:
             # lot G8 : les fonds gérés par les banques détiennent des dépôts comme tout agent
             total += sum(fund.cash for fund in enterprise.funds)
+        if enterprise is not None and enterprise.foreign is not None:
+            # lot J : monnaie intérieure détenue par le reste du monde (produit de ses ventes)
+            total += enterprise.foreign.cash
         return total
 
     @staticmethod

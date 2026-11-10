@@ -135,6 +135,9 @@ def update_prices_and_trade(
     household_buys: list[tuple[Person, float]] = []
     sells: dict[str, list[tuple[Person, float]]] = {cid: [] for cid in opening}
     bond_orders: list[tuple[Person, float]] = []
+    # Seuls les fondateurs peuvent émettre un ordre de vente de fondateur.
+    # Éviter un second parcours du portefeuille de tous les autres ménages.
+    founder_ids = set(founders.values()) if founders else set()
     for person in people:
         held = [(cid, q) for cid, q in person.shares.items() if cid in opening and q > 0.0]
         stock_value = sum([q * opening[cid] for cid, q in held])
@@ -157,7 +160,7 @@ def update_prices_and_trade(
                 if locked:
                     q = max(0.0, q - locked.get(cid, 0.0))
                 sells[cid].append((person, q * fraction))
-        if founders:
+        if person.id in founder_ids:
             for cid, q in held:
                 if founders.get(cid) == person.id:
                     extra = _founder_sale(person, q, q * fraction, opening[cid], stock_value,
@@ -500,27 +503,30 @@ def distribute_dividends(
     planned_payouts = planned_payouts or {}
     total_paid = 0.0
     investors: list[Person | Company] = [*people, *companies, *extra_holders]
-    # détenteurs de chaque titre, dans l'ordre des investisseurs : on ne balaie
-    # plus toute la population pour chaque entreprise (mêmes sommes, même ordre)
-    # (porteur, titres, ménage ?) relevés une fois : les titres ne changent pas pendant la
-    # distribution (seules les trésoreries bougent) ; mêmes valeurs, même ordre d'addition
-    holders_by_company: dict[str, list[tuple]] = {}
-    for investor in investors:
-        investor_id = investor.id
-        is_person = isinstance(investor, Person)
-        for company_id, quantity in investor.shares.items():
-            if company_id != investor_id:
-                entry = holders_by_company.get(company_id)
-                if entry is None:
-                    holders_by_company[company_id] = [(investor, quantity, is_person)]
-                else:
-                    entry.append((investor, quantity, is_person))
+    # Les portefeuilles ne changent pas pendant les versements. Relever les
+    # porteurs seulement lorsqu'un dividende peut effectivement être payé,
+    # dans le même ordre que les sommes et versements historiques.
+    investor_types = [(holder, isinstance(holder, Person)) for holder in investors]
+
+    def holders_for(cid):
+        return [
+            (investor, quantity, is_person)
+            for investor, is_person in investor_types
+            if investor.id != cid and (quantity := investor.shares.get(cid)) is not None
+        ]
+
     for company in companies:
-        holders = holders_by_company.get(company.id, ())
-        eligible_shares = sum([quantity for _, quantity, _ in holders])
-        if not company.active or eligible_shares <= 0.0 or company.id in retained:
+        if not company.active or company.id in retained:
             company.dividend_paid = 0.0
             continue
+        if company.sector == "bank":
+            # Garder ce contrôle avant la lecture du carnet de prêts : celle-ci
+            # peut mettre à jour son cache, même sans versement.
+            holders = holders_for(company.id)
+            eligible_shares = sum([quantity for _, quantity, _ in holders])
+            if eligible_shares <= 0.0:
+                company.dividend_paid = 0.0
+                continue
         leverage = company.debt / max(company.cash + company.debt, 1.0)
         effective_payout_rate = (
             payout_rate
@@ -559,9 +565,16 @@ def distribute_dividends(
         elif company.sector != "bank":
             excess_payout = max(0.0, planned_payouts.get(company.id, 0.0))
         payout = min(distributable_cash, max(profit_payout, excess_payout))
-        company.dividend_paid = payout
         if payout <= 0.0:
+            company.dividend_paid = 0.0
             continue
+        if company.sector != "bank":
+            holders = holders_for(company.id)
+            eligible_shares = sum([quantity for _, quantity, _ in holders])
+        if eligible_shares <= 0.0:
+            company.dividend_paid = 0.0
+            continue
+        company.dividend_paid = payout
         for investor, shares, is_person in holders:
             if shares > 0.0:
                 payment = payout * shares / eligible_shares

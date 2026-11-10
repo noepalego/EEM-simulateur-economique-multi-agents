@@ -128,6 +128,12 @@ class EnterpriseState:
     appetite: dict = field(default_factory=dict)      # entreprise -> goût du risque de son conseil (lot I)
     divesting: set = field(default_factory=set)       # filiales mises en vente par leur société mère (lot I)
     rescues: dict = field(default_factory=dict)       # filiale -> mois de sa dernière reprise par la mère (lot I)
+    # lot J (economy/macro.py)
+    foreign: Company | None = None                    # compte du reste du monde
+    exchange_rate: float = 1.0                        # prix d'une unité de monnaie étrangère
+    world_prices: dict = field(default_factory=dict)  # produit -> prix mondial en monnaie étrangère
+    wage_floors: dict = field(default_factory=dict)   # entreprise -> (offre négociée, mois d'échéance)
+    agreements: list = field(default_factory=list)    # accords salariaux conclus
     month_stats: dict = field(default_factory=dict)
     history: list = field(default_factory=list)    # un relevé par mois (mesures seules)
 
@@ -148,7 +154,10 @@ def store_factor(stores: float, config) -> float:
 
 def fund_assets(fund: InvestmentFund, prices: dict[str, float]) -> float:
     """Actif d'un fonds : trésorerie et titres au cours (valeur estimée pour une non cotée)."""
-    return fund.cash + sum(q * prices.get(cid, 0.0) for cid, q in fund.shares.items())
+    assets = fund.cash + sum(q * prices.get(cid, 0.0) for cid, q in fund.shares.items())
+    if fund.corporate_bonds:
+        assets += sum(fund.corporate_bonds.values())  # lot J : obligations d'entreprise au pair
+    return assets
 
 
 class EnterpriseMixin:
@@ -162,6 +171,7 @@ class EnterpriseMixin:
             or live.diversification or live.conglomerate_takeovers or live.retail_stores
             or live.group_distribution or live.private_startups
             or live.staffless_closure_months > 0 or live.shareholder_governance
+            or live.corporate_bonds or live.foreign_trade or live.collective_bargaining
         )
 
     def _enterprise_state(self) -> EnterpriseState:
@@ -400,6 +410,8 @@ class EnterpriseMixin:
             self._trade_customer_data()
         if live.private_startups:
             self._fund_operations()
+        if live.corporate_bonds:
+            self._corporate_bond_market()
 
     def _run_stores(self) -> None:
         """Magasins : usure et charges des réseaux existants, puis ouvertures rentables.
@@ -1186,6 +1198,7 @@ class EnterpriseMixin:
                 sum(p.negotiated_factor for p in employed) / len(employed) if employed else 1.0
             ),
         )
+        self._macro_stats(stats)
         state.history.append(stats)
         state.month_stats = {}
 

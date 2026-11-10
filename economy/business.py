@@ -8,7 +8,7 @@ from economy.energy import (
     pay_infrastructure,
 )
 from economy.finance import borrowing_share, extend_credit
-from economy.intersector import pay_business_suppliers
+from economy.intersector import pay_business_suppliers, business_suppliers
 from economy.models import Company, Person, Resources, SimulationConfig, productivity_multiplier
 from economy.treasury import working_capital
 
@@ -236,6 +236,7 @@ def invest_in_innovation(
     outsourced_share: float = 0.0,
 ) -> float:
     """Les bénéfices conservés financent la recherche ; l'innovation améliore la productivité de façon aléatoire."""
+    suppliers = business_suppliers(companies)
     total_spent = 0.0
     for company in companies:
         if not company.active or company.profit <= 0.0 or company.reinvestment_preference <= 0.0:
@@ -257,6 +258,7 @@ def invest_in_innovation(
                 companies,
                 resources,
                 deduct=False,
+                suppliers_by_sector=suppliers,
             )
         total_spent += research_budget
         improvement = research_budget / max(company.cash + research_budget, 1.0)

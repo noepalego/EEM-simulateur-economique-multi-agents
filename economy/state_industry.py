@@ -262,6 +262,9 @@ class StateIndustryMixin:
                 if capacity <= 0.0:
                     continue
                 step = min(capacity, live.case_work_months - case.work)
+                if getattr(self, "power", None) is not None:
+                    # lot K : lobbying de l'entreprise visée, ou dossier gelé par la présidence
+                    step *= 1.0 - self._case_drag(case)
                 case.work += step
                 capacity -= step
                 if case.work + 1e-9 < live.case_work_months:
@@ -355,6 +358,9 @@ class StateIndustryMixin:
             skill_level(p, company.sector) + p.leadership_experience / 120.0 + p.career_months / 240.0 + p.skill,
             p.id,
         ))
+        if getattr(self, "power", None) is not None:
+            # lot K : sous la loi « nominations », un président peu intègre nomme un proche
+            director = self._loyal_director(pool, director)
         if not internal:
             employer = next((c for c in self.companies if c.id == director.employer_id), None)
             if employer is not None and director.id in employer.employees:

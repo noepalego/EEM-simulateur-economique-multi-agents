@@ -68,6 +68,8 @@ class MonthFlows:
     dissolutions: int = 0
     deaths: int = 0
     estate_taxes: float = 0.0
+    # lot J : exportations du mois (valeur payée par le reste du monde aux producteurs)
+    exports: float = 0.0
 
 
 def _sector_sum(sim: "EconomySimulation", sector: str, attribute: str) -> float:
@@ -248,6 +250,9 @@ def build_record(
         consumption + public_demand + business_investment + construction_work
         + inventory_change + f.vat_revenue
     )
+    if f.exports:
+        # lot J : exportations (les importations ne sont pas dans la consommation ci-dessus)
+        nominal_gdp += f.exports
     recurrent_gdp = nominal_gdp - construction_value_added
     real_consumption_goods = (
         f.sold_food * live.starting_food_price
@@ -273,6 +278,8 @@ def build_record(
         # taxes sur les produits à prix constants : taux de départ × volumes taxés
         + sim.config.vat_rate * real_consumption_goods
     )
+    if f.exports:
+        real_gdp += f.exports * deflator
     events = [e for e in sim.resolution_events if e.month == sim.month]
     consumer_revenue = f.food_revenue + f.goods_revenue
     active_housing = _sector_sum(sim, "real_estate", "property_inventory")

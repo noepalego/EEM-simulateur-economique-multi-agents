@@ -33,6 +33,9 @@ def _net_worth(person: Person, stock_value: float, config: SimulationConfig) -> 
     if person.fund_value:
         # lot G8 : parts de fonds à leur valeur liquidative (nulle sans le réglage)
         worth += person.fund_value
+    if person.corporate_bonds:
+        # lot J : obligations d'entreprise au pair (dictionnaire vide sans le réglage)
+        worth += sum(person.corporate_bonds.values())
     return worth
 
 
@@ -89,6 +92,9 @@ def company_balance_sheet(
         + bank_loan_portfolio
     )
     bank_debt = max(0.0, company.debt)
+    if company.bond_debt:
+        # lot J : les obligations émises sont une dette comme le crédit bancaire
+        bank_debt += max(0.0, company.bond_debt)
     if company.sector == "bank":
         bank_equity = min(assets, max(0.0, company.bank_equity))
         other_liabilities = max(0.0, assets - bank_equity)

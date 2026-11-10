@@ -23,6 +23,7 @@ from economy.institutions import (
     doctrine_summary,
     format_indicator,
 )
+from economy.power import LAW_EFFECTS, LAW_LABELS, LAW_MAJORITY, LAW_STEP, LAWS, TERM_LIMIT
 from economy.interventions import (
     LEVERS,
     MONETARY_BOUNDS,
@@ -358,6 +359,28 @@ def new_simulation() -> EconomySimulation:
             # lot H : salariés obligatoires, conseil d'actionnaires (désactivés par défaut)
             staffless_closure_months=int(st.session_state.staffless_closure_months),
             shareholder_governance=bool(st.session_state.shareholder_governance),
+            # lot J : obligations d'entreprise, commerce extérieur, négociation collective
+            corporate_bonds=bool(st.session_state.corporate_bonds),
+            corporate_bond_share=st.session_state.corporate_bond_percent / 100,
+            foreign_trade=bool(st.session_state.foreign_trade),
+            trade_openness=st.session_state.trade_openness_percent / 100,
+            collective_bargaining=bool(st.session_state.collective_bargaining),
+            union_power=st.session_state.union_power_percent / 100,
+            union_max_raise=st.session_state.union_max_raise_percent / 100,
+            # lot K : influence, popularité, pouvoir présidentiel, aides et favoritisme
+            influence_ranking=bool(st.session_state.influence_ranking),
+            personal_popularity=bool(st.session_state.personal_popularity),
+            candidate_elections=bool(st.session_state.candidate_elections),
+            vote_popularity_weight=float(st.session_state.vote_popularity_weight),
+            executive_power_laws=bool(st.session_state.executive_power_laws),
+            business_subsidies=bool(st.session_state.business_subsidies),
+            business_aid_gdp_share=_annual_points(st.session_state.business_aid_gdp_percent, 1),
+            political_favoritism=bool(st.session_state.political_favoritism),
+            favoritism_monthly_chance=st.session_state.favoritism_chance_percent / 100,
+            audit_detection_chance=st.session_state.audit_detection_percent / 100,
+            corporate_lobbying=bool(st.session_state.corporate_lobbying),
+            revolving_door=bool(st.session_state.revolving_door),
+            political_dynasties=bool(st.session_state.political_dynasties),
         )
     )
 
@@ -626,7 +649,18 @@ def render_institutional_state(simulation: EconomySimulation, observed_history: 
     render_state_head(*view, simulation)
     render_state_interventions(simulation)
     render_rate_interventions(simulation)
-    sections = st.tabs(["Gouvernement", "Budget", "Fonction publique", "Salaire minimum", "Industrie", "Journal"])
+    sections = st.tabs(["Gouvernement", "Budget", "Fonction publique", "Salaire minimum", "Industrie",
+                        "Journal", "Pouvoir & influence"])
+    with sections[6]:
+        # lot K : classement d'influence, popularité, lois de pouvoir, aides, réseaux
+        power_tabs = st.tabs(["Influence", "Popularité & élections", "Lois de pouvoir",
+                              "Aides & favoritisme", "Réseaux"])
+        for power_tab, renderer in zip(power_tabs, (
+            render_power_influence, render_power_popularity, render_power_laws,
+            render_power_aid, render_power_networks,
+        )):
+            with power_tab:
+                renderer(*view, simulation)
     with sections[0]:
         render_state_government(*view, simulation)
     with sections[1]:
@@ -1085,6 +1119,336 @@ def render_state_journal(view_id: str, month: int, author: str, _simulation: Eco
         )
 
 
+# --- lot K : sous-onglet « Pouvoir & influence » de l'onglet État (blocs sans widget) ---------
+
+def _power_disabled(simulation: EconomySimulation, setting: str, label: str) -> bool:
+    """Message commun quand un mécanisme du lot K n'est pas activé."""
+    if getattr(simulation.live, setting) and getattr(simulation, "power", None) is not None:
+        return False
+    st.info(
+        f"Désactivé : cochez « {label} » dans la barre latérale (rubrique « Pouvoir, influence & "
+        "corruption »), puis réinitialisez."
+    )
+    return True
+
+
+def _euros(value: float) -> str:
+    return f"{value:,.0f} €".replace(",", " ")
+
+
+@st.cache_data(show_spinner=False, max_entries=4)
+def render_power_influence(view_id: str, month: int, _simulation: EconomySimulation) -> None:
+    """Les dix ménages les plus influents et le détail de leur score."""
+    simulation = _simulation
+    st.markdown("#### Les dix personnes les plus influentes")
+    st.caption(
+        "Influence de 0 à 100 = fortune (au plus 30, atteints à dix fois la fortune moyenne) + fonction "
+        "(présidence 35, ministre 22, dirigeant 6 à 28 selon le poids de son entreprise) + capital "
+        "contrôlé (au plus 20, participations d'au moins 10 %) + popularité (au plus 15)."
+    )
+    rows = simulation.influence_table(10)
+    st.dataframe(
+        [
+            {"Rang": r["rang"], "Nom": r["nom"], "Fonction": r["poste"], "Influence": r["influence"],
+             "Fortune": r["fortune"], "Poste": r["fonction"], "Capital": r["capital"],
+             "Popularité": r["popularite"], "Patrimoine (€)": r["patrimoine"]}
+            for r in rows
+        ],
+        hide_index=True, width="stretch",
+        column_config={
+            "Influence": st.column_config.ProgressColumn(format="%.1f", min_value=0.0, max_value=100.0),
+            **{name: st.column_config.NumberColumn(format="%.1f") for name in ("Fortune", "Poste", "Capital", "Popularité")},
+            "Patrimoine (€)": st.column_config.NumberColumn(format="%.0f"),
+        },
+    )
+    st.caption("Ce qui compose l'influence de chacun (points)")
+    bar_chart(
+        [{"Nom": f"{r['rang']}. {r['nom']}", "Fortune": r["fortune"], "Poste": r["fonction"],
+          "Capital": r["capital"], "Popularité": r["popularite"]} for r in rows],
+        x="Nom", y=["Fortune", "Poste", "Capital", "Popularité"],
+    )
+    history = [row for row in simulation.power_history() if "influence_max" in row]
+    if len(history) > 1:
+        st.caption("Influence de la première personne du classement et moyenne des dix premières")
+        line_chart(
+            [{"Période": r["periode"], "Première": r["influence_max"], "Dix premières": r["influence_top10"]}
+             for r in history], x="Période", y=["Première", "Dix premières"],
+        )
+    elif not simulation.live.influence_ranking:
+        st.caption("Pour suivre le classement dans le temps, cochez « Classement d'influence » dans la "
+                   "barre latérale, puis réinitialisez.")
+
+
+@st.cache_data(show_spinner=False, max_entries=4)
+def render_power_popularity(view_id: str, month: int, _simulation: EconomySimulation) -> None:
+    """Traits, notoriété et opinion du cabinet ; candidats ; élections."""
+    simulation = _simulation
+    inst, offset, people, companies = _state_context(simulation)
+    state = getattr(simulation, "power", None)
+    st.markdown("#### Popularité")
+    if not _power_disabled(simulation, "personal_popularity", "Personnalité et popularité"):
+        st.caption(
+            "Notoriété : être connu (donnée par la fonction). Opinion : être apprécié (résultats de la "
+            "personne dans son rôle, autour d'une référence fixée par son charisme). Popularité = "
+            "notoriété × opinion. Les traits sont la vérité du modèle, que les ménages ne voient pas."
+        )
+        rows = []
+        for role in OFFICES:
+            office = inst.offices.get(role)
+            profile = simulation.power_profile(office.person_id) if office else {}
+            if not profile:
+                continue
+            rows.append({
+                "Fonction": OFFICE_LABELS[role], "Nom": display_name(office.person_id),
+                "Opinion": profile["opinion"], "Notoriété": profile["notoriete"],
+                "Charisme": profile["charisme"], "Intégrité": profile["integrite"],
+                "Ambition": profile["ambition"],
+            })
+        st.markdown("**Présidence et ministres**")
+        st.dataframe(rows, hide_index=True, width="stretch",
+                     column_config=_percent_columns("Opinion", "Notoriété", "Charisme", "Intégrité", "Ambition"))
+        history = [row for row in simulation.power_history() if "opinion_presidence" in row]
+        if len(history) > 1:
+            st.caption("Opinion sur la présidence et moyenne des ministres (%)")
+            line_chart(
+                [{"Période": r["periode"], "Présidence": 100.0 * r["opinion_presidence"],
+                  "Ministres": 100.0 * r.get("opinion_ministres", 0.0)} for r in history],
+                x="Période", y=["Présidence", "Ministres"],
+            )
+        popular = sorted(simulation.people, key=lambda p: (-simulation._appeal(p.id), p.id))[:10]
+        scores = simulation.influence_scores()
+        st.markdown("**Les dix personnes les plus populaires**")
+        st.dataframe(
+            [{"Nom": display_name(p.id), "Fonction": scores[p.id]["poste"],
+              "Popularité": simulation._appeal(p.id), "Notoriété": state.notoriety.get(p.id, 0.0),
+              "Opinion": simulation._opinion(p.id),
+              "Dynastie": "oui" if p.id in state.dynasties else ""} for p in popular],
+            hide_index=True, width="stretch",
+            column_config=_percent_columns("Popularité", "Notoriété", "Opinion"),
+        )
+    st.markdown("#### Élection présidentielle")
+    if _power_disabled(simulation, "candidate_elections", "Élection présidentielle à candidats"):
+        return
+    candidates = state.candidates
+    if candidates is not None:
+        st.markdown(
+            f"**Campagne en cours** · {display_name(candidates['sortant'])} "
+            f"({'dauphin du sortant' if candidates['dauphin'] else 'sortant'}) contre "
+            f"{display_name(candidates['opposant'])} (opposition, programme "
+            f"{candidates['programme_opposant']:.0f} / 100)"
+        )
+        cols = st.columns(2)
+        for col, side in zip(cols, ("sortant", "opposant")):
+            person_id = candidates[side]
+            col.metric(
+                display_name(person_id), f"popularité {simulation._appeal(person_id):.0%}",
+                f"dons de campagne reçus : {_euros(state.campaign.get(person_id, 0.0))}", delta_color="off",
+            )
+    else:
+        st.caption("Aucune campagne en cours : les candidats se déclarent six mois avant l'élection.")
+    elections = [e for e in inst.elections if e["mois"] - offset >= 0 and "president_elu" in e]
+    if elections:
+        st.markdown("**Élections passées**")
+        st.dataframe(
+            [{"Période": e["mois"] - offset, "Candidat du sortant": e["candidat_sortant"]
+              + (" (dauphin)" if e["dauphin"] else ""), "Opposant": e["candidat_opposant"],
+              "Voix du sortant": e["part_sortant"], "Élu": e["president_elu"],
+              "Avantage de popularité du sortant": e["ecart_popularite"],
+              "Programme élu": round(e["elu"])} for e in reversed(elections)],
+            hide_index=True, width="stretch",
+            column_config={**_percent_columns("Voix du sortant"),
+                           "Avantage de popularité du sortant": st.column_config.NumberColumn(format="%.2f")},
+        )
+
+
+@st.cache_data(show_spinner=False, max_entries=4)
+def render_power_laws(view_id: str, month: int, _simulation: EconomySimulation) -> None:
+    """Lois de pouvoir en vigueur, capital politique de la présidence, historique."""
+    simulation = _simulation
+    inst, offset, people, companies = _state_context(simulation)
+    st.markdown("#### Lois de pouvoir présidentiel")
+    if _power_disabled(simulation, "executive_power_laws", "Lois de pouvoir présidentiel"):
+        return
+    state = simulation.power
+    head = inst.holder("presidence")
+    cols = st.columns(4)
+    cols[0].metric("Lois en vigueur", f"{len(state.laws)} / {len(LAWS)}")
+    if head is not None:
+        profile = simulation.power_profile(head)
+        integrity, ambition = profile.get("integrite", 0.5), profile.get("ambition", 0.5)
+        capital = simulation._political_capital(head)
+        needed = LAW_MAJORITY + LAW_STEP * len(state.laws)
+        cols[1].metric("Capital politique", f"{capital:.0%}", f"{needed:.0%} requis pour la prochaine loi",
+                       delta_color="off",
+                       help="Part des voix du président à son élection, plus la moitié de l'écart de son "
+                            "opinion à 50 % (avec la popularité).")
+        cols[2].metric("Goût du pouvoir du président", f"{0.6 * ambition + 0.4 * (1.0 - integrity):.0%}",
+                       "propose une loi au-delà de 55 %", delta_color="off",
+                       help="0,6 × ambition + 0,4 × (1 − intégrité). Un président d'intégrité supérieure à "
+                            "60 % abroge au lieu de proposer.")
+        cols[3].metric("Mandats consécutifs", f"{state.consecutive_terms}",
+                       "sans limite" if "mandats" in state.laws else f"limite : {TERM_LIMIT}", delta_color="off")
+    st.dataframe(
+        [{"Loi": LAW_LABELS[name], "Effet": LAW_EFFECTS[name],
+          "En vigueur depuis (période)": state.laws[name] - offset if name in state.laws else None,
+          "État": "en vigueur" if name in state.laws else "non votée"} for name in LAWS],
+        hide_index=True, width="stretch",
+    )
+    events = [e for e in simulation.power_events() if e["type"] == "loi"]
+    if events:
+        st.markdown("**Votes passés**")
+        st.dataframe([{"Période": e["periode"], "Vote": e["texte"]} for e in events[:60]],
+                     hide_index=True, width="stretch")
+    else:
+        st.caption("Aucune loi proposée pour l'instant : il faut un président ambitieux et peu intègre, "
+                   "six mois après le début de son mandat.")
+
+
+@st.cache_data(show_spinner=False, max_entries=4)
+def render_power_aid(view_id: str, month: int, _simulation: EconomySimulation) -> None:
+    """Aides aux entreprises, affaires révélées, vue omnisciente du favoritisme."""
+    simulation = _simulation
+    inst, offset, people, companies = _state_context(simulation)
+    st.markdown("#### Aides aux entreprises")
+    if _power_disabled(simulation, "business_subsidies", "Aides aux entreprises"):
+        return
+    state = simulation.power
+    labels = simulation.company_labels()
+    history = simulation.power_history()
+    aid_log = [row for row in state.aid_log if row["mois"] - offset >= 0]
+    cols = st.columns(4)
+    cols[0].metric("Aides versées", _euros(sum(row["montant"] for row in aid_log)), "depuis la période 0",
+                   delta_color="off")
+    cols[1].metric("Entreprises aidées ce mois", f"{len(state.aided)}")
+    cols[2].metric("Part discrétionnaire", "50 %" if "enveloppe" in state.laws else "0 %",
+                   "loi « enveloppe » en vigueur" if "enveloppe" in state.laws else "loi « enveloppe » non votée",
+                   delta_color="off")
+    revealed = [a for a in state.affairs if a["revele"] is not None and a["revele"] - offset >= 0]
+    cols[3].metric("Scandales révélés", f"{len(revealed)}",
+                   f"{_euros(sum(a['recouvre'] for a in revealed))} recouvrés", delta_color="off")
+    if len(history) > 1:
+        st.caption("Aides versées chaque mois (€)")
+        line_chart(
+            [{"Période": r["periode"], "Sur critères": r.get("aides_criteres", 0.0),
+              "Discrétionnaires": r.get("aides_faveur", 0.0)} for r in history],
+            x="Période", y=["Sur critères", "Discrétionnaires"],
+        )
+    if aid_log:
+        totals: dict = {}
+        for row in aid_log:
+            entry = totals.setdefault(row["entreprise"], {"total": 0.0, "mois": 0, "discretionnaire": 0.0})
+            entry["total"] += row["montant"]
+            entry["mois"] += 1
+            if row["type"] != "critères":
+                entry["discretionnaire"] += row["montant"]
+        st.markdown("**Entreprises aidées**")
+        st.dataframe(
+            [{"Entreprise": labels.get(company_id, company_id), "Aide totale (€)": entry["total"],
+              "Mois aidés": entry["mois"], "Dont discrétionnaire (€)": entry["discretionnaire"]}
+             for company_id, entry in sorted(totals.items(), key=lambda item: -item[1]["total"])[:40]],
+            hide_index=True, width="stretch",
+            column_config={name: st.column_config.NumberColumn(format="%.0f")
+                           for name in ("Aide totale (€)", "Dont discrétionnaire (€)")},
+        )
+    else:
+        st.caption("Aucune aide versée : aucune entreprise privée n'est en perte depuis trois mois.")
+    st.markdown("#### Favoritisme")
+    if _power_disabled(simulation, "political_favoritism", "Favoritisme et scandales"):
+        return
+    if revealed:
+        st.markdown("**Scandales révélés**")
+        st.dataframe(
+            [{"Révélé (période)": a["revele"] - offset, "Versé (période)": a["mois"] - offset,
+              "Entreprise": labels.get(a["entreprise"], a["nom"]), "Patron": display_name(a["patron"]),
+              "Président en cause": display_name(a["presidence"]), "Aide indue (€)": a["montant"],
+              "Recouvré (€)": a["recouvre"]} for a in reversed(revealed)],
+            hide_index=True, width="stretch",
+            column_config={name: st.column_config.NumberColumn(format="%.0f")
+                           for name in ("Aide indue (€)", "Recouvré (€)")},
+        )
+    else:
+        st.caption("Aucun scandale révélé depuis la période 0.")
+    with st.expander("Vue omnisciente : ce que le modèle sait et que les ménages ignorent"):
+        affairs = [a for a in state.affairs if a["mois"] - offset >= 0]
+        hidden = [a for a in affairs if a["revele"] is None]
+        last = history[-1] if history else {}
+        cols = st.columns(4)
+        cols[0].metric("Aides de faveur", f"{len(affairs)}", f"{len(hidden)} encore cachées", delta_color="off")
+        cols[1].metric("Montant détourné", _euros(sum(a["montant"] for a in affairs)))
+        cols[2].metric("Part des aides détournée (5 ans)", f"{last.get('corruption_reelle', 0.0):.1%}")
+        head = inst.holder("presidence")
+        if head is not None:
+            cols[3].metric("Intégrité du président", f"{simulation.power_profile(head).get('integrite', 0.5):.0%}",
+                           "favorise sous 40 % (15 % si le contrôle est intact)", delta_color="off")
+        if hidden:
+            st.dataframe(
+                [{"Versé (période)": a["mois"] - offset, "Entreprise": labels.get(a["entreprise"], a["nom"]),
+                  "Patron": display_name(a["patron"]), "Président": display_name(a["presidence"]),
+                  "Montant (€)": a["montant"], "Lien": a["lien"]} for a in reversed(hidden)],
+                hide_index=True, width="stretch",
+                column_config={"Montant (€)": st.column_config.NumberColumn(format="%.0f"),
+                               **_percent_columns("Lien")},
+            )
+        st.caption(
+            "Conditions du favoritisme, toutes requises : loi « enveloppe » votée, président peu intègre, "
+            "patron d'influence au moins 25, lien d'au moins 50 % avec la présidence (ancien employeur, "
+            "titres détenus, proximité politique, don de campagne, ancien du cabinet), puis un tirage."
+        )
+
+
+@st.cache_data(show_spinner=False, max_entries=4)
+def render_power_networks(view_id: str, month: int, _simulation: EconomySimulation) -> None:
+    """Dons de campagne, lobbying, conseillers issus du cabinet, dynasties, événements."""
+    simulation = _simulation
+    inst, offset, people, companies = _state_context(simulation)
+    state = getattr(simulation, "power", None)
+    live = simulation.live
+    st.markdown("#### Réseaux : lobbying, pantouflage, dynasties")
+    if state is None or not (live.corporate_lobbying or live.revolving_door or live.political_dynasties):
+        st.info(
+            "Désactivé : cochez « Lobbying et dons de campagne », « Pantouflage » ou « Dynasties » dans la "
+            "barre latérale (rubrique « Pouvoir, influence & corruption »), puis réinitialisez."
+        )
+        return
+    labels = simulation.company_labels()
+    history = simulation.power_history()
+    total = lambda key: sum(row.get(key, 0.0) for row in history)  # noqa: E731
+    cols = st.columns(4)
+    cols[0].metric("Dons de campagne", _euros(total("dons_campagne")), "depuis la période 0", delta_color="off")
+    cols[1].metric("Dépenses de lobbying", _euros(total("lobbying")),
+                   f"{total('dossiers_freines'):.0f} mois d'instruction freinés, "
+                   f"{total('dossiers_geles'):.0f} gelés", delta_color="off")
+    cols[2].metric("Conseillers issus du cabinet", f"{len(state.advisors)}",
+                   f"{_euros(total('honoraires_conseillers'))} d'honoraires versés", delta_color="off")
+    cols[3].metric("Héritiers d'un nom connu", f"{len(state.dynasties)}")
+    if state.advisors:
+        st.markdown("**Conseillers en poste**")
+        st.dataframe(
+            [{"Entreprise": labels.get(company_id, company_id), "Conseiller": display_name(a["personne"]),
+              "Ancienne fonction": OFFICE_LABELS[a["role"]], "Depuis (période)": a["mois"] - offset,
+              "Président servi": display_name(a["presidence"]) if a["presidence"] else "—",
+              "Lien avec la présidence actuelle": "oui" if a["presidence"] == inst.holder("presidence") else "non"}
+             for company_id, a in sorted(state.advisors.items())],
+            hide_index=True, width="stretch",
+        )
+    donors = [(cid, given) for cid, given in state.donations.items() if cid in labels]
+    if donors:
+        st.markdown("**Entreprises donatrices**")
+        st.dataframe(
+            [{"Entreprise": labels[cid], "Candidat": display_name(candidate), "Dons cumulés (€)": amount}
+             for cid, given in sorted(donors) for candidate, amount in sorted(given.items())][:60],
+            hide_index=True, width="stretch",
+            column_config={"Dons cumulés (€)": st.column_config.NumberColumn(format="%.0f")},
+        )
+    events = simulation.power_events()
+    if events:
+        st.markdown("**Derniers événements**")
+        st.dataframe(
+            [{"Période": e["periode"], "Type": e["type"], "Événement": e["texte"]} for e in events[:80]],
+            hide_index=True, width="stretch",
+        )
+
+
 @st.cache_data(show_spinner=False, max_entries=4)
 def render_overview(view_id: str, month: int, _simulation: EconomySimulation) -> None:
     """Mémorise le rendu sans widgets, par simulation et mois, sans hacher le moteur.
@@ -1515,6 +1879,11 @@ OPTIONAL_MECHANISMS = {
     "diversification": True, "conglomerate_takeovers": True, "retail_stores": True,
     "group_distribution": True, "private_startups": True, "shareholder_governance": True,
     "staffless_closure_months": 6, "countercyclical_capital": True, "bank_capital_backstop": True,
+    "corporate_bonds": True, "foreign_trade": True, "collective_bargaining": True,
+    # lot K : influence, popularité, pouvoir présidentiel, aides et favoritisme
+    "influence_ranking": True, "personal_popularity": True, "candidate_elections": True,
+    "executive_power_laws": True, "business_subsidies": True, "political_favoritism": True,
+    "corporate_lobbying": True, "revolving_door": True, "political_dynasties": True,
 }
 
 
@@ -1537,12 +1906,13 @@ def render_sidebar() -> None:
         st.caption(
             "**Mécanismes optionnels** : groupes, magasins, fonds, expérience, conseil d'actionnaires, "
             "fermeture des entreprises sans salarié (6 mois), exigence de fonds propres contracyclique "
-            "et recapitalisation de dernier recours des banques."
+            "et recapitalisation de dernier recours des banques, obligations d'entreprise, commerce "
+            "extérieur, négociation collective."
         )
         preset = st.columns(2)
         preset[0].button("Tout activer", key="optional_all_on", use_container_width=True,
                          on_click=_set_optional_mechanisms, args=(True,),
-                         help="Coche les douze mécanismes optionnels ; réinitialisez ensuite la simulation.")
+                         help="Coche tous les mécanismes optionnels ; réinitialisez ensuite la simulation.")
         preset[1].button("Tout désactiver", key="optional_all_off", use_container_width=True,
                          on_click=_set_optional_mechanisms, args=(False,),
                          help="Revient à la configuration de base ; réinitialisez ensuite la simulation.")
@@ -2047,6 +2417,128 @@ def render_sidebar() -> None:
                 "Sortie du fonds après", min_value=1, max_value=15, value=5, format="%d ans",
                 key="fund_exit_years",
                 disabled=not st.session_state.get("private_startups", False),
+            )
+        with st.expander("Obligations, commerce extérieur & syndicats", expanded=False):
+            st.caption("Trois mécanismes désactivés par défaut ; ils agissent dès la période de chauffe.")
+            st.checkbox(
+                "Obligations d'entreprise", key="corporate_bonds",
+                help="Une entreprise rentable emprunte aux ménages et aux fonds des banques au lieu de sa "
+                     "banque : coupon et amortissement mensuels, sans création de monnaie. En faillite, "
+                     "les obligataires passent après les banques et avant les actionnaires.",
+            )
+            st.slider(
+                "Épargne visée en obligations d'entreprise", min_value=0, max_value=30, value=5,
+                format="%d %%", key="corporate_bond_percent",
+                disabled=not st.session_state.get("corporate_bonds", False),
+            )
+            st.checkbox(
+                "Commerce extérieur", key="foreign_trade",
+                help="Un reste du monde vend aux ménages l'alimentation et les biens que le marché "
+                     "intérieur ne sert pas, puis redépense la monnaie gagnée en produits et services "
+                     "intérieurs. Taux de change flottant ; aucune monnaie n'entre ni ne sort.",
+            )
+            st.slider(
+                "Ouverture au commerce", min_value=0, max_value=100, value=50, format="%d %%",
+                key="trade_openness_percent", disabled=not st.session_state.get("foreign_trade", False),
+                help="Part de la demande non servie que les importations peuvent couvrir chaque mois.",
+            )
+            st.checkbox(
+                "Syndicats et négociation collective", key="collective_bargaining",
+                help="Une fois par an et par secteur, le syndicat demande le rattrapage de l'inflation et "
+                     "une part des marges ; l'accord relève les offres salariales et les empêche de "
+                     "baisser pendant douze mois ; un écart trop grand déclenche une grève d'un mois.",
+            )
+            st.slider(
+                "Pouvoir des syndicats (gouvernement du centre)", min_value=0, max_value=100, value=50,
+                format="%d %%", key="union_power_percent",
+                disabled=not st.session_state.get("collective_bargaining", False),
+                help="Part de sa demande qu'un syndicat obtient sans chômage ; multipliée par 0,5 à "
+                     "l'extrême droite et 1,5 à l'extrême gauche, réduite par le chômage.",
+            )
+            st.slider(
+                "Hausse annuelle maximale demandée", min_value=0, max_value=15, value=5, format="%d %%",
+                key="union_max_raise_percent",
+                disabled=not st.session_state.get("collective_bargaining", False),
+            )
+        with st.expander("Pouvoir, influence & corruption", expanded=False):
+            st.caption(
+                "Neuf mécanismes désactivés par défaut ; ils agissent dès la période de chauffe. "
+                "Résultats dans l'onglet État, sous-onglet « Pouvoir & influence »."
+            )
+            st.checkbox(
+                "Classement d'influence", key="influence_ranking",
+                help="Influence de chaque ménage, de 0 à 100 : fortune, fonction (présidence, ministère, "
+                     "direction d'entreprise), capital contrôlé, popularité. Mesure seule : l'économie "
+                     "ne change pas. Sans cette case, le classement du mois reste affiché, sans historique.",
+            )
+            st.checkbox(
+                "Personnalité et popularité", key="personal_popularity",
+                help="Chaque ménage a un charisme, une intégrité et une ambition. Sa notoriété vient de "
+                     "sa fonction ; l'opinion suit ses résultats (croissance, chômage et objectifs pour "
+                     "la présidence, objectif pour un ministre, marge et effectifs pour un dirigeant).",
+            )
+            st.checkbox(
+                "Élection présidentielle à candidats", key="candidate_elections",
+                help="Le sortant affronte le membre le plus fort du camp opposé. L'écart de popularité "
+                     "et de campagne décale le vote de chaque ménage ; l'élu devient président.",
+            )
+            st.slider(
+                "Poids de la popularité dans le vote", min_value=0.0, max_value=10.0, value=3.0, step=0.5,
+                key="vote_popularity_weight",
+                disabled=not st.session_state.get("candidate_elections", False),
+                help="À 3, la popularité pèse à peu près autant que l'écart idéologique entre deux programmes.",
+            )
+            st.checkbox(
+                "Lois de pouvoir présidentiel", key="executive_power_laws",
+                help="Un président ambitieux et peu intègre fait voter, une par an au plus, des lois qui "
+                     "étendent son pouvoir : enveloppe discrétionnaire, nominations, contrôle des comptes "
+                     "affaibli, tutelle sur les médias, limite de mandats levée. Un successeur intègre "
+                     "les abroge. Sans la loi « mandats », deux mandats consécutifs au plus.",
+            )
+            st.checkbox(
+                "Aides aux entreprises", key="business_subsidies",
+                help="Programme légal : aide mensuelle aux entreprises privées en perte depuis trois mois, "
+                     "au prorata de leurs salariés, au plus un quart de leur masse salariale.",
+            )
+            st.slider(
+                "Budget annuel des aides (part du PIB)", min_value=0.0, max_value=3.0, value=0.5, step=0.1,
+                format="%.1f %%", key="business_aid_gdp_percent",
+                disabled=not st.session_state.get("business_subsidies", False),
+                help="Au centre ; moitié moins pour une doctrine de laisser-faire, moitié plus pour une "
+                     "doctrine d'opérateur public.",
+            )
+            st.checkbox(
+                "Favoritisme et scandales", key="political_favoritism",
+                help="Sous la loi « enveloppe », un président peu intègre peut attribuer la moitié des aides "
+                     "à une entreprise dont le patron est influent et lié à lui. L'audit ou la presse peut "
+                     "révéler l'affaire : opinion, remboursement, amende, remaniement. Demande les aides "
+                     "et les lois de pouvoir.",
+            )
+            st.slider(
+                "Passage à l'acte (par mois, conditions réunies)", min_value=0, max_value=100, value=10,
+                format="%d %%", key="favoritism_chance_percent",
+                disabled=not st.session_state.get("political_favoritism", False),
+            )
+            st.slider(
+                "Détection par l'audit (par mois et par affaire)", min_value=0, max_value=50, value=3,
+                format="%d %%", key="audit_detection_percent",
+                disabled=not st.session_state.get("political_favoritism", False),
+                help="Divisée par quatre sous la loi « contrôle affaibli » ; la presse ajoute 1 % par mois.",
+            )
+            st.checkbox(
+                "Lobbying et dons de campagne", key="corporate_lobbying",
+                help="Les entreprises bénéficiaires financent le candidat le plus proche de leur dirigeant ; "
+                     "une entreprise visée par un dossier de monopole paie du conseil qui freine "
+                     "l'instruction.",
+            )
+            st.checkbox(
+                "Pantouflage", key="revolving_door",
+                help="Un ancien membre du cabinet devient conseiller rémunéré d'une grande entreprise de "
+                     "son ancien domaine, et la relie au président qu'il a servi.",
+            )
+            st.checkbox(
+                "Dynasties", key="political_dynasties",
+                help="L'héritier d'une personne connue garde 30 % de sa notoriété. Demande la popularité.",
             )
         with st.expander("Investissement, salaires & compétences", expanded=False):
             st.slider("Bénéfices versés en dividendes", min_value=0, max_value=50, value=12, format="%d %%", key="dividend_payout_percent")
@@ -2791,6 +3283,216 @@ def render_funds_panel(view_id: str, month: int, _simulation: EconomySimulation)
         st.caption("Issues : " + " · ".join(f"{label} {count}" for label, count in sorted(outcomes.items())))
 
 
+@st.cache_data(show_spinner=False, max_entries=4)
+def render_bonds_panel(view_id: str, month: int, _simulation: EconomySimulation) -> None:
+    """Sous-onglet « Obligations » : dette de marché des entreprises (sans widget)."""
+    simulation = _simulation
+    st.markdown("#### Obligations d'entreprise")
+    if not simulation.live.corporate_bonds:
+        st.info(
+            "Désactivé : cochez « Obligations d'entreprise » dans la barre latérale (rubrique "
+            "« Obligations, commerce extérieur & syndicats »), puis réinitialisez. Les entreprises "
+            "rentables emprunteront alors aux ménages et aux fonds, pas seulement aux banques."
+        )
+        return
+    labels = simulation.company_labels()
+    sectors = {key: label.split(" (")[0] for key, label in SECTORS}
+    history = simulation.enterprise_history()
+    issuers = [c for c in simulation.companies if c.active and c.bond_debt > 0.0]
+    outstanding = sum(c.bond_debt for c in issuers)
+    bank_debt = sum(c.debt for c in simulation.companies if c.active and c.sector != "bank")
+    holders = [p for p in simulation.people if p.corporate_bonds]
+    state = getattr(simulation, "enterprise", None)
+    fund_held = sum(sum(f.corporate_bonds.values()) for f in (state.funds if state is not None else ()))
+    cols = st.columns(5)
+    cols[0].metric("Encours obligataire", compact(outstanding, " €"),
+                   help=f"Dette bancaire des entreprises : {compact(bank_debt, ' €')}.")
+    cols[1].metric("Part de la dette des entreprises", f"{outstanding / (outstanding + bank_debt):.0%}"
+                   if outstanding + bank_debt > 0 else "—")
+    cols[2].metric("Émetteurs", f"{len(issuers)}")
+    cols[3].metric("Ménages porteurs", f"{len(holders)}",
+                   help=f"Les fonds des banques détiennent {compact(fund_held, ' €')}.")
+    cols[4].metric("Taux moyen annuel",
+                   f"{12.0 * sum(c.bond_debt * c.bond_rate for c in issuers) / outstanding:.1%}" if outstanding > 0 else "—",
+                   help=f"Taux directeur annuel : {12.0 * simulation.policy_rate:.1%} ; taux des dépôts : "
+                        f"{12.0 * simulation.deposit_rate:.1%}.")
+    cols = st.columns(4)
+    cols[0].metric("Émissions (cumul)", compact(sum(r.get("obligations_emissions", 0.0) for r in history), " €"))
+    cols[1].metric("Dont remboursement de prêts bancaires",
+                   compact(sum(r.get("obligations_refinancement", 0.0) for r in history), " €"))
+    cols[2].metric("Coupons versés (cumul)", compact(sum(r.get("obligations_coupons", 0.0) for r in history), " €"))
+    cols[3].metric("Capital remboursé (cumul)",
+                   compact(sum(r.get("obligations_remboursements", 0.0) for r in history), " €"))
+    if len(history) > 1:
+        left, right = st.columns(2)
+        with left:
+            st.caption("Encours obligataire (€)")
+            area_chart([{"Période": r["periode"], "Encours": r.get("obligations_encours", 0.0)} for r in history],
+                       x="Période", y=["Encours"])
+        with right:
+            st.caption("Flux mensuels : émissions, coupons, remboursements (€)")
+            line_chart(
+                [{"Période": r["periode"], "Émissions": r.get("obligations_emissions", 0.0),
+                  "Coupons": r.get("obligations_coupons", 0.0),
+                  "Remboursements": r.get("obligations_remboursements", 0.0)} for r in history],
+                x="Période", y=["Émissions", "Coupons", "Remboursements"],
+            )
+    if issuers:
+        st.markdown("**Émetteurs**")
+        st.dataframe(
+            [
+                {
+                    "Entreprise": labels[c.id],
+                    "Secteur": sectors.get(c.sector, c.sector),
+                    "Encours obligataire (€)": c.bond_debt,
+                    "Taux annuel": 12.0 * c.bond_rate,
+                    "Dette bancaire (€)": c.debt,
+                    "Taux bancaire annuel": 12.0 * c.debt_interest_rate if c.debt_interest_rate is not None else None,
+                    "Coupon du mois (€)": c.bond_debt * c.bond_rate,
+                    "Bénéfice du mois (€)": c.profit,
+                }
+                for c in sorted(issuers, key=lambda c: -c.bond_debt)
+            ],
+            hide_index=True, width="stretch", height=min(480, 38 + 35 * len(issuers)),
+            column_config={
+                **_money_columns("Encours obligataire (€)", "Dette bancaire (€)", "Coupon du mois (€)",
+                                 "Bénéfice du mois (€)"),
+                **_percent_columns("Taux annuel", "Taux bancaire annuel"),
+            },
+        )
+    else:
+        st.caption("Aucune obligation en circulation pour l'instant.")
+
+
+@st.cache_data(show_spinner=False, max_entries=4)
+def render_trade_panel(view_id: str, month: int, _simulation: EconomySimulation) -> None:
+    """Sous-onglet « Commerce extérieur » : échanges avec le reste du monde (sans widget)."""
+    simulation = _simulation
+    st.markdown("#### Commerce extérieur")
+    state = getattr(simulation, "enterprise", None)
+    if not simulation.live.foreign_trade or state is None or state.foreign is None:
+        st.info(
+            "Désactivé : cochez « Commerce extérieur » dans la barre latérale (rubrique « Obligations, "
+            "commerce extérieur & syndicats »), puis réinitialisez. Le reste du monde vendra alors aux "
+            "ménages ce que le marché intérieur ne sert pas, et redépensera cette monnaie en produits "
+            "et en services intérieurs."
+        )
+        return
+    history = simulation.enterprise_history()
+    last = history[-1] if history else {}
+    year = history[-12:]
+    gdp = sum(r.nominal_gdp for r in simulation.observed_history[-12:]) or 1.0
+    imports, exports = (sum(r.get(key, 0.0) for r in year) for key in ("importations", "exportations"))
+    cols = st.columns(5)
+    cols[0].metric("Taux de change", f"{state.exchange_rate:.2f}",
+                   help="Prix d'une unité de monnaie étrangère : il monte quand les importations dépassent "
+                        "les exportations, ce qui renchérit les produits importés.")
+    cols[1].metric("Importations (12 mois)", compact(imports, " €"), help=f"{imports / gdp:.1%} du PIB.")
+    cols[2].metric("Exportations (12 mois)", compact(exports, " €"), help=f"{exports / gdp:.1%} du PIB.")
+    cols[3].metric("Solde (12 mois)", compact(exports - imports, " €"))
+    cols[4].metric("Avoirs du reste du monde", compact(state.foreign.cash, " €"),
+                   help="Monnaie intérieure gagnée et pas encore redépensée (plafonnée à 2 % du PIB annuel).")
+    if len(history) > 1:
+        left, right = st.columns(2)
+        with left:
+            st.caption("Importations et exportations du mois (€)")
+            line_chart(
+                [{"Période": r["periode"], "Importations": r.get("importations", 0.0),
+                  "Exportations": r.get("exportations", 0.0)} for r in history],
+                x="Période", y=["Importations", "Exportations"],
+            )
+        with right:
+            st.caption("Taux de change")
+            line_chart([{"Période": r["periode"], "Taux de change": r.get("taux_de_change", 1.0)} for r in history],
+                       x="Période", y=["Taux de change"])
+        st.caption("Quantités importées (unités) et part des exportations en services et technologie (€)")
+        line_chart(
+            [{"Période": r["periode"], "Alimentation importée": r.get("importations_food", 0.0),
+              "Biens importés": r.get("importations_goods", 0.0)} for r in history],
+            x="Période", y=["Alimentation importée", "Biens importés"],
+        )
+    goods = sum(r.get("exportations", 0.0) - r.get("exportations_services", 0.0) for r in year)
+    st.caption(
+        f"Sur douze mois, le reste du monde a acheté {compact(max(0.0, goods), ' €')} d'alimentation et de "
+        f"biens en stock et {compact(sum(r.get('exportations_services', 0.0) for r in year), ' €')} de services "
+        f"et de technologie. Prix mondiaux convertis ce mois : alimentation "
+        f"{state.world_prices.get('food', 0.0) * state.exchange_rate:,.0f} € (intérieur "
+        f"{simulation.food_price:,.0f} €), biens {state.world_prices.get('goods', 0.0) * state.exchange_rate:,.0f} € "
+        f"(intérieur {simulation.goods_price:,.0f} €)."
+    )
+
+
+@st.cache_data(show_spinner=False, max_entries=4)
+def render_unions_panel(view_id: str, month: int, _simulation: EconomySimulation) -> None:
+    """Sous-onglet « Syndicats » : accords salariaux de secteur et grèves (sans widget)."""
+    simulation = _simulation
+    st.markdown("#### Syndicats et négociation collective")
+    state = getattr(simulation, "enterprise", None)
+    if not simulation.live.collective_bargaining or state is None:
+        st.info(
+            "Désactivé : cochez « Syndicats et négociation collective » dans la barre latérale (rubrique "
+            "« Obligations, commerce extérieur & syndicats »), puis réinitialisez. Chaque secteur "
+            "négociera alors un accord salarial par an."
+        )
+        return
+    offset = simulation.warmup_offset
+    sectors = {key: label.split(" (")[0] for key, label in SECTORS}
+    agreements = [row for row in state.agreements if row["mois"] - offset >= 0]
+    strikes = [row for row in agreements if row["greve"]]
+    unemployment = simulation.observed_history[-1].unemployment if simulation.observed_history else 0.0
+    cols = st.columns(5)
+    cols[0].metric("Pouvoir des syndicats", f"{simulation._union_power(unemployment):.0%}",
+                   help="Part de sa demande qu'un syndicat obtient aujourd'hui : dépend de l'orientation du "
+                        "gouvernement et du chômage.")
+    cols[1].metric("Accords conclus", f"{len(agreements)}")
+    cols[2].metric("Grèves", f"{len(strikes)}")
+    cols[3].metric("Hausse moyenne obtenue",
+                   f"{sum(r['accord'] for r in agreements) / len(agreements):.1%}" if agreements else "—",
+                   help="Par accord annuel ; demande moyenne : "
+                        + (f"{sum(r['demande'] for r in agreements) / len(agreements):.1%}." if agreements else "—"))
+    cols[4].metric("Employeurs sous accord", f"{len(state.wage_floors)}",
+                   help="Leur offre salariale ne peut pas descendre sous le niveau négocié.")
+    if agreements:
+        st.caption("Hausse demandée et hausse obtenue à chaque accord (%)")
+        line_chart(
+            [{"Période": r["mois"] - offset, "Demandée": 100.0 * r["demande"], "Obtenue": 100.0 * r["accord"]}
+             for r in agreements],
+            x="Période", y=["Demandée", "Obtenue"],
+        )
+        by_sector = {}
+        for row in agreements:
+            entry = by_sector.setdefault(row["secteur"], {"accords": 0, "greves": 0, "hausse": 0.0})
+            entry["accords"] += 1
+            entry["greves"] += int(row["greve"])
+            entry["hausse"] += row["accord"]
+        st.markdown("**Par secteur**")
+        st.dataframe(
+            [
+                {"Secteur": sectors.get(sector, sector), "Accords": entry["accords"], "Grèves": entry["greves"],
+                 "Hausse cumulée obtenue": entry["hausse"],
+                 "Hausse moyenne par accord": entry["hausse"] / entry["accords"]}
+                for sector, entry in sorted(by_sector.items(), key=lambda item: -item[1]["hausse"])
+            ],
+            hide_index=True, width="stretch",
+            column_config=_percent_columns("Hausse cumulée obtenue", "Hausse moyenne par accord"),
+        )
+        st.markdown("**Derniers accords**")
+        st.dataframe(
+            [
+                {"Période": r["mois"] - offset, "Secteur": sectors.get(r["secteur"], r["secteur"]),
+                 "Salariés couverts": r["salaries"], "Hausse demandée": r["demande"],
+                 "Hausse obtenue": r["accord"], "Pouvoir du syndicat": r["pouvoir"],
+                 "Grève": "oui" if r["greve"] else "non"}
+                for r in reversed(agreements[-40:])
+            ],
+            hide_index=True, width="stretch",
+            column_config=_percent_columns("Hausse demandée", "Hausse obtenue", "Pouvoir du syndicat"),
+        )
+    else:
+        st.caption("Aucun accord pour l'instant : il faut un an d'historique et une demande du syndicat "
+                   "(inflation non rattrapée par les salaires, ou marges au-delà de la référence du secteur).")
+
+
 @st.cache_data(show_spinner=False, max_entries=16)
 def render_company_profile(
     view_id: str, month: int, selected_company_id: str, _simulation: EconomySimulation
@@ -3351,9 +4053,10 @@ if not lazy_tabs or firms_tab.open:
             (company.id for company in active_companies),
             key=lambda company_id: (companies_by_id[company_id].sector, company_labels[company_id]),
         )
-        firms_list, firm_sheet, groups_tab, funds_tab, market_tab = st.tabs(
+        (firms_list, firm_sheet, groups_tab, funds_tab, market_tab, bonds_tab, trade_tab,
+         unions_tab) = st.tabs(
             ["Toutes les entreprises", "Fiche d'une entreprise", "Groupes & filiales",
-             "Fonds d'investissement", "Bourse"]
+             "Fonds d'investissement", "Bourse", "Obligations", "Commerce extérieur", "Syndicats"]
         )
         with firms_list:
             st.markdown(
@@ -3412,6 +4115,15 @@ if not lazy_tabs or firms_tab.open:
 
         with funds_tab:
             render_funds_panel(st.session_state._view_id, simulation.month, simulation)
+
+        with bonds_tab:
+            render_bonds_panel(st.session_state._view_id, simulation.month, simulation)
+
+        with trade_tab:
+            render_trade_panel(st.session_state._view_id, simulation.month, simulation)
+
+        with unions_tab:
+            render_unions_panel(st.session_state._view_id, simulation.month, simulation)
 
         with market_tab:
             st.markdown("#### Cours boursiers")

@@ -335,9 +335,38 @@ Sans nouveau réglage : ces règles s'appliquent quand le mécanisme concerné e
 - **Expérience des dirigeants** : à chaque anniversaire de mandat, l'entreprise gagne un peu de
   productivité (+0,4 % la première année, de moins en moins ensuite) ; un dirigeant remplacé
   repart de zéro.
-- **Barre latérale** : boutons « Tout activer » et « Tout désactiver » pour les douze mécanismes
-  optionnels, exigence de fonds propres contracyclique et recapitalisation de dernier recours des
-  banques comprises (fermeture des entreprises sans salarié réglée à 6 mois).
+- **Barre latérale** : boutons « Tout activer » et « Tout désactiver » pour tous les mécanismes
+  optionnels, exigence de fonds propres contracyclique, recapitalisation de dernier recours des
+  banques, lots J et K compris (fermeture des entreprises sans salarié réglée à 6 mois).
+
+### Obligations d'entreprise, commerce extérieur, syndicats (lot J, désactivés par défaut)
+
+Trois mécanismes (`economy/macro.py`), chacun derrière sa case de la rubrique « Obligations,
+commerce extérieur & syndicats » de la barre latérale.
+
+- **Obligations d'entreprise** (`corporate_bonds`). Une entreprise non bancaire, rentable et
+  installée depuis deux ans, emprunte aux ménages et aux fonds des banques : pour couvrir un
+  besoin de trésorerie, ou pour rembourser sa banque quand l'obligation coûte moins cher. Un
+  ménage y vise environ 5 % de son épargne (les prudents davantage) si le taux dépasse celui des
+  dépôts. Acheter une obligation déplace un dépôt, sans créer de monnaie, alors qu'un prêt
+  bancaire en crée. Coupon mensuel, amortissement en cinq ans, encours limité à la moitié des
+  fonds propres. En faillite, les obligataires passent après les banques et avant les
+  actionnaires.
+- **Commerce extérieur** (`foreign_trade`). Un reste du monde vend aux ménages la moitié de
+  l'alimentation et des biens que le marché intérieur n'a pas servis, moins si son prix converti
+  est plus élevé. Il redépense chaque mois la moitié de la monnaie gagnée : en stocks des
+  producteurs d'abord, en services et en technologie pour le reste. Il ne détient jamais plus de
+  2 % du PIB annuel : aucune monnaie n'entre ni ne sort. Le taux de change flotte (un déficit
+  renchérit les importations). Les exportations entrent dans le PIB.
+- **Syndicats** (`collective_bargaining`). Chaque secteur négocie une fois par an. Le syndicat
+  demande le rattrapage de l'inflation que les salaires n'ont pas suivie, plus la moitié de la
+  marge au-delà de la référence du secteur, au plus 5 %. Il obtient cette demande × son pouvoir :
+  50 % sous un gouvernement du centre, 25 % à l'extrême droite, 75 % à l'extrême gauche, moins
+  quand le chômage monte. L'accord relève les offres salariales du secteur et les empêche de
+  baisser pendant douze mois. Si l'écart dépasse 2,5 points, le secteur fait grève un mois (la
+  moitié du travail perdue, la moitié de l'écart concédée), au plus une fois tous les trois ans.
+
+Mesure : `results/lot_g_entreprises/RESUME.md`, section « Lot J ».
 
 ### Banques et banque centrale
 - Les banques prêtent dans la limite de leurs **fonds propres** (8 % des prêts et titres). Les
@@ -481,6 +510,52 @@ richesse : l'enrichissement du 1 % et la concentration des marchés doivent éme
 - **Journal des décisions** : chaque décision a un auteur, une date, un motif, un montant et un
   financement.
 
+### Influence, popularité, pouvoir et favoritisme (lot K, désactivés par défaut)
+
+Neuf mécanismes (`economy/power.py`), chacun derrière sa case de la rubrique « Pouvoir, influence &
+corruption » de la barre latérale. Tant qu'aucun n'est coché, la simulation est identique au bit
+près. Cochés, ils agissent dès la période de chauffe ; leurs tirages viennent d'un générateur dédié.
+
+| Réglage | Ce qui se passe |
+|---|---|
+| `influence_ranking` | **Influence.** Chaque ménage a un score de 0 à 100 : fortune (au plus 30, atteints à dix fois la fortune moyenne), fonction (présidence 35, ministre 22, dirigeant 6 à 28 selon le poids de son entreprise dans l'emploi et le chiffre d'affaires), capital contrôlé (au plus 20, participations d'au moins 10 %), popularité (au plus 15). Les dix premiers sont relevés chaque mois. Mesure seule : l'économie ne change pas. |
+| `personal_popularity` | **Personnalité et popularité.** Trois traits tirés une fois par ménage : charisme, intégrité, ambition. La notoriété vient de la fonction (présidence 1, ministre 0,7, dirigeant selon la taille de l'entreprise) et s'efface lentement. L'opinion rejoint de 8 % par mois une référence fixée par le charisme, déplacée par les résultats : croissance, chômage et objectifs atteints pour la présidence, avancement de son objectif pour un ministre, marge et effectifs pour un dirigeant. Popularité = notoriété × opinion. |
+| `candidate_elections` | **Élection à candidats.** Six mois avant le vote, le sortant et le membre le plus fort du camp opposé (ambition × popularité × influence) se déclarent. L'écart de popularité et de campagne décale le vote de chaque ménage (`vote_popularity_weight`) ; le programme de l'opposition reste la médiane de son camp. L'élu devient président. |
+| `executive_power_laws` | **Lois de pouvoir.** Une fois par an, un président dont le goût du pouvoir (0,6 × ambition + 0,4 × (1 − intégrité)) dépasse 55 % propose la loi suivante de la liste ; elle passe si son capital politique (part des voix à son élection, plus la moitié de l'écart de son opinion à 50 %) dépasse 52 % plus 2 points par loi déjà votée. Un président d'intégrité supérieure à 60 % abroge la plus récente. Sans la loi « mandats », une même personne fait au plus deux mandats consécutifs, puis son camp présente un dauphin. |
+| `business_subsidies` | **Aides aux entreprises.** Programme légal de 0,5 % du PIB par an (`business_aid_gdp_share` ; moitié moins pour une doctrine de laisser-faire, moitié plus pour une doctrine d'opérateur public) : une entreprise privée non bancaire en perte depuis trois mois reçoit chaque mois une aide au prorata de ses salariés, au plus un quart de sa masse salariale. Le budget non employé n'est pas dépensé. |
+| `political_favoritism` | **Favoritisme et scandales.** Voir ci-dessous. |
+| `corporate_lobbying` | **Lobbying.** Pendant la campagne, une entreprise bénéficiaire de taille au moins moyenne donne 1 % de son bénéfice mensuel au candidat le plus proche de son dirigeant (dépense payée aux entreprises de services). Une entreprise visée par un dossier de monopole dépense 0,5 % de son bénéfice en conseil, ce qui freine l'instruction jusqu'à la moitié selon l'influence de son dirigeant. |
+| `revolving_door` | **Pantouflage.** Dans l'année qui suit sa sortie du cabinet, un ancien ministre ou président devient conseiller de la plus grande entreprise bénéficiaire des secteurs de son portefeuille. Elle lui verse la moitié d'un salaire de ministre pendant trois ans, et ce conseiller la relie au président qu'il a servi. |
+| `political_dynasties` | **Dynasties.** L'héritier d'une personne connue (notoriété d'au moins 0,2) garde 30 % de sa notoriété ; ses traits et son opinion sont les siens. |
+
+Les cinq lois de pouvoir, dans l'ordre où elles sont proposées :
+
+| Loi | Effet |
+|---|---|
+| Enveloppe discrétionnaire | la moitié des aides aux entreprises est attribuée par la présidence seule |
+| Nominations | un président peu intègre nomme un proche à la tête d'une entreprise publique créée, et gèle le dossier de monopole d'une entreprise liée à lui |
+| Contrôle affaibli | un audit découvre quatre fois moins souvent une aide de faveur |
+| Médias | l'opinion réagit moitié moins aux mauvais résultats du président et aux scandales ; la presse enquête moitié moins |
+| Mandats | plus de limite de mandats consécutifs |
+
+**Le favoritisme n'arrive que si tout est réuni** : la loi « enveloppe » est votée ; l'intégrité du
+président est sous 40 % (sous 15 % tant que le contrôle des comptes n'est pas affaibli) ; une
+entreprise privée a un patron (dirigeant ou actionnaire d'au moins 10 %) d'influence au moins 25 ;
+son lien avec la présidence atteint 50 %. Ce lien additionne des faits : le président y travaillait
+avant sa nomination (35 %), il en détient des titres (25 %), proximité politique du patron (au plus
+20 %), don à sa campagne (30 %), ancien de son cabinet parmi les patrons ou les conseillers (30 %).
+Même alors, le passage à l'acte est un tirage (10 % par mois). L'aide est un vrai paiement de
+l'État, inscrit au journal comme « aide discrétionnaire » avec la note de conflit d'intérêts.
+
+Chaque mois, chaque affaire peut être révélée par l'audit (3 %, un quart sous la loi « contrôle »)
+ou par la presse (1 %, moitié moins sous la loi « médias »). Le scandale coûte 30 points d'opinion
+au président et au patron ; l'entreprise rembourse l'aide plus une amende de moitié, dans la limite
+de sa trésorerie ; si le président en cause est encore en place, le ministre de l'Industrie est
+remplacé et la loi « contrôle » est abrogée. L'onglet État affiche les scandales révélés et, à part,
+une « vue omnisciente » des affaires encore cachées.
+
+Mesure : `results/lot_k_pouvoir/RESUME.md`.
+
 ---
 
 ## 7. Expérience : toujours la gauche, toujours la droite, ou des élections ?
@@ -611,8 +686,8 @@ surtout sur le **niveau** de production et sa **répartition**, pas sur le rythm
 | Onglet | Contenu |
 |---|---|
 | **Vue d'ensemble** | PIB, chômage, inflation, salaires, prix, inégalités, logement, monnaie, événements du mois |
-| **État** | gouvernement et cabinet, budget, fonction publique, salaire minimum, industrie, journal des décisions |
-| **Entreprises & bourse** | cinq sous-onglets : **Toutes les entreprises** (résumé par secteur, une ligne par entreprise en activité), **Fiche d'une entreprise** (indicateurs, bilan, principaux actionnaires ou conseil, groupe : société mère, filiales, entreprises absorbées, équipe, historiques), **Groupes & filiales** (ce que chaque filiale a coûté et rapporté, poids des groupes dans l'emploi, filiales sorties, fusions, magasins), **Fonds d'investissement** (actif, valeur de la part, épargne confiée, apports, frais, participations en portefeuille et soldées), **Bourse** (cours des entreprises cotées) |
+| **État** | gouvernement et cabinet, budget, fonction publique, salaire minimum, industrie, journal des décisions, et **Pouvoir & influence** (lot K) en cinq sous-onglets : **Influence** (les dix personnes les plus influentes et ce qui compose leur score ; affiché même sans réglage), **Popularité & élections** (traits, notoriété et opinion du cabinet, candidats, élections passées), **Lois de pouvoir** (lois en vigueur, capital politique), **Aides & favoritisme** (aides versées, scandales révélés, vue omnisciente), **Réseaux** (dons, lobbying, conseillers, dynasties, événements) |
+| **Entreprises & bourse** | cinq sous-onglets : **Toutes les entreprises** (résumé par secteur, une ligne par entreprise en activité), **Fiche d'une entreprise** (indicateurs, bilan, principaux actionnaires ou conseil, groupe : société mère, filiales, entreprises absorbées, équipe, historiques), **Groupes & filiales** (ce que chaque filiale a coûté et rapporté, poids des groupes dans l'emploi, filiales sorties, fusions, magasins), **Fonds d'investissement** (actif, valeur de la part, épargne confiée, apports, frais, participations en portefeuille et soldées), **Bourse** (cours des entreprises cotées), **Obligations** (encours, émetteurs, taux, flux), **Commerce extérieur** (importations, exportations, taux de change), **Syndicats** (accords par secteur, grèves, pouvoir de négociation) |
 | **Ménages** | trois sous-onglets : **Vue d'ensemble** (indicateurs, répartition des fortunes), **Fiche d'un ménage** (revenus, patrimoine, actions, parts de fonds, expérience, état de ses logements, historiques), **Tous les ménages** (une ligne par ménage, triable) |
 
 Les entreprises fermées ou absorbées ne sont plus listées ; une entreprise absorbée par fusion
@@ -713,7 +788,10 @@ economy/                   Moteur, sans dépendance à Streamlit
 ├── institutions.py        Doctrines, objectifs (principal, secondaire, cibles, leviers), élection (règles pures)
 ├── ownership.py           Régime de propriété selon l'orientation, parts salariées (lot E)
 ├── enterprise.py          Expérience, gros entretien, préférences et données, filiales, rachats entre
-│                          secteurs, magasins, non cotées et fonds des banques (lot G)
+│                          secteurs, magasins, non cotées et fonds des banques (lots G à I)
+├── macro.py               Obligations d'entreprise, commerce extérieur, négociation collective (lot J)
+├── power.py               Influence, popularité, élection à candidats, lois de pouvoir, aides aux
+│                          entreprises, favoritisme, lobbying, pantouflage, dynasties (lot K)
 ├── state_government.py    Gouvernement, cabinet, journal
 ├── state_budget.py        Loi de finances, exécution, dette
 ├── state_services.py      Fonction publique, éducation
@@ -798,10 +876,23 @@ l'interface avec les huit mécanismes du lot G activés ;
   regroupent en 33 ans un tiers des entreprises dans des groupes. Les distributions d'un fonds
   sont imposées comme des dividendes, remboursement de capital compris. Mesures sur 400 mois et
   5 graines seulement (`results/lot_g_entreprises/RESUME.md`), sans évaluation à 800 mois.
+- **Lot J : simplifications.** Le commerce extérieur ne porte que sur l'alimentation, les biens
+  et, à l'exportation, les services et la technologie ; pas d'énergie ni de matières importées,
+  pas de mouvements de capitaux. Une grève ne réduit la production que dans l'alimentation, les
+  biens et les matières (les autres secteurs ne mesurent pas le travail heure par heure). Les
+  obligations sont détenues au pair, sans marché secondaire ni cours.
 - **Démographie simplifiée.** Il n'y a ni retraites, ni enfants à charge, ni partage d'héritage.
   Un ménage est une lignée, et l'héritier garde l'emploi.
-- **Politique sur un seul axe.** Il n'y a ni partis, ni campagnes, ni coalitions. Les services
-  reçus (éducation) n'influencent pas encore le vote.
+- **Politique sur un seul axe.** Il n'y a ni partis ni coalitions ; les candidats et les campagnes
+  n'existent qu'avec le lot K. Les services reçus (éducation) n'influencent pas encore le vote.
+- **Lot K : simplifications.** Deux candidats seulement, sans primaire ni second tour. La popularité
+  n'entre dans le vote qu'avec l'élection à candidats : sans elle, un scandale ne coûte rien dans
+  les urnes. Les lois de pouvoir passent sur un seuil de capital politique, sans parlement ni vote
+  des ménages. Les aides sont hors loi de finances : elles s'ajoutent aux dépenses votées et peuvent
+  maintenir en vie des entreprises durablement déficitaires. Une aide de faveur est un simple
+  transfert : elle ne fausse ni les prix ni les marchés publics. Le pantouflage est un mandat de
+  conseiller, pas un poste de dirigeant. Un héritier garde l'emploi du défunt, présidence comprise.
+  Mesures sur 400 mois et 5 graines seulement (`results/lot_k_pouvoir/RESUME.md`).
 - **Fonction publique perfectible.** Les recrues sont parfois débauchées aussitôt par le privé.
   Par défaut, certains objectifs ministériels sont trop faciles (déjà remplis à leur fixation) ;
   les objectifs enrichis (`enriched_objectives`) relèvent ces cibles, mais un objectif de maintien

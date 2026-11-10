@@ -190,6 +190,9 @@ class DemographyMixin:
         person.ventures = 0
         person.negotiations = 0
         person.taste = -1.0  # lot I : l'héritier a son propre goût (tiré au premier usage)
+        if getattr(self, "power", None) is not None:
+            # lot K : l'héritier a ses propres traits ; dynasties (part de la notoriété gardée)
+            self._power_succession(person)
         person.employer_tenure = 0
         person.rank = -1
         person.lifetime_earnings = 0.0

@@ -199,3 +199,79 @@ du coût des fonds propres. Aucune ne vise un résultat.
 | `board_seats` | 4 (lot H) | Nombre d'actionnaires qui siègent au conseil : les quatre plus gros porteurs (ménages, entreprises, État, fonds), dont la société mère d'une filiale ; au-delà, les petits porteurs ne pèsent pas sur la direction. |
 | `board_patience_months` | 6 (lot H) | Mois de pertes consécutives au-delà desquels un membre du conseil vote la révocation du dirigeant (un ménage : 3 à 9 mois selon son goût du risque), jamais avant douze mois de mandat. Même durée que le délai de cessation de paiements (`bankruptcy_months`). |
 | `ipo_need_share` | 0,5 (G8) | Besoin de trésorerie restant après l'apport du fonds, en part des fonds propres, au-delà duquel une entreprise non cotée demande son introduction en Bourse : seul un besoin que ni sa trésorerie ni le fonds ne couvrent l'y pousse. |
+
+## Réglages du lot J : obligations, commerce extérieur, syndicats (novembre 2026)
+
+Trois mécanismes (`economy/macro.py`), chacun derrière son réglage, **désactivé par défaut** et
+neutre pour l'empreinte d'identité. `MacroRegistryTests` (`tests/test_macro.py`) vérifie que la liste
+ci-dessous correspond aux réglages ajoutés. Aucun ne vise un résultat (solde extérieur, niveau des
+salaires, encours de dette) ; aucun tirage. Constantes du module, non réglables : émetteur
+d'obligations d'au moins 24 mois, émission minimale de 10 000 € de départ, un dixième de la
+trésorerie excédentaire d'un fonds placé en obligations par mois ; avoirs du reste du monde d'au plus
+2 % du PIB annuel, dont il redépense la moitié chaque mois ; accord salarial de douze mois, grève
+au-delà de 2,5 points d'écart entre la demande et l'offre (la moitié du travail du mois perdue, la
+moitié de l'écart concédée, une grève par secteur tous les trois ans au plus), syndicat sans pouvoir à 20 % de chômage, moitié de la marge au-delà de
+la référence du secteur réclamée en salaires.
+
+| Réglage | Défaut | Justification |
+|---|---|---|
+| `corporate_bonds` | faux | Obligations d'entreprise : une entreprise non bancaire rentable emprunte aux ménages et aux fonds des banques. Un achat est un transfert de dépôt, sans création de monnaie ; coupon et amortissement mensuels ; en liquidation, les obligataires passent après les banques et avant les actionnaires. Financement de marché à côté du crédit bancaire. |
+| `corporate_bond_share` | 0,05 | Part de son épargne investissable qu'un ménage de goût du risque moyen vise en obligations d'entreprise (2,5 à 7,5 %, les prudents davantage), comblée à la vitesse de rééquilibrage des portefeuilles et seulement si le taux dépasse celui des dépôts. |
+| `corporate_bond_term_months` | 60 | Durée d'amortissement d'une obligation : un soixantième de l'encours est remboursé chaque mois (cinq ans, durée usuelle d'une obligation d'entreprise), en plus du coupon. |
+| `corporate_bond_leverage` | 0,5 | Encours obligataire maximal d'un émetteur, en part de ses fonds propres : les épargnants ne prêtent pas au-delà de la moitié de ce que les actionnaires ont engagé, ce qui borne la perte en cas de défaut. |
+| `foreign_trade` | faux | Commerce extérieur : un reste du monde vend aux ménages l'alimentation et les biens que le marché intérieur ne sert pas, et redépense la monnaie gagnée en produits et en services intérieurs. Aucune monnaie n'entre ni ne sort ; taux de change flottant. Les exportations entrent dans le PIB. |
+| `trade_openness` | 0,5 | Part de la demande non servie d'un marché que les importations peuvent couvrir chaque mois : une économie à moitié ouverte, où une pénurie intérieure n'est jamais entièrement comblée par l'étranger. |
+| `trade_price_elasticity` | 2,0 | Élasticité des volumes échangés à l'écart entre prix intérieur et prix étranger converti : un produit importé 10 % plus cher se vend environ 20 % de moins. Ordre de grandeur des élasticités du commerce, non calibré. |
+| `exchange_rate_speed` | 0,05 | Variation mensuelle maximale du taux de change (5 %), proportionnelle au déséquilibre relatif des échanges du mois : un déficit déprécie la monnaie, renchérit les importations et aide les exportations. |
+| `collective_bargaining` | faux | Négociation collective : une fois par an et par secteur, un syndicat demande le rattrapage de l'inflation et une part des marges ; l'accord relève les offres salariales du secteur et les empêche de baisser pendant douze mois ; une grève suit un écart trop grand. Les salaires gardent leur plancher légal et leurs autres règles. |
+| `union_power` | 0,5 | Pouvoir de négociation d'un syndicat sous un gouvernement du centre et sans chômage : part de sa demande qu'il obtient. Multiplié par 0,5 à l'extrême droite et 1,5 à l'extrême gauche, et réduit par le chômage (nul à 20 %). |
+| `union_max_raise` | 0,05 | Hausse annuelle maximale qu'un syndicat demande (5 %) : borne la demande dans une année d'inflation forte, sans indexation automatique des salaires sur les prix. |
+
+## Réglages du lot K : influence, popularité, pouvoir et favoritisme (novembre 2026)
+
+Neuf mécanismes (`economy/power.py`), chacun derrière son réglage, **désactivé par défaut** et
+neutre pour l'empreinte d'identité. `PowerRegistryTests` (`tests/test_power.py`) vérifie que la liste
+ci-dessous correspond aux réglages ajoutés. Aucun ne vise un résultat (taux de réélection, nombre
+d'affaires, niveau de corruption) : ce sont des règles de décision de personnes et des probabilités
+d'événements, non calibrées sur des données. Tirages : un générateur propre au lot (traits des
+ménages, passage à l'acte d'un président, révélation d'une affaire), créé à l'activation ; aucun
+autre générateur n'est déplacé. L'état vit dans `simulation.power`, créé au premier usage.
+
+Constantes du module, non réglables. Influence : 30 points de fortune (atteints à dix fois la
+fortune moyenne), 35 de fonction (présidence 35, ministre 22, dirigeant 6 à 28 selon le poids de
+son entreprise, 3 pour un siège au conseil d'actionnaires), 20 de capital contrôlé (participations
+d'au moins 10 %, maximum à un quart de l'économie), 15 de popularité. Popularité : opinion de
+référence de 0,3 à 0,7 selon le charisme, déplacée d'au plus 0,3 par les résultats, rejointe de 8 %
+par mois ; notoriété gagnée de 10 % par mois et perdue de 2 % ; notoriété d'un ministre 0,7.
+Élection : campagne de six mois, avantage de campagne d'au plus 0,10 (moitié à 24 salaires mensuels
+dépensés), deux mandats consécutifs au plus tant que la loi « mandats » n'est pas votée. Lois : une
+proposition par an, six mois après le début du mandat, goût du pouvoir requis de 0,55, capital
+politique de 52 % plus 2 points par loi déjà votée, abrogation par un président d'intégrité
+supérieure à 0,6, 0,03 d'opinion perdue par loi rejetée. Aides : entreprise en perte depuis trois
+mois, au plus un quart de sa masse salariale, budget × 0,5 / 1 / 1,5 selon la doctrine
+industrielle, moitié du budget à la main de la présidence sous la loi « enveloppe ». Favoritisme :
+intégrité du président sous 0,4 (sous 0,15 si le contrôle est intact), influence du patron d'au
+moins 25, lien d'au moins 0,5 (ancien employeur 0,35, titres détenus 0,25, proximité politique au
+plus 0,20, don de campagne 0,30, ancien du cabinet 0,30) ; contrôle affaibli : un quart des audits ;
+presse : 1 % par mois (moitié sous la loi « médias ») ; affaire révélable pendant dix ans ; opinion
+perdue 0,30 ; amende de la moitié de l'aide en plus du remboursement. Lobbying : don de 1 % du
+bénéfice mensuel pendant la campagne, 0,5 % contre un dossier de monopole, instruction freinée d'au
+plus la moitié (influence du dirigeant de 40). Pantouflage : dans les douze mois après la sortie du
+cabinet, mandat de trente-six mois, honoraires de la moitié du salaire d'un ministre. Dynasties :
+30 % de la notoriété transmise si elle atteint 0,2.
+
+| Réglage | Défaut | Justification |
+|---|---|---|
+| `influence_ranking` | faux | Influence de chaque ménage, de 0 à 100 : fortune, fonction (présidence, ministère, direction d'entreprise), capital contrôlé, popularité ; les dix premiers sont relevés chaque mois. Mesure seule : aucune décision ne la lit sans un autre réglage, la trajectoire économique est inchangée. |
+| `personal_popularity` | faux | Trois traits tirés une fois par ménage (charisme, intégrité, ambition), une notoriété donnée par la fonction et une opinion qui suit les résultats : croissance, chômage et objectifs pour la présidence, avancement de son objectif pour un ministre, marge et effectifs pour un dirigeant. |
+| `candidate_elections` | faux | Le sortant (ou son dauphin après deux mandats, sous les lois de pouvoir) affronte le membre le plus fort du camp opposé ; l'écart de popularité et de campagne décale le vote de chaque ménage ; l'élu devient président. Demande le vote individuel ; les tirages du vote sont inchangés. |
+| `vote_popularity_weight` | 3,0 | Poids de l'écart d'avantage électoral (notoriété × (opinion − 0,5), de −0,5 à 0,5) dans le logit de chaque électeur : au plus ± 1 environ en pratique, du même ordre que l'écart idéologique entre deux programmes (poids 8 × un écart de proximité de 0,1 à 0,2). |
+| `executive_power_laws` | faux | Lois qui étendent le pouvoir de la présidence (enveloppe discrétionnaire, nominations, contrôle des comptes affaibli, tutelle sur les médias, limite de mandats levée), proposées par un président ambitieux et peu intègre, votées selon son capital politique, abrogées par un successeur intègre. Sans tirage. |
+| `business_subsidies` | faux | Programme légal d'aides aux entreprises privées non bancaires en perte depuis trois mois, au prorata de leurs salariés, au plus un quart de leur masse salariale. Vrai paiement de l'État, inscrit au livre mensuel, financé par la trésorerie ou l'emprunt ; le budget non employé n'est pas dépensé. |
+| `business_aid_gdp_share` | 0,005 | Budget annuel des aides en part du PIB (0,5 %), au centre ; × 0,5 pour une doctrine de laisser-faire, × 1,5 pour une doctrine d'opérateur public. Ordre de grandeur des aides d'État aux entreprises hors crise, non calibré. |
+| `political_favoritism` | faux | Sous la loi « enveloppe », un président peu intègre attribue la part discrétionnaire des aides à une entreprise dont le patron est influent et lié à lui ; chaque affaire peut être révélée (opinion, remboursement, amende, remaniement, contrôle rétabli). Demande les aides et les lois de pouvoir. |
+| `favoritism_monthly_chance` | 0,10 | Probabilité mensuelle qu'un président passe à l'acte quand toutes les conditions sont réunies (environ une fois par an) : le favoritisme reste un événement rare et daté, pas un flux permanent. |
+| `audit_detection_chance` | 0,03 | Probabilité mensuelle qu'un audit révèle une aide de faveur donnée (environ un tiers par an, les trois quarts en quatre ans) ; divisée par quatre sous la loi « contrôle ». S'y ajoute 1 % par mois d'enquête de presse. |
+| `corporate_lobbying` | faux | Dons de campagne des entreprises bénéficiaires de taille au moins moyenne au candidat le plus proche de leur dirigeant, et dépenses de conseil d'une entreprise visée par un dossier de monopole, qui freinent son instruction. Dépenses réelles payées aux entreprises de services. |
+| `revolving_door` | faux | Pantouflage : un ancien membre du cabinet devient conseiller rémunéré de la plus grande entreprise bénéficiaire des secteurs de son ancien portefeuille ; ce conseiller relie l'entreprise au président qu'il a servi. Honoraires payés par l'entreprise au ménage. |
+| `political_dynasties` | faux | L'héritier d'un ménage connu (notoriété d'au moins 0,2) garde 30 % de sa notoriété ; ses traits et son opinion sont les siens. Sans ce réglage, la notoriété disparaît à la succession. Sans effet sans la popularité. |

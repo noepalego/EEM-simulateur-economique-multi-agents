@@ -47,6 +47,7 @@ def pay_business_suppliers(
     resources: Resources,
     deduct: bool = True,
     priced: bool = True,
+    suppliers_by_sector: dict[str, list[Company]] | None = None,
 ) -> float:
     """Répartit ``amount`` entre les secteurs fournisseurs selon ``split``.
 
@@ -99,10 +100,12 @@ def pay_business_suppliers(
             paid_total += paid
             continue
         # prix du secteur fournisseur (régulé par sa marge) et économies de réseau
-        factor = {
-            "energy": resources.energy_price_index * (1.0 - buyer.energy_saving),
-            "technology": resources.tech_service_price_index,
-        }.get(sector, 1.0) if priced else 1.0
+        factor = 1.0
+        if priced:
+            if sector == "energy":
+                factor = resources.energy_price_index * (1.0 - buyer.energy_saving)
+            elif sector == "technology":
+                factor = resources.tech_service_price_index
         if price_elasticity > 0.0 and sector in ("energy", "technology") and priced:
             index = resources.energy_price_index if sector == "energy" else resources.tech_service_price_index
             factor *= index ** -price_elasticity
@@ -115,8 +118,9 @@ def pay_business_suppliers(
             part += delta
         if sector == "energy":
             buyer.energy_bill += part
+        candidates = companies if suppliers_by_sector is None else suppliers_by_sector.get(sector, ())
         suppliers = [
-            c for c in companies
+            c for c in candidates
             if c.active and c.sector == sector and c.id != buyer.id
         ]
         suppliers, weights = _delivering_suppliers(suppliers)
@@ -160,6 +164,18 @@ def pay_business_suppliers(
                 if not supplier.employees:
                     diagnostics.flow("recette_b2b_sans_salarie", payment)
     return paid_total
+
+
+def business_suppliers(companies: list[Company]) -> dict[str, list[Company]]:
+    """Index local : utilisable tant qu'aucune entreprise n'ouvre, ne ferme ou ne change de secteur.
+
+    Les poids ne sont pas mémorisés : la productivité peut évoluer entre deux achats.
+    """
+    sectors: dict[str, list[Company]] = {}
+    for company in companies:
+        if company.active:
+            sectors.setdefault(company.sector, []).append(company)
+    return sectors
 
 
 def household_suppliers(companies: list[Company], sectors) -> dict:
@@ -226,6 +242,7 @@ def settle_operating_inputs(
     """Achats courants des secteurs hors alimentation / biens : part du chiffre d'affaires du
     mois précédent, ventes de machines et d'infrastructures comprises."""
     total = 0.0
+    suppliers = business_suppliers(companies)
     for buyer in companies:
         if not buyer.active:
             continue
@@ -233,5 +250,6 @@ def settle_operating_inputs(
         if not shares or buyer.previous_revenue <= 0.0:
             continue
         amount = buyer.previous_revenue * sum(shares.values())
-        total += pay_business_suppliers(buyer, amount, shares, companies, resources)
+        total += pay_business_suppliers(buyer, amount, shares, companies, resources,
+                                       suppliers_by_sector=suppliers)
     return total

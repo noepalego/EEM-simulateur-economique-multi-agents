@@ -100,6 +100,8 @@ from economy.sectors import SECTORS, SKILL_SECTORS
 from economy.state_budget import StateBudgetMixin
 from economy.ownership import OwnershipMixin
 from economy.enterprise import EnterpriseMixin
+from economy.macro import MacroMixin
+from economy.power import PowerMixin
 from economy.state_government import StateGovernmentMixin
 from economy.state_industry import StateIndustryMixin
 from economy.state_labor import StateLaborMixin
@@ -107,7 +109,7 @@ from economy.state_services import StateServicesMixin
 from economy.demography import DEMOGRAPHY_SEED_OFFSET, DemographyMixin
 
 
-class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin, EnterpriseMixin, StateBudgetMixin, StateServicesMixin, StateLaborMixin, StateIndustryMixin, BankingMixin, CentralBankMixin, PricingMixin, HousingMixin, WageMixin, DemographyMixin, ViewsMixin):
+class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin, EnterpriseMixin, MacroMixin, PowerMixin, StateBudgetMixin, StateServicesMixin, StateLaborMixin, StateIndustryMixin, BankingMixin, CentralBankMixin, PricingMixin, HousingMixin, WageMixin, DemographyMixin, ViewsMixin):
     def __init__(self, config: SimulationConfig | None = None) -> None:
         # ``config`` : paramètres choisis par l'utilisateur, jamais modifiés par le moteur.
         # ``live`` : copie de travail du mois, où vivent les prix de marché dérivés
@@ -705,6 +707,9 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
         f.worker_skills = {
             person.id: (person.skill, person.technology_level) for person in self.people
         }
+        if live.collective_bargaining:
+            # lot J : négociation annuelle du secteur dont c'est le mois, grève éventuelle
+            self._collective_bargaining(f)
 
     # ------------------------------------------------------------------
     # Phase 3 : marchés de consommation (alimentation, biens courants)
@@ -797,6 +802,10 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
         f.vat_revenue = (f.food_revenue + f.goods_revenue) * live.vat_rate
         self.public.cash += f.vat_revenue
         self._buy_household_services(f)
+        if live.foreign_trade:
+            # lot J : importations de ce que le marché intérieur n'a pas servi, exportations
+            # des stocks excédentaires
+            self._foreign_trade(f)
 
     def _signal_business_prices(self) -> None:
         """Indices de prix de l'énergie et de la technologie formés par des signaux de
@@ -903,6 +912,9 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
     def _public_sector(self, f: MonthFlows) -> None:
         # loi de finances, exécution, financement, arriérés (economy/state_budget.py)
         self._institutional_budget(f)
+        if self._power_enabled():
+            # lot K : dons de campagne, lobbying, conseillers, aides aux entreprises, révélations
+            self._power_public_step()
         collect_recyclable_materials(self.companies, self.resources, self.live)
 
     # ------------------------------------------------------------------
@@ -980,7 +992,7 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
         # profit de la banque centrale reversé, recette classée du budget
         self.institutions.book.add("profit_banque_centrale", central_bank_profit)
         self.public.revenue += central_bank_profit
-        if live.retail_stores or live.consumer_preferences or live.private_startups:
+        if live.retail_stores or live.consumer_preferences or live.private_startups or live.corporate_bonds:
             # lot G : magasins, données clients, fonds des banques (charges avant la clôture)
             self._enterprise_operations()
         self._refresh_profits()
@@ -995,6 +1007,9 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
             live,
             long_term_unemployment=self.long_term_unemployment_share(),
         )
+        if live.collective_bargaining:
+            # lot J : une offre sous accord ne descend pas sous le niveau négocié
+            self._apply_wage_agreements()
         f.research_investment = invest_in_innovation(
             self.companies,
             self.random,
@@ -1395,6 +1410,9 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
         )
         self._learn_credibility()
         self._record_institutions(f)
+        if self._power_enabled():
+            # lot K : relevé mensuel de l'influence, de l'opinion et des aides (mesures seules)
+            self._power_record()
         return record
 
     def _apply_event_effects(self) -> None:

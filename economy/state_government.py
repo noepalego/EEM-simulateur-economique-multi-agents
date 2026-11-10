@@ -89,6 +89,10 @@ class StateGovernmentMixin:
         self._open_state_book()
         period = live.election_period_months
         election = not first and live.political_cycle_enabled and self.month > 1 and (self.month - 1) % period == 0
+        power = self._power_enabled()
+        if power:
+            # lot K : traits, opinion du mois, candidatures (avant l'élection éventuelle)
+            self._power_month_start()
         if election:
             self._institutional_election()
         elif not first and live.cabinet_reshuffle and inst.terms:
@@ -104,6 +108,9 @@ class StateGovernmentMixin:
                 operator.end_mandate(self.month, "élection")
             if operator.pending_orientation is not None and not first:
                 self._impose_government(operator)
+        if power:
+            # lot K : suivi du mandat et du cabinet, lois de pouvoir
+            self._power_govern()
         self._track_objectives()
         if not first and (self.month - inst.created) % 12 == 0:
             # date fixe annuelle : salaire minimum, point d'indice, salaires politiques
@@ -173,13 +180,17 @@ class StateGovernmentMixin:
         record = self._objectives_met_share()
         if live.individual_voting and live.economic_voting and self.people:
             incumbent = self.government.orientation
+            # lot K : avec des candidats, leur écart de popularité décale le vote (0 sinon)
+            shift = self._election_shift() if live.candidate_elections else 0.0
             orientation, reelected, share, challenger = individual_election(
-                self.politics_random, incumbent, self._voters(), live, record,
+                self.politics_random, incumbent, self._voters(), live, record, shift,
             )
             inst.elections.append({
                 "mois": self.month, "sortant": incumbent, "opposition": challenger,
                 "part_sortant": share, "elu": orientation, "reelu": reelected,
             })
+            if live.candidate_elections:
+                self._settle_candidates(reelected)
             self._decide(
                 "presidence", "Élection : résultat du vote des ménages",
                 f"{share:.1%} des voix pour le sortant (orientation {incumbent:.0f}) contre "
@@ -311,6 +322,14 @@ class StateGovernmentMixin:
                 role: office for role, office in previous.items()
                 if role == "presidence" or office.objective is None or office.objective.status != "manqué"
             }
+        power = getattr(self, "power", None)
+        if power is not None and power.president_elect is not None:
+            # lot K : la présidence revient à l'élu (un dauphin remplace le sortant ; un ministre
+            # élu président quitte son portefeuille)
+            kept = {
+                role: office for role, office in kept.items()
+                if (role == "presidence") == (office.person_id == power.president_elect)
+            }
         people = {p.id: p for p in self.people}
         for role, office in previous.items():
             if role not in kept and office.person_id in people:
@@ -425,7 +444,14 @@ class StateGovernmentMixin:
         limit = salary * (1.0 + live.cabinet_refusal_tolerance)
         refusals = []
         chosen = None
+        power = getattr(self, "power", None)
+        if role == "presidence" and power is not None and power.president_elect is not None:
+            # lot K : le candidat élu prend la présidence, quel que soit le salaire
+            chosen = next((p for p in candidates if p.id == power.president_elect), None)
+            power.president_elect = None
         for person in candidates:
+            if chosen is not None:
+                break
             if person.current_wage > limit:
                 refusals.append(person.id)
                 continue

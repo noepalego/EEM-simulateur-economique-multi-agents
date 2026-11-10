@@ -290,6 +290,9 @@ def allocate_and_pay_labor(
         employer.employees.append(person.id)
         employed_ids.add(person.id)
 
+    # Les critères restent fixes pour les personnes non encore embauchées.
+    # Réutiliser la liste par employeur, en retirant les candidats déjà recrutés.
+    eligible_by_company: dict[str, list[Person]] = {}
     for _, _, company in job_offers:
         if not company.active:
             continue
@@ -302,28 +305,34 @@ def allocate_and_pay_labor(
         )
         if len(company.employees) >= affordable_positions:
             continue
-        eligible_people = [
-            person
-            for person in available_people
-            if person.id not in employed_ids
-            and (
-                previous_employers[person.id] is None
-                or (
-                    person.id not in eligible_incumbents
-                    and previous_employers[person.id] != "state"  # emploi public stable
-                )
-                or company.wage_offer * person.trade_wage_factor
-                >= (person.current_wage or starting_wage)
-                * (1.0 + config.labor_mobility_premium)
-                * (stay_factor if previous_employers[person.id] == "state" else 1.0)
-            )
-        ]
         claimant = None
         while claims.get(company.id):
             candidate = claims[company.id].pop(0)
             if candidate.id not in employed_ids:
                 claimant = candidate
                 break
+        eligible_people = []
+        if claimant is None:
+            if company.id in eligible_by_company:
+                eligible_people = [p for p in eligible_by_company[company.id] if p.id not in employed_ids]
+            else:
+                eligible_people = [
+                    person
+                    for person in available_people
+                    if person.id not in employed_ids
+                    and (
+                        previous_employers[person.id] is None
+                        or (
+                            person.id not in eligible_incumbents
+                            and previous_employers[person.id] != "state"  # emploi public stable
+                        )
+                        or company.wage_offer * person.trade_wage_factor
+                        >= (person.current_wage or starting_wage)
+                        * (1.0 + config.labor_mobility_premium)
+                        * (stay_factor if previous_employers[person.id] == "state" else 1.0)
+                    )
+                ]
+            eligible_by_company[company.id] = eligible_people
         if claimant is None and not eligible_people:
             continue
         choice = pick_hire(

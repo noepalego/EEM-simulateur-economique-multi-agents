@@ -484,29 +484,30 @@ class BankingMixin:
     def _settle_mortgage_accounts(
         self, previous_debts: dict[str, float]
     ) -> None:
+        banks = [bank for bank in self.companies if bank.sector == "bank"]
         for person in self.people:
             previous_debt = previous_debts.get(person.id, 0.0)
             if previous_debt <= 0.0:
                 continue
             interest_accrued = previous_debt * person.mortgage_rate
+            account = f"mortgage:{person.id}"
             lenders = [
                 bank
-                for bank in self.companies
-                if bank.sector == "bank"
-                and bank.bank_loan_accounts.get(f"mortgage:{person.id}", 0.0) > 0.0
+                for bank in banks
+                if bank.bank_loan_accounts.get(account, 0.0) > 0.0
             ]
             total_booked = sum(
-                bank.bank_loan_accounts[f"mortgage:{person.id}"]
+                bank.bank_loan_accounts[account]
                 for bank in lenders
             )
             if total_booked <= 0.0:
                 continue
             for bank in lenders:
                 share = (
-                    bank.bank_loan_accounts[f"mortgage:{person.id}"]
+                    bank.bank_loan_accounts[account]
                     / total_booked
                 )
-                bank.bank_loan_accounts[f"mortgage:{person.id}"] = (
+                bank.bank_loan_accounts[account] = (
                     person.mortgage_debt * share
                 )
                 bank.revenue += interest_accrued * share

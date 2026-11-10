@@ -712,6 +712,63 @@ class SimulationConfig:
     shareholder_governance: bool = field(default=False, metadata={"identity": "neutre"})
     board_seats: int = field(default=4, metadata={"identity": "neutre"})
     board_patience_months: int = field(default=6, metadata={"identity": "neutre"})
+    # Lot J (novembre 2026, economy/macro.py), désactivés par défaut (neutres pour l'identité).
+    # Obligations d'entreprise : une entreprise rentable emprunte aux ménages et aux fonds ; un
+    # ménage y vise ``corporate_bond_share`` × (1,5 − goût du risque) de son épargne ; coupon
+    # mensuel et amortissement en ``corporate_bond_term_months`` ; encours d'au plus
+    # ``corporate_bond_leverage`` × les fonds propres de l'émetteur.
+    corporate_bonds: bool = field(default=False, metadata={"identity": "neutre"})
+    corporate_bond_share: float = field(default=0.05, metadata={"identity": "neutre"})
+    corporate_bond_term_months: int = field(default=60, metadata={"identity": "neutre"})
+    corporate_bond_leverage: float = field(default=0.5, metadata={"identity": "neutre"})
+    # Commerce extérieur : le reste du monde vend aux ménages ``trade_openness`` de la demande
+    # non servie d'alimentation et de biens et achète la même part des stocks excédentaires,
+    # selon l'écart de prix (``trade_price_elasticity``) ; le taux de change flottant bouge de
+    # ``exchange_rate_speed`` × le déséquilibre relatif des échanges du mois.
+    foreign_trade: bool = field(default=False, metadata={"identity": "neutre"})
+    trade_openness: float = field(default=0.5, metadata={"identity": "neutre"})
+    trade_price_elasticity: float = field(default=2.0, metadata={"identity": "neutre"})
+    exchange_rate_speed: float = field(default=0.05, metadata={"identity": "neutre"})
+    # Négociation collective : accord salarial annuel par secteur = demande du syndicat × son
+    # pouvoir (``union_power`` × (0,5 + orientation / 100), réduit par le chômage) ; hausse
+    # demandée d'au plus ``union_max_raise`` par an ; grève si l'écart est trop grand.
+    collective_bargaining: bool = field(default=False, metadata={"identity": "neutre"})
+    union_power: float = field(default=0.5, metadata={"identity": "neutre"})
+    union_max_raise: float = field(default=0.05, metadata={"identity": "neutre"})
+    # Lot K (novembre 2026, economy/power.py), désactivés par défaut (neutres pour l'identité).
+    # Influence : score de 0 à 100 par ménage (fortune, fonction, capital contrôlé, popularité),
+    # classement mensuel des dix premiers ; mesure seule.
+    influence_ranking: bool = field(default=False, metadata={"identity": "neutre"})
+    # Popularité : traits (charisme, intégrité, ambition), notoriété et opinion de chaque ménage,
+    # qui suivent ses résultats dans son rôle (présidence, ministère, direction d'entreprise).
+    personal_popularity: bool = field(default=False, metadata={"identity": "neutre"})
+    # Élection à candidats : le sortant (ou son dauphin) affronte un opposant ; le vote de chaque
+    # ménage est décalé de ``vote_popularity_weight`` × l'écart de popularité et de campagne ;
+    # l'élu devient président. Demande le vote individuel des ménages.
+    candidate_elections: bool = field(default=False, metadata={"identity": "neutre"})
+    vote_popularity_weight: float = field(default=3.0, metadata={"identity": "neutre"})
+    # Lois de pouvoir : un président ambitieux et peu intègre fait voter, une par an au plus, des
+    # lois qui étendent son pouvoir (enveloppe discrétionnaire, nominations, contrôle affaibli,
+    # médias, mandats) ; un successeur intègre les abroge.
+    executive_power_laws: bool = field(default=False, metadata={"identity": "neutre"})
+    # Aides aux entreprises : ``business_aid_gdp_share`` du PIB annuel par an (modulé par la
+    # doctrine industrielle), versé sur critères aux entreprises privées durablement en perte.
+    business_subsidies: bool = field(default=False, metadata={"identity": "neutre"})
+    business_aid_gdp_share: float = field(default=0.005, metadata={"identity": "neutre"})
+    # Favoritisme : sous la loi « enveloppe », un président peu intègre attribue l'enveloppe
+    # discrétionnaire à une entreprise dont le patron est influent et lié à lui, avec la
+    # probabilité mensuelle ``favoritism_monthly_chance`` ; l'audit révèle chaque affaire avec la
+    # probabilité mensuelle ``audit_detection_chance`` (scandale, remboursement, amende).
+    political_favoritism: bool = field(default=False, metadata={"identity": "neutre"})
+    favoritism_monthly_chance: float = field(default=0.10, metadata={"identity": "neutre"})
+    audit_detection_chance: float = field(default=0.03, metadata={"identity": "neutre"})
+    # Lobbying : dons de campagne des entreprises aux candidats, dépenses de conseil qui freinent
+    # l'instruction d'un dossier de monopole.
+    corporate_lobbying: bool = field(default=False, metadata={"identity": "neutre"})
+    # Pantouflage : un ancien membre du cabinet devient conseiller rémunéré d'une grande entreprise.
+    revolving_door: bool = field(default=False, metadata={"identity": "neutre"})
+    # Dynasties : l'héritier d'une personne connue garde une part de sa notoriété.
+    political_dynasties: bool = field(default=False, metadata={"identity": "neutre"})
     # Lot C (novembre 2026) : objectifs ministériels enrichis. Vrai : chaque ministre a un objectif
     # principal et un secondaire (nouveaux indicateurs), des cibles relevées quand la situation de
     # départ les remplit déjà, et chaque objectif en retard actionne un levier de son ministère avec
@@ -1039,6 +1096,7 @@ class Person:
     taste: float = field(default=-1.0, metadata={"identity": "neutre"})          # G3 : goût (< 0 : à tirer)
     fund_units: dict = field(default_factory=dict, metadata={"identity": "neutre"})  # G8 : parts de fonds
     fund_value: float = field(default=0.0, metadata={"identity": "neutre"})      # G8 : valeur de ses parts
+    corporate_bonds: dict = field(default_factory=dict, metadata={"identity": "neutre"})  # lot J : obligations d'entreprise (émetteur -> encours)
 
 
 @dataclass
@@ -1302,6 +1360,10 @@ class Company:
     fund_backed_month: int = field(default=-1, metadata={"identity": "neutre"})  # G8 : premier apport d'un fonds
     # lot H : acquéreur qui a absorbé l'entreprise (fusion) ; mémoire pour l'affichage, lue par aucune règle
     acquired_by: str | None = field(default=None, metadata={"identity": "neutre"})
+    # lot J : obligations émises (encours, taux mensuel moyen) ; obligations détenues (fonds)
+    bond_debt: float = field(default=0.0, metadata={"identity": "neutre"})
+    bond_rate: float = field(default=0.0, metadata={"identity": "neutre"})
+    corporate_bonds: dict = field(default_factory=dict, metadata={"identity": "neutre"})
 
 
 def productivity_multiplier(company: "Company", config: SimulationConfig) -> float:

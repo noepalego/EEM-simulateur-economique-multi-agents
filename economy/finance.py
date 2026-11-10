@@ -787,6 +787,7 @@ def can_dissolve(company: Company) -> bool:
         and company.sector != "bank"
         and not company.employees
         and abs(company.debt) <= 1e-9
+        and company.bond_debt <= 1e-9
         and not any(abs(v) > 1e-9 for v in company.bank_loan_accounts.values())
         and company.cash >= 0.0
         and company.bond_holdings <= 1e-9
@@ -918,7 +919,10 @@ def resolve_distressed_companies(
             and company.cash <= company.wage_offer
             and company.loss_streak >= config.bankruptcy_months
         )
-        insolvent = company.debt > assets or illiquid
+        liabilities = company.debt
+        if company.bond_debt:
+            liabilities += company.bond_debt  # lot J : obligations émises
+        insolvent = liabilities > assets or illiquid
         if not insolvent and company.id not in forced:
             continue
         survivors = [
@@ -946,6 +950,11 @@ def resolve_distressed_companies(
         bank_reserves += recovered
         company.default_loss += max(0.0, company.debt - recovered)
         residual_equity = max(0.0, company.cash - recovered)
+        if company.bond_debt > 0.0:
+            # lot J : les obligataires passent après les banques et avant les actionnaires
+            from economy.macro import settle_bondholders
+
+            residual_equity -= settle_bondholders(company, [*people, *extra_holders], residual_equity)
         holders = [
             holder for holder in [*people, *companies, *extra_holders]
             if holder.id != company.id and holder.shares.get(company.id, 0.0) > 0.0

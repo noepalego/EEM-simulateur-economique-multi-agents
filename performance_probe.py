@@ -72,7 +72,61 @@ def exact_state(value):
 
 
 def digest(value):
-    return hashlib.sha256(repr(exact_state(value)).encode()).hexdigest()
+    """Même empreinte que ``repr(exact_state(value))``, sans dupliquer tout l'historique.
+
+    Les séparateurs sont ceux de repr (y compris l'ordre des dictionnaires).
+    L'ancien exact_state reste l'oracle indépendant utilisé par les tests.
+    """
+    result = hashlib.sha256()
+    parts = []
+
+    def feed(item):
+        if isinstance(item, random.Random):
+            parts.append(repr(("Random", item.getstate())))
+        elif isinstance(item, float):
+            parts.append(repr(("float", item.hex())))
+        elif item is None or isinstance(item, (str, int, bool)):
+            parts.append(repr(item))
+        elif isinstance(item, dict):
+            parts.append("(" + repr(type(item).__name__) + ", [")
+            for index, (key, value) in enumerate(item.items()):
+                if index:
+                    parts.append(", ")
+                parts.append("(")
+                feed(key)
+                parts.append(", ")
+                feed(value)
+                parts.append(")")
+            parts.append("], ")
+            feed(vars(item) if hasattr(item, "__dict__") else None)
+            parts.append(")")
+        elif isinstance(item, (tuple, list)):
+            parts.append("(" + repr(type(item).__name__) + ", [")
+            for index, value in enumerate(item):
+                if index:
+                    parts.append(", ")
+                feed(value)
+            parts.append("])")
+        elif isinstance(item, (set, frozenset)):
+            parts.append(repr((type(item).__name__,
+                               sorted((exact_state(v) for v in item), key=repr))))
+        elif hasattr(item, "__dict__"):
+            attributes = vars(item)
+            if dataclasses.is_dataclass(item):
+                attributes = {name: attribute for name, attribute in attributes.items()
+                              if not _neutral_at_default(item, name, attribute)}
+            parts.append("(" + repr(type(item).__name__) + ", ")
+            feed(attributes)
+            parts.append(")")
+        else:
+            raise TypeError(type(item))
+        if len(parts) > 16384:
+            result.update("".join(parts).encode())
+            parts.clear()
+
+    feed(value)
+    result.update("".join(parts).encode())
+    return result.hexdigest()
 
 
 class _VariantFeed:
@@ -354,9 +408,13 @@ def main():
     parser.add_argument("--compare", type=Path, help="Référence JSON pour le mode identity ou ui")
     parser.add_argument("--exclusions", type=Path,
                         help="Attributs exclus de la variante d'empreinte (JSON : classe -> attributs)")
+    parser.add_argument("--no-variants", action="store_true",
+                        help="Identité stricte seule : évite deux empreintes de compatibilité inutiles")
     parser.add_argument("--variant", action="store_true",
                         help="--compare en mode identity : trajectoire et variante d'empreinte seulement")
     args = parser.parse_args()
+    if args.no_variants and args.variant:
+        parser.error("--no-variants est incompatible avec --variant")
     if args.mode in ("identity", "ui"):
         code = fixed_hash_seed()
         if code is not None:
@@ -431,7 +489,7 @@ def main():
                 init_seconds = time.perf_counter() - start
                 if args.mode == "identity":
                     states = {"0": digest(sim)}
-                    variant_states = {"0": variant_digests(sim, excluded)}
+                    variant_states = {"0": {} if args.no_variants else variant_digests(sim, excluded)}
                     trajectory = hashlib.sha256()
                     phase_states = []
                     variant_phases = []
@@ -444,7 +502,7 @@ def main():
                             if self.period <= 2:
                                 # liste et non tuple : la référence relue en JSON ne contient que des listes
                                 phase_states.append([self.period, phase, digest((self, flows))])
-                                variant_phases.append([self.period, phase, variant_digests((self, flows), excluded)])
+                                variant_phases.append([self.period, phase, {} if args.no_variants else variant_digests((self, flows), excluded)])
                             return out
                         setattr(EconomySimulation, phase, checked)
                 start = time.perf_counter()
@@ -454,7 +512,7 @@ def main():
                         trajectory.update(repr(record).encode())
                         if month in (1, 2, 12, 60, args.months):
                             states[str(month)] = digest(sim)
-                            variant_states[str(month)] = variant_digests(sim, excluded)
+                            variant_states[str(month)] = {} if args.no_variants else variant_digests(sim, excluded)
                 step_seconds = time.perf_counter() - start
                 if profiler:
                     profiler.disable()
