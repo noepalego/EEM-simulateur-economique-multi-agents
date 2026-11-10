@@ -1509,6 +1509,21 @@ def render_overview(view_id: str, month: int, _simulation: EconomySimulation) ->
 
 
 
+# Mécanismes optionnels (lots F à I) : case ou curseur de la barre latérale -> valeur activée
+OPTIONAL_MECHANISMS = {
+    "experience_learning": True, "property_upkeep": True, "consumer_preferences": True,
+    "diversification": True, "conglomerate_takeovers": True, "retail_stores": True,
+    "group_distribution": True, "private_startups": True, "shareholder_governance": True,
+    "staffless_closure_months": 6, "countercyclical_capital": True, "bank_capital_backstop": True,
+}
+
+
+def _set_optional_mechanisms(enabled: bool) -> None:
+    """Coche ou décoche d'un coup les mécanismes optionnels (appliqués à la réinitialisation)."""
+    for key, value in OPTIONAL_MECHANISMS.items():
+        st.session_state[key] = value if enabled else type(value)()
+
+
 @st.fragment
 def render_sidebar() -> None:
     with st.sidebar:
@@ -1519,6 +1534,20 @@ def render_sidebar() -> None:
             "Configuration : **autonomie stable** et **État institutionnel**, la seule du modèle "
             "(voir README.md)."
         )
+        st.caption(
+            "**Mécanismes optionnels** : groupes, magasins, fonds, expérience, conseil d'actionnaires, "
+            "fermeture des entreprises sans salarié (6 mois), exigence de fonds propres contracyclique "
+            "et recapitalisation de dernier recours des banques."
+        )
+        preset = st.columns(2)
+        preset[0].button("Tout activer", key="optional_all_on", use_container_width=True,
+                         on_click=_set_optional_mechanisms, args=(True,),
+                         help="Coche les douze mécanismes optionnels ; réinitialisez ensuite la simulation.")
+        preset[1].button("Tout désactiver", key="optional_all_off", use_container_width=True,
+                         on_click=_set_optional_mechanisms, args=(False,),
+                         help="Revient à la configuration de base ; réinitialisez ensuite la simulation.")
+        active = sum(bool(st.session_state.get(key)) for key in OPTIONAL_MECHANISMS)
+        st.caption(f"{active} mécanisme(s) optionnel(s) coché(s) sur {len(OPTIONAL_MECHANISMS)}.")
         with st.expander("Population & entreprises", expanded=True):
             st.number_input("Ménages", min_value=10, max_value=500, value=240, step=10, key="population_size")
             st.number_input("Entreprises par secteur", min_value=1, max_value=10, value=3, key="companies_per_sector")
@@ -1745,13 +1774,13 @@ def render_sidebar() -> None:
             st.slider("Pression concurrentielle sur les prix", min_value=0, max_value=20, value=6, format="%d %%", key="competitive_pricing_percent")
             # lot F : stabilité (désactivés par défaut)
             st.checkbox(
-                "Exigence de fonds propres contracyclique", value=False, key="countercyclical_capital",
+                "Exigence de fonds propres contracyclique", key="countercyclical_capital",
                 help="Quand la capacité de crédit des banques est presque épuisée et que l'activité "
                      "baisse, l'exigence de fonds propres descend progressivement de 8 % à 6 %, puis "
                      "remonte quand la capacité se reconstitue.",
             )
             st.checkbox(
-                "Recapitalisation de dernier recours des banques", value=False, key="bank_capital_backstop",
+                "Recapitalisation de dernier recours des banques", key="bank_capital_backstop",
                 help="Après trois mois sans aucune capacité de crédit, l'État souscrit des actions "
                      "nouvelles des banques, au cours, pour leur rendre une capacité de 5 % de leur encours.",
             )
@@ -1907,7 +1936,7 @@ def render_sidebar() -> None:
                 "identique à la version précédente. Ils agissent dès la période de chauffe."
             )
             st.slider(
-                "Fermer une entreprise restée sans salarié après", min_value=0, max_value=24, value=0,
+                "Fermer une entreprise restée sans salarié après", min_value=0, max_value=24,
                 format="%d mois", key="staffless_closure_months",
                 help="0 : jamais (seule la liquidation amiable après 24 mois existe). Au-delà : une "
                      "entreprise non bancaire sans aucun salarié pendant cette durée est fermée, ses "
@@ -1915,15 +1944,13 @@ def render_sidebar() -> None:
                      "la dernière de son secteur ni une participation de l'État.",
             )
             st.checkbox(
-                "Conseil d'actionnaires : les 4 plus gros nomment et révoquent le dirigeant", value=False,
-                key="shareholder_governance",
+                "Conseil d'actionnaires : les 4 plus gros nomment et révoquent le dirigeant", key="shareholder_governance",
                 help="Les quatre plus gros actionnaires votent, selon leurs titres : nomination du "
                      "dirigeant, révocation après un an si l'entreprise perd de l'argent trop longtemps, "
                      "et part des bénéfices réinvestie.",
             )
             st.checkbox(
-                "Expérience : fondateurs, négociation des salaires, acquéreurs", value=False,
-                key="experience_learning",
+                "Expérience : fondateurs, négociation des salaires, acquéreurs", key="experience_learning",
                 help="Plus on a créé d'entreprises, mieux on en crée (productivité et innovation de "
                      "départ, crédit) ; un salarié qui a souvent changé d'employeur et un employeur qui "
                      "a beaucoup recruté négocient mieux le salaire d'embauche ; un acquéreur "
@@ -1937,7 +1964,7 @@ def render_sidebar() -> None:
                      "d'embauche négocié dans une bande de la moitié, autour de l'offre.",
             )
             st.checkbox(
-                "Gros entretien des logements", value=False, key="property_upkeep",
+                "Gros entretien des logements", key="property_upkeep",
                 help="En plus de l'entretien courant : l'état de chaque logement s'use, le propriétaire "
                      "paie les travaux s'il en a les moyens, et un logement dégradé se loue moins cher.",
             )
@@ -1947,7 +1974,7 @@ def render_sidebar() -> None:
                 disabled=not st.session_state.get("property_upkeep", False),
             )
             st.checkbox(
-                "Préférences des ménages et vente de données", value=False, key="consumer_preferences",
+                "Préférences des ménages et vente de données", key="consumer_preferences",
                 help="Chaque ménage a un goût, chaque producteur d'alimentation ou de biens un style. Les "
                      "entreprises technologiques vendent les données des ménages équipés : l'acheteur "
                      "adapte son offre au goût de ses clients.",
@@ -1963,17 +1990,17 @@ def render_sidebar() -> None:
                 disabled=not st.session_state.get("consumer_preferences", False),
             )
             st.checkbox(
-                "Diversification : création de filiales", value=False, key="diversification",
+                "Diversification : création de filiales", key="diversification",
                 help="Une entreprise rentable crée une filiale dans un autre secteur attractif ; le groupe "
                      "vend alors plusieurs produits. Au plus une filiale par mois dans l'économie.",
             )
             st.checkbox(
-                "Rachats d'entreprises d'un autre secteur", value=False, key="conglomerate_takeovers",
+                "Rachats d'entreprises d'un autre secteur", key="conglomerate_takeovers",
                 help="Une entreprise prend le contrôle d'une entreprise plus petite d'un autre secteur, "
                      "qui devient sa filiale (sans fusion), aux règles des offres publiques existantes.",
             )
             st.checkbox(
-                "Magasins des producteurs", value=False, key="retail_stores",
+                "Magasins des producteurs", key="retail_stores",
                 help="Un producteur d'alimentation ou de biens ouvre des magasins quand ils rapportent plus "
                      "que le coût de ses fonds propres ; son réseau relève sa part des achats des ménages.",
             )
@@ -1994,14 +2021,13 @@ def render_sidebar() -> None:
                 help="Hausse maximale du poids du producteur dans les achats des ménages.",
             )
             st.checkbox(
-                "Distribution de groupe (les magasins vendent les produits des filiales)", value=False,
-                key="group_distribution",
+                "Distribution de groupe (les magasins vendent les produits des filiales)", key="group_distribution",
                 help="Les magasins d'un groupe vendent les produits de toutes ses entreprises ; un "
                      "acquéreur compte ce gain dans la valeur d'une cible. Demande des magasins et des "
                      "groupes (filiales ou rachats entre secteurs).",
             )
             st.checkbox(
-                "Jeunes entreprises non cotées et fonds des banques", value=False, key="private_startups",
+                "Jeunes entreprises non cotées et fonds des banques", key="private_startups",
                 help="Une entreprise fondée par un ménage n'est plus cotée dès sa création. Chaque banque "
                      "gère un fonds où les ménages placent une part de leur épargne ; le fonds finance et "
                      "accompagne les non cotées. Introduction en Bourse pour un gros besoin de trésorerie "
@@ -2468,6 +2494,28 @@ def render_groups_panel(view_id: str, month: int, _simulation: EconomySimulation
                   "Chiffre d'affaires": 100.0 * row.get("ca_groupes", 0.0)} for row in history],
                 x="Période", y=["Emploi", "Chiffre d'affaires"],
             )
+    if heads:
+        st.caption(
+            "Arbre des groupes : chaque flèche va d'une société mère à sa filiale, avec la part du "
+            "capital émis qu'elle détient (contour plein : cotée ; pointillé : non cotée)."
+        )
+        lines = ["digraph groupes {", "rankdir=LR;", "bgcolor=transparent;",
+                 'node [shape=box, style=rounded, fontname="Helvetica", fontsize=11];',
+                 'edge [fontname="Helvetica", fontsize=10, color="#6b7280"];']
+        for company in [by_id[cid] for cid in heads] + subsidiaries:
+            style = "rounded" if company.listed else "rounded,dashed"
+            weight = ', penwidth=2, color="#1d4ed8"' if company.id in heads and company.parent_id not in by_id else ""
+            lines.append(
+                f'"{company.id}" [label="{labels[company.id].split(" (groupe")[0]}\\n'
+                f'{sectors.get(company.sector, company.sector)} · {len(company.employees)} salariés", '
+                f'style="{style}"{weight}];'
+            )
+        for company in subsidiaries:
+            issued = max(company.shares_outstanding - company.treasury_shares, 1e-9)
+            stake = by_id[company.parent_id].shares.get(company.id, 0.0) / issued
+            lines.append(f'"{company.parent_id}" -> "{company.id}" [label="{stake:.0%}"];')
+        lines.append("}")
+        st.graphviz_chart("\n".join(lines), use_container_width=True)
     for head_id in heads:
         head = by_id[head_id]
         members = [c for c in subsidiaries if c.parent_id == head_id]
@@ -3406,161 +3454,207 @@ if not lazy_tabs or households_tab.open:
             '<p class="section-note">Les dépenses dépendent du revenu disponible ; les ressources les plus faibles sont prioritaires à suivre.</p>',
             unsafe_allow_html=True,
         )
-        household_metrics = st.columns(4)
-        household_metrics[0].metric("Trésorerie moyenne", compact(population["average_cash"], " €"), help=f"{population['average_cash']:,.1f} €")
-        household_metrics[1].metric("Nourriture achetée", f"{population['food']:.1f} unités")
-        household_metrics[2].metric("Biens achetés", f"{population['goods']:.1f} unités")
-        household_metrics[3].metric(
-            "Accès au logement", f"{population['home_satisfaction']:.0%}",
-            help=(f"{observed_history[-1].unhoused_households} ménage(s) sans logement ; taux de pauvreté "
-                  f"{observed_history[-1].poverty_rate:.0%}" if observed_history else None),
+        people_by_wealth = sorted(simulation.people, key=simulation.household_wealth, reverse=True)
+        households_overview, household_sheet, households_list = st.tabs(
+            ["Vue d'ensemble", "Fiche d'un ménage", "Tous les ménages"]
         )
-        people_by_wealth = sorted(
-            simulation.people,
-            key=simulation.household_wealth,
-            reverse=True,
-        )
-        person_options = [person.id for person in people_by_wealth]
-        people_by_id = {person.id: person for person in simulation.people}
-        previous_person = st.session_state.get("household_selector")
-        default_person = previous_person if previous_person in person_options else person_options[0]
-        st.session_state["household_selector"] = default_person
-        selected_person_id = st.selectbox(
-            "Ménage à détailler",
-            person_options,
-            format_func=lambda person_id: (
-                f"{people_by_id[person_id].name} · "
-                f"Fortune {simulation.household_wealth(people_by_id[person_id]):,.0f} € · "
-                f"{simulation.company_label(people_by_id[person_id].employer_id)}"
-            ),
-            key="household_selector",
-        )
-        st.caption("La liste est triée par fortune nette ; choisissez un ménage pour consulter son historique.")
-        selected_person = (
-            simulation.household_profile(selected_person_id) if selected_person_id else None
-        )
-        if selected_person:
-            person = selected_person["person"]
-            st.divider()
-            st.subheader(f"Profil détaillé · {person.name}")
-            st.caption(
-                f"Employeur : {simulation.company_label(person.employer_id)} · "
-                f"Rôle : {person.employment_role} · "
-                f"Logement : {'propriétaire' if person.owns_home else 'locataire' if person.rental_owner_id else 'aucun'} · "
-                f"Compétence : {person.skill:.2f} · ancienneté : {person.employer_tenure} mois"
+        with households_overview:
+            household_metrics = st.columns(4)
+            household_metrics[0].metric("Trésorerie moyenne", compact(population["average_cash"], " €"), help=f"{population['average_cash']:,.1f} €")
+            household_metrics[1].metric("Nourriture achetée", f"{population['food']:.1f} unités")
+            household_metrics[2].metric("Biens achetés", f"{population['goods']:.1f} unités")
+            household_metrics[3].metric(
+                "Accès au logement", f"{population['home_satisfaction']:.0%}",
+                help=(f"{observed_history[-1].unhoused_households} ménage(s) sans logement ; taux de pauvreté "
+                      f"{observed_history[-1].poverty_rate:.0%}" if observed_history else None),
             )
-            st.caption(
-                f"Âge du chef de ménage : {person.age_months // 12} ans · génération {person.generation}"
-                + (f" · patrimoine hérité : {person.inherited_wealth:,.0f} € (droits déduits)"
-                   if person.generation > 1 else "")
-                + (f" · mois sans emploi : {person.unemployment_months}" if person.employer_id is None else "")
-            )
-            institutions = getattr(simulation, "institutions", None)
-            if institutions is not None:
-                office = next((OFFICE_ROLES[role] for role, o in institutions.offices.items() if o.person_id == person.id), None)
-                agent = institutions.agents.get(person.id)
+            if len(observed_history) > 1:
+                # fortunes calculées une fois (auparavant une fois par tranche et par ménage)
+                prices = share_prices(simulation.companies)
+                fortunes = [household_net_worth(p, simulation.companies, simulation.live, prices)
+                            for p in simulation.people]
+                # classes adaptatives (lot A2, novembre 2026) : les six tranches fixes de 0 à
+                # 250 k€ regroupaient presque tous les ménages dans une ou deux barres
+                distribution = wealth_distribution(fortunes)
+                st.subheader("Répartition des fortunes")
+                ordered = sorted(fortunes)
                 st.caption(
-                    f"Nom d'affichage : {display_name(person.id)} · métier : {person.trade} · proximité politique "
-                    f"{institutions.lean.get(person.id, 50.0):.0f} / 100 · "
-                    + (f"fonction politique : {office}" if office
-                       else f"fonction publique : {agent.role()}, depuis {simulation.month - agent.since} mois" if agent
-                       else "ni cabinet ni fonction publique")
+                    f"Classes recalculées chaque mois sur 90 % des ménages (quantiles 5 %–95 %), "
+                    f"queues dans les classes ouvertes · médiane {compact(ordered[len(ordered) // 2], ' €')} · "
+                    f"de {compact(ordered[0], ' €')} à {compact(ordered[-1], ' €')} · "
+                    f"{sum(v < -0.5 for v in fortunes)} ménage(s) en patrimoine négatif"
                 )
-            person_metrics = st.columns(6)
-            person_metrics[0].metric(
-                "Fortune nette", f"{float(selected_person['wealth']):,.0f} €"
-            )
-            person_metrics[1].metric("Trésorerie", f"{person.cash:,.0f} €")
-            person_metrics[2].metric("Revenu du mois", f"{person.income_this_turn:,.0f} €")
-            person_metrics[3].metric("Dépenses du mois", f"{person.expenses_this_turn:,.0f} €")
-            person_metrics[4].metric("Dette immobilière", f"{person.mortgage_debt:,.0f} €")
-            person_metrics[5].metric("Mensualité du prêt", f"{person.mortgage_payment:,.0f} €")
-            with st.expander("🛠 Intervenir sur ce ménage : trésorerie et compétence",
-                             **({"key": "household_intervention_panel"} if lazy_expanders else {})):
-                show_intervention_message()
-                st.markdown("**Trésorerie**")
-                render_cash_intervention("household", person.id, person.cash)
-                st.markdown("**Compétence**")
-                skill_row = st.columns([3, 1])
-                skill_key = f"household_skill_{person.id}"
-                skill_row[0].slider(
-                    "Compétence", float(SKILL_BOUNDS[0]), float(SKILL_BOUNDS[1]),
-                    value=float(min(max(person.skill, SKILL_BOUNDS[0]), SKILL_BOUNDS[1])), step=0.05,
-                    key=skill_key, label_visibility="collapsed",
-                    help="Productivité et salaire du ménage (1 = moyenne de départ ; 1,10 : spécialiste, "
-                         "1,35 : encadrement). Changement définitif : la compétence évolue ensuite "
-                         "normalement (apprentissage au travail, érosion au chômage).",
-                )
-                skill_row[1].button("Appliquer", key="household_skill_apply", use_container_width=True,
-                                    on_click=_skill_intervention, args=(person.id, skill_key))
-            st.caption(
-                f"Dividendes reçus ce mois-ci : "
-                f"{person.dividend_income_this_turn:,.0f} €."
-            )
-            st.caption(
-                "Pouvoir d'achat de la fortune "
-                f"(euros de départ) : "
-                f"{float(selected_person['wealth']) * 100.0 / max(simulation.price_index, 1.0):,.0f} €."
-            )
-            st.markdown("**Actions détenues**")
-            if selected_person["shares"]:
-                for share in selected_person["shares"]:
-                    st.markdown(
-                        f"- **{share['Entreprise']}** · {share['Actions']:.1f} actions · "
-                        f"{share['Part du capital']:.1%} du capital · "
-                        f"Valeur estimée {share['Valeur']:,.0f} €"
-                    )
-            else:
-                st.caption("Ce ménage ne détient pas d'actions actuellement.")
-            person_history = observed_rows(person.financial_history, simulation)
-            if person_history:
-                st.caption("Fortune nette au fil du temps")
-                line_chart(
-                    person_history,
-                    x="Période",
-                    y=["Fortune", "Fortune réelle"],
-                )
-                st.caption("Liquidités et valeur des actions")
-                line_chart(
-                    person_history,
-                    x="Période",
-                    y=["Trésorerie nette", "Actions"],
-                )
-                st.caption("Revenus et dépenses mensuels")
-                line_chart(
-                    person_history,
-                    x="Période",
-                    y=["Revenus", "Dividendes", "Dépenses"],
-                )
-        if len(observed_history) > 1:
-            # fortunes calculées une fois (auparavant une fois par tranche et par ménage)
-            prices = share_prices(simulation.companies)
-            fortunes = [household_net_worth(p, simulation.companies, simulation.live, prices)
-                        for p in simulation.people]
-            # classes adaptatives (lot A2, novembre 2026) : les six tranches fixes de 0 à
-            # 250 k€ regroupaient presque tous les ménages dans une ou deux barres
-            distribution = wealth_distribution(fortunes)
-            st.subheader("Répartition des fortunes")
-            ordered = sorted(fortunes)
-            st.caption(
-                f"Classes recalculées chaque mois sur 90 % des ménages (quantiles 5 %–95 %), "
-                f"queues dans les classes ouvertes · médiane {compact(ordered[len(ordered) // 2], ' €')} · "
-                f"de {compact(ordered[0], ' €')} à {compact(ordered[-1], ' €')} · "
-                f"{sum(v < -0.5 for v in fortunes)} ménage(s) en patrimoine négatif"
-            )
-            # barres horizontales : jusqu'à douze libellés de classe sans chevauchement
-            st.vega_lite_chart(
-                [{key: row[key] for key in ("Tranche de fortune", "Nombre de ménages")}
-                 for row in distribution],
-                {
-                    "mark": {"type": "bar", "tooltip": True},
-                    "encoding": {
-                        "y": {"field": "Tranche de fortune", "type": "nominal", "sort": None,
-                              "title": None},
-                        "x": {"field": "Nombre de ménages", "type": "quantitative"},
+                # barres horizontales : jusqu'à douze libellés de classe sans chevauchement
+                st.vega_lite_chart(
+                    [{key: row[key] for key in ("Tranche de fortune", "Nombre de ménages")}
+                     for row in distribution],
+                    {
+                        "mark": {"type": "bar", "tooltip": True},
+                        "encoding": {
+                            "y": {"field": "Tranche de fortune", "type": "nominal", "sort": None,
+                                  "title": None},
+                            "x": {"field": "Nombre de ménages", "type": "quantitative"},
+                        },
                     },
+                    use_container_width=True,
+                )
+        with household_sheet:
+            person_options = [person.id for person in people_by_wealth]
+            people_by_id = {person.id: person for person in simulation.people}
+            previous_person = st.session_state.get("household_selector")
+            default_person = previous_person if previous_person in person_options else person_options[0]
+            st.session_state["household_selector"] = default_person
+            selected_person_id = st.selectbox(
+                "Ménage à détailler",
+                person_options,
+                format_func=lambda person_id: (
+                    f"{people_by_id[person_id].name} · "
+                    f"Fortune {simulation.household_wealth(people_by_id[person_id]):,.0f} € · "
+                    f"{simulation.company_label(people_by_id[person_id].employer_id)}"
+                ),
+                key="household_selector",
+            )
+            st.caption("La liste est triée par fortune nette ; choisissez un ménage pour consulter son historique.")
+            selected_person = (
+                simulation.household_profile(selected_person_id) if selected_person_id else None
+            )
+            if selected_person:
+                person = selected_person["person"]
+                st.subheader(person.name)
+                st.caption(
+                    f"Employeur : {simulation.company_label(person.employer_id)} · "
+                    f"Rôle : {person.employment_role} · "
+                    f"Logement : {'propriétaire' if person.owns_home else 'locataire' if person.rental_owner_id else 'aucun'} · "
+                    f"Compétence : {person.skill:.2f} · ancienneté : {person.employer_tenure} mois"
+                )
+                st.caption(
+                    f"Âge du chef de ménage : {person.age_months // 12} ans · génération {person.generation}"
+                    + (f" · patrimoine hérité : {person.inherited_wealth:,.0f} € (droits déduits)"
+                       if person.generation > 1 else "")
+                    + (f" · mois sans emploi : {person.unemployment_months}" if person.employer_id is None else "")
+                )
+                institutions = getattr(simulation, "institutions", None)
+                if institutions is not None:
+                    office = next((OFFICE_ROLES[role] for role, o in institutions.offices.items() if o.person_id == person.id), None)
+                    agent = institutions.agents.get(person.id)
+                    st.caption(
+                        f"Nom d'affichage : {display_name(person.id)} · métier : {person.trade} · proximité politique "
+                        f"{institutions.lean.get(person.id, 50.0):.0f} / 100 · "
+                        + (f"fonction politique : {office}" if office
+                           else f"fonction publique : {agent.role()}, depuis {simulation.month - agent.since} mois" if agent
+                           else "ni cabinet ni fonction publique")
+                    )
+                person_metrics = st.columns(6)
+                person_metrics[0].metric(
+                    "Fortune nette", f"{float(selected_person['wealth']):,.0f} €"
+                )
+                person_metrics[1].metric("Trésorerie", f"{person.cash:,.0f} €")
+                person_metrics[2].metric("Revenu du mois", f"{person.income_this_turn:,.0f} €")
+                person_metrics[3].metric("Dépenses du mois", f"{person.expenses_this_turn:,.0f} €")
+                person_metrics[4].metric("Dette immobilière", f"{person.mortgage_debt:,.0f} €")
+                person_metrics[5].metric("Mensualité du prêt", f"{person.mortgage_payment:,.0f} €")
+                with st.expander("🛠 Intervenir sur ce ménage : trésorerie et compétence",
+                                 **({"key": "household_intervention_panel"} if lazy_expanders else {})):
+                    show_intervention_message()
+                    st.markdown("**Trésorerie**")
+                    render_cash_intervention("household", person.id, person.cash)
+                    st.markdown("**Compétence**")
+                    skill_row = st.columns([3, 1])
+                    skill_key = f"household_skill_{person.id}"
+                    skill_row[0].slider(
+                        "Compétence", float(SKILL_BOUNDS[0]), float(SKILL_BOUNDS[1]),
+                        value=float(min(max(person.skill, SKILL_BOUNDS[0]), SKILL_BOUNDS[1])), step=0.05,
+                        key=skill_key, label_visibility="collapsed",
+                        help="Productivité et salaire du ménage (1 = moyenne de départ ; 1,10 : spécialiste, "
+                             "1,35 : encadrement). Changement définitif : la compétence évolue ensuite "
+                             "normalement (apprentissage au travail, érosion au chômage).",
+                    )
+                    skill_row[1].button("Appliquer", key="household_skill_apply", use_container_width=True,
+                                        on_click=_skill_intervention, args=(person.id, skill_key))
+                st.caption(
+                    f"Dividendes reçus ce mois-ci : "
+                    f"{person.dividend_income_this_turn:,.0f} €."
+                )
+                st.caption(
+                    "Pouvoir d'achat de la fortune "
+                    f"(euros de départ) : "
+                    f"{float(selected_person['wealth']) * 100.0 / max(simulation.price_index, 1.0):,.0f} €."
+                )
+                st.markdown("**Actions détenues**")
+                if selected_person["shares"]:
+                    for share in selected_person["shares"]:
+                        st.markdown(
+                            f"- **{share['Entreprise']}** · {share['Actions']:.1f} actions · "
+                            f"{share['Part du capital']:.1%} du capital · "
+                            f"Valeur estimée {share['Valeur']:,.0f} €"
+                        )
+                else:
+                    st.caption("Ce ménage ne détient pas d'actions actuellement.")
+                if person.fund_units or person.fund_value:
+                    st.markdown("**Épargne confiée aux fonds des banques**")
+                    for fund_id, units in sorted(person.fund_units.items()):
+                        st.markdown(f"- **{simulation.fund_label(fund_id)}** · {units:,.1f} parts".replace(",", " "))
+                    st.caption(
+                        f"Valeur des parts : {person.fund_value:,.0f} € "
+                        f"({person.fund_value / max(float(selected_person['wealth']), 1.0):.1%} de la fortune nette)."
+                    )
+                if simulation.live.experience_learning or simulation.live.property_upkeep:
+                    homes = int(person.owns_home) + person.investment_homes
+                    st.caption(
+                        f"Expérience : {person.ventures} entreprise(s) fondée(s) · {person.negotiations} "
+                        f"embauche(s) négociée(s) · salaire négocié à {person.negotiated_factor:.1%} de l'offre"
+                        + (f" · état de ses {homes} logement(s) : {person.home_condition:.0%}"
+                           if simulation.live.property_upkeep and homes else "")
+                    )
+                person_history = observed_rows(person.financial_history, simulation)
+                if person_history:
+                    st.caption("Fortune nette au fil du temps")
+                    line_chart(
+                        person_history,
+                        x="Période",
+                        y=["Fortune", "Fortune réelle"],
+                    )
+                    st.caption("Liquidités et valeur des actions")
+                    line_chart(
+                        person_history,
+                        x="Période",
+                        y=["Trésorerie nette", "Actions"],
+                    )
+                    st.caption("Revenus et dépenses mensuels")
+                    line_chart(
+                        person_history,
+                        x="Période",
+                        y=["Revenus", "Dividendes", "Dépenses"],
+                    )
+        with households_list:
+            st.caption(
+                "Un ménage par ligne, trié par fortune nette ; cliquez sur un en-tête de colonne pour "
+                "trier autrement."
+            )
+            list_prices = share_prices(simulation.companies)
+            st.dataframe(
+                [
+                    {
+                        "Ménage": p.name,
+                        "Âge": p.age_months // 12,
+                        "Employeur": simulation.company_label(p.employer_id) if p.employer_id else "sans emploi",
+                        "Métier": p.trade,
+                        "Logement": "propriétaire" if p.owns_home else "locataire" if p.rental_owner_id else "aucun",
+                        "Revenu du mois (€)": p.income_this_turn,
+                        "Trésorerie (€)": p.cash,
+                        "Actions (€)": sum(q * list_prices.get(cid, 0.0) for cid, q in p.shares.items()),
+                        "Parts de fonds (€)": p.fund_value,
+                        "Logements loués": p.investment_homes,
+                        "Fortune nette (€)": household_net_worth(p, simulation.companies, simulation.live, list_prices),
+                    }
+                    for p in people_by_wealth
+                ],
+                hide_index=True, width="stretch", height=560,
+                column_config={
+                    name: st.column_config.NumberColumn(format="localized")
+                    for name in ("Revenu du mois (€)", "Trésorerie (€)", "Actions (€)", "Parts de fonds (€)",
+                                 "Fortune nette (€)")
                 },
-                use_container_width=True,
             )
 
 if not lazy_tabs or model_tab.open:

@@ -613,6 +613,9 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
             credit_capacity=self.credit_capacity,
         )
         update_workforce_targets(self.companies, self.people, live)
+        if live.retail_stores:
+            # lot I : les magasins ont besoin de vendeurs
+            self._store_staffing()
         # postes publics ouverts comptés dans la demande de métiers ; reconversions financées
         self.trades.refresh(self.people, self.companies, self._public_trade_demand())
         self.trades.retrain(self.people, self.resources, self.wage_reference, self.companies,
@@ -657,6 +660,9 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
         # entreprises sous contrôle public : pas de rémunération en actions nouvelles
         elect_executives(self.companies, self.people, live, self.random,
                          no_dilution=self._undiluted_ids())
+        if live.experience_learning:
+            # lot I : un dirigeant en place depuis longtemps gère mieux son entreprise
+            self._executive_learning()
         assign_ranks(self.companies, self.people, live)
         # taux votés, aucun ajustement fiscal automatique (economy/state_budget.py)
         self._collect_institutional_taxes(f)
@@ -775,6 +781,7 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
         f.sold_food, f.food_revenue, f.unmet_food_demand = sell_food(
             self.companies, self.people, self.food_price, live,
             affinity=self._sales_affinity("food"),  # lot G : ``None`` sans réglage
+            demand_boost=self._store_demand_boost(),  # lot I : 0 sans magasins
         )
         goods_demand = self._goods_demand()
         produce_consumer_goods(self.companies, self.resources, live, goods_demand, f.worker_skills)
@@ -785,6 +792,7 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
         f.sold_goods, f.goods_revenue, f.unmet_goods_demand = sell_consumer_goods(
             self.companies, self.people, self.goods_price, live,
             affinity=self._sales_affinity("goods"),
+            demand_boost=self._store_demand_boost(),
         )
         f.vat_revenue = (f.food_revenue + f.goods_revenue) * live.vat_rate
         self.public.cash += f.vat_revenue
@@ -1057,6 +1065,7 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
             # lot G : entreprises non cotées et filiales (ensembles vides sans réglage)
             unlisted=unlisted,
             strategic=self._strategic_holdings(),
+            extra_buyers=self._fund_buy_orders(),  # lot I : ``None`` sans fonds
         )
         if unlisted:
             self._value_private_companies()
@@ -1299,6 +1308,9 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
                     "refused_orders": {**self.resources.refused_orders,
                                        "food": f.unmet_food_demand, "goods": f.unmet_goods_demand},
                 })
+            if live.diversification or live.conglomerate_takeovers:
+                # lot I : la société mère recapitalise une filiale ou la met en vente
+                self._manage_subsidiaries()
             self._enterprise_housekeeping()
         # ventes de capacité après la clôture (défaut de comptes connu, voir ``_roll_over_firms``)
         f.production_capacity_investment = self._invest_in_capacity(f)

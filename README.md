@@ -278,9 +278,9 @@ simulation est identique au bit près. Cochés, ils agissent dès la période de
 | `consumer_preferences` | **Préférences et données.** Chaque ménage a un goût, chaque producteur d'alimentation ou de biens un style ; l'affinité relève jusqu'à 50 % le poids du producteur dans les achats du ménage. Les entreprises technologiques vendent les données des ménages équipés : un producteur bénéficiaire y consacre 1 % de son chiffre d'affaires et rapproche son offre du goût de ses clients (connaissance oubliée de 5 % par mois). |
 | `diversification` | **Filiales.** Une entreprise n'a qu'un secteur ; pour vendre plusieurs produits, une entreprise rentable crée une filiale dans le secteur le plus attractif autre que le sien (mêmes signaux que les ménages fondateurs), lui apporte la moitié de sa trésorerie libre et en détient tout le capital. Au plus une création par mois dans l'économie ; les dividendes remontent à la société mère. |
 | `conglomerate_takeovers` | **Rachats entre secteurs.** Offre publique aux règles existantes (cours + 30 %, seuil de contrôle), sur une entreprise plus petite d'un autre secteur, qui devient une filiale sans fusion. L'acquéreur n'offre que s'il apporte quelque chose : il est plus productif que la cible (elle rattrape un quart de l'écart une fois rachetée) ou ses magasins lui apportent des ventes. |
-| `retail_stores` | **Magasins.** Un producteur d'alimentation ou de biens ouvre un magasin (40 000 € de départ, 600 € de charges par mois, indexés sur les salaires) quand les ventes ajoutées rapportent plus que le coût de ses fonds propres. n magasins multiplient son poids dans les achats par 1 + 0,5 × n / (n + 3). Les magasins déplacent des ventes, ils ne créent pas de demande. |
+| `retail_stores` | **Magasins.** Un producteur d'alimentation ou de biens ouvre un magasin (40 000 € de départ, 600 € de charges par mois, indexés sur les salaires) quand les ventes ajoutées rapportent plus que le coût de ses fonds propres. n magasins multiplient son poids dans les achats par 1 + 0,5 × n / (n + 3). Chaque magasin demande deux vendeurs (un réseau en sous-effectif ne sert qu'au prorata) ; la commodité d'achat relève un peu les quantités voulues par les ménages (au plus 5 %). |
 | `group_distribution` | **Distribution de groupe.** Les magasins d'un groupe vendent les produits de toutes ses entreprises, et l'acquéreur compte ce gain dans la valeur d'une cible : une grande entreprise bien distribuée a intérêt à racheter un petit producteur. Demande des magasins et des groupes. |
-| `private_startups` | **Non cotées et fonds des banques.** Une entreprise fondée par un ménage n'est plus cotée à sa création. Chaque banque gère un fonds d'investissement où les ménages placent environ 5 % de leur épargne (selon leur goût du risque), contre 1,8 % de frais par an ; le fonds finance les besoins des non cotées, relève leur productivité de 5 % à son premier apport, et leur valeur est estimée sans Bourse. L'introduction en Bourse n'arrive que si le besoin restant dépasse la moitié des fonds propres, ou quand le fonds sort après cinq ans ; il revend alors ses titres à la séance et reverse le produit aux porteurs de parts. |
+| `private_startups` | **Non cotées et fonds des banques.** Une entreprise fondée par un ménage n'est plus cotée à sa création. Chaque banque gère un fonds d'investissement où les ménages placent environ 5 % de leur épargne (selon leur goût du risque), contre 1,8 % de frais par an ; le fonds finance les besoins des non cotées, relève leur productivité de 5 % à son premier apport, et leur valeur est estimée sans Bourse. L'introduction en Bourse n'arrive que si le besoin restant dépasse la moitié des fonds propres, ou quand le fonds veut sortir : sa participation vaut deux fois ce qu'elle a coûté, au plus tard après cinq ans. Le fonds place aussi sa trésorerie excédentaire en actions cotées, et ne vend un titre coté que lorsque son cours atteint sa valeur fondamentale ou qu'il manque de trésorerie. |
 
 Mesure (5 graines × 400 mois, chaque mécanisme seul puis les huit ensemble, contre le témoin) :
 aucun effondrement, comptes exacts, mais des effets du même ordre que l'écart entre graines ;
@@ -306,7 +306,38 @@ Deux réglages de la même rubrique de la barre latérale :
   valeur de départ). Sans ce réglage, le dirigeant est le salarié le mieux noté, à un tirage près,
   et n'est jamais révoqué.
 
-Mesure : `results/lot_g_entreprises/RESUME.md`, section « Lot H ».
+Avant de liquider une entreprise sans salarié, le moteur tente une **reprise** : sa société mère,
+si elle en a une et les moyens, souscrit une augmentation de capital de trois mois de paie (une
+fois tous les deux ans) ; sinon l'entreprise du même secteur qui a des salariés et le plus de
+trésorerie l'absorbe, si les actifs de la cible couvrent ses dettes. La liquidation n'arrive
+qu'en dernier recours.
+
+Mesure : `results/lot_g_entreprises/RESUME.md`, sections « Lot H » et « Lot I ».
+
+### Ce que le lot I ajoute aux mécanismes des lots G et H
+
+Sans nouveau réglage : ces règles s'appliquent quand le mécanisme concerné est activé.
+
+- **Groupes** : chaque mois, une société mère recapitalise une filiale qui a un besoin de
+  trésorerie (au plus un quart de sa trésorerie libre), ou la met en vente si elle perd de
+  l'argent depuis douze mois ou si la mère elle-même manque de trésorerie : la filiale est
+  introduite en Bourse et ses titres vendus à la séance, par dixièmes.
+- **Magasins** : deux vendeurs par magasin, qui s'ajoutent au besoin en personnel du producteur ;
+  commodité d'achat (voir le tableau).
+- **Préférences** : le goût de chaque ménage dérive lentement, un héritier a son propre goût, et
+  un producteur qui a acheté des données déplace son style vers le goût moyen de ses clients les
+  plus proches. Sans données, il ne bouge pas.
+- **Données** : payées au prix du marché des services technologiques (cher, le même budget en
+  livre moins) ; leur utilité dépend de l'innovation et de la productivité des vendeurs.
+- **Fonds** : placements en actions cotées, sortie décidée sur la valeur (voir le tableau).
+- **Conseil d'actionnaires** : son goût du risque fixe l'exigence de rendement des ouvertures de
+  magasins, des créations de filiales et des offres de rachat (± 20 %).
+- **Expérience des dirigeants** : à chaque anniversaire de mandat, l'entreprise gagne un peu de
+  productivité (+0,4 % la première année, de moins en moins ensuite) ; un dirigeant remplacé
+  repart de zéro.
+- **Barre latérale** : boutons « Tout activer » et « Tout désactiver » pour les douze mécanismes
+  optionnels, exigence de fonds propres contracyclique et recapitalisation de dernier recours des
+  banques comprises (fermeture des entreprises sans salarié réglée à 6 mois).
 
 ### Banques et banque centrale
 - Les banques prêtent dans la limite de leurs **fonds propres** (8 % des prêts et titres). Les
@@ -582,10 +613,11 @@ surtout sur le **niveau** de production et sa **répartition**, pas sur le rythm
 | **Vue d'ensemble** | PIB, chômage, inflation, salaires, prix, inégalités, logement, monnaie, événements du mois |
 | **État** | gouvernement et cabinet, budget, fonction publique, salaire minimum, industrie, journal des décisions |
 | **Entreprises & bourse** | cinq sous-onglets : **Toutes les entreprises** (résumé par secteur, une ligne par entreprise en activité), **Fiche d'une entreprise** (indicateurs, bilan, principaux actionnaires ou conseil, groupe : société mère, filiales, entreprises absorbées, équipe, historiques), **Groupes & filiales** (ce que chaque filiale a coûté et rapporté, poids des groupes dans l'emploi, filiales sorties, fusions, magasins), **Fonds d'investissement** (actif, valeur de la part, épargne confiée, apports, frais, participations en portefeuille et soldées), **Bourse** (cours des entreprises cotées) |
-| **Ménages** | distribution des revenus et des patrimoines, fiche détaillée d'un ménage |
+| **Ménages** | trois sous-onglets : **Vue d'ensemble** (indicateurs, répartition des fortunes), **Fiche d'un ménage** (revenus, patrimoine, actions, parts de fonds, expérience, état de ses logements, historiques), **Tous les ménages** (une ligne par ménage, triable) |
 
 Les entreprises fermées ou absorbées ne sont plus listées ; une entreprise absorbée par fusion
-apparaît dans la fiche de son acquéreur et dans « Groupes & filiales ». L'interface affiche des
+apparaît dans la fiche de son acquéreur et dans « Groupes & filiales », qui dessine aussi
+l'**arbre des groupes** (société mère, filiales, part détenue). L'interface affiche des
 **noms courts** (`company_labels`, sans toucher aux noms du moteur) : « Tech 2 » pour une entreprise
 de départ, « Biens Martin » pour une entreprise fondée par le ménage Martin, « Alimentation 2 ·
 Tech » pour une filiale créée par Alimentation 2, « Énergie 1 (groupe Matières 3) » pour une
@@ -756,11 +788,11 @@ l'interface avec les huit mécanismes du lot G activés ;
 - **Économies d'échelle sans contrepoids.** Les frais de structure (`fixed_cost_share`) créent
   une boucle « plus gros, moins cher, plus gros » que rien ne freine rapidement : quasi-monopoles
   et récessions dès 10 %. La remise sur le volume ne s'applique pas aux matières premières.
-- **Lot G : mécanismes simplifiés et non validés à long terme.** Une entreprise garde un seul
-  secteur : la diversification passe par des filiales, pas par plusieurs produits dans la même
-  entreprise. Une société mère ne recapitalise pas sa filiale. Les magasins et les préférences
-  déplacent les ventes entre producteurs sans créer de demande, et les magasins n'emploient
-  personne. Le gros entretien retire du pouvoir d'achat aux ménages propriétaires : sur 5 graines,
+- **Lots G à I : mécanismes simplifiés et non validés à long terme.** Une entreprise garde un
+  seul secteur : la diversification passe par des filiales, pas par plusieurs produits dans la
+  même entreprise. Une société mère ne prête pas à sa filiale (elle la recapitalise). Un fonds
+  n'achète pas d'obligations d'État, et le conseil d'actionnaires ne vote pas les licenciements.
+  Les préférences déplacent les ventes entre producteurs sans créer de demande. Le gros entretien retire du pouvoir d'achat aux ménages propriétaires : sur 5 graines,
   chômage moyen de 6,1 % contre 4,9 % et récessions plus profondes dans trois graines. Les
   rachats entre secteurs transmettent de la productivité sans autre coût que la prime payée, et
   regroupent en 33 ans un tiers des entreprises dans des groupes. Les distributions d'un fonds

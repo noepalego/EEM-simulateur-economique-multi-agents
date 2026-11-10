@@ -119,9 +119,12 @@ def sell_food(
     market_price: float,
     config: SimulationConfig | None = None,
     affinity: Mapping[str, Mapping[str, float]] | None = None,
+    demand_boost: float = 0.0,
 ) -> tuple[float, float, float]:
     """``affinity`` (lot G, préférences et magasins) : multiplicateur du poids de chaque entreprise
-    dans les achats de chaque ménage (ménage -> entreprise -> facteur) ; ``None`` : rien."""
+    dans les achats de chaque ménage (ménage -> entreprise -> facteur) ; ``None`` : rien.
+    ``demand_boost`` (lot I, magasins) : hausse relative des quantités voulues par les ménages
+    (commodité d'achat), toujours bornée par leur trésorerie ; 0 : rien."""
     config = config or SimulationConfig()
     food_firms = [company for company in companies if company.active and company.sector == "food"]
     supply = sum(company.inventory for company in food_firms)
@@ -137,6 +140,8 @@ def sell_food(
             * person.consumption_propensity
             / max(market_price * (1.0 + config.vat_rate), 0.01)
         )
+    if demand_boost:
+        desired = {person_id: quantity * (1.0 + demand_boost) for person_id, quantity in desired.items()}
     demand = sum(desired.values())
     preferences = {person.id: person.quality_preference for person in people}
     if not food_firms or supply <= 0 or not people:
@@ -458,8 +463,9 @@ def sell_consumer_goods(
     market_price: float,
     config: SimulationConfig | None = None,
     affinity: Mapping[str, Mapping[str, float]] | None = None,
+    demand_boost: float = 0.0,
 ) -> tuple[float, float, float]:
-    """``affinity`` : voir ``sell_food``."""
+    """``affinity`` et ``demand_boost`` : voir ``sell_food``."""
     config = config or SimulationConfig()
     producers = [company for company in companies if company.active and company.sector == "goods"]
     supply = sum(company.goods_inventory for company in producers)
@@ -474,6 +480,8 @@ def sell_consumer_goods(
             * person.consumption_propensity
             / max(market_price * (1.0 + config.vat_rate), 0.01)
         )
+    if demand_boost:
+        desired = {person_id: quantity * (1.0 + demand_boost) for person_id, quantity in desired.items()}
     demand = sum(desired.values())
     preferences = {person.id: person.quality_preference for person in people}
     if not producers or supply <= 0.0 or not people:

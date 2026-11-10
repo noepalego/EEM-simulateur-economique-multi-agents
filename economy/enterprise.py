@@ -37,7 +37,9 @@ import random
 from dataclasses import dataclass, field
 
 from economy.business import incremental_capacity_project
-from economy.consolidation import INTEGRATION_MONTHS, _employee_stake, _holder_valuation
+import math
+
+from economy.consolidation import INTEGRATION_MONTHS, _employee_stake, _holder_valuation, _merge_into
 from economy.energy import infrastructure_unit_price
 from economy.finance import _entrant_wage_offer, sector_entry_signals
 from economy.intersector import (
@@ -70,6 +72,19 @@ MINIMUM_RENT_CONDITION = 0.3    # un logement très dégradé se loue encore à 
 FUND_DRY_POWDER_SHARE = 0.5     # trésorerie d'attente d'un fonds, en apports maximaux d'un fondateur
 FUND_EXIT_SPEED = 0.10          # part des titres cotés d'un fonds mise en vente chaque mois
 IPO_DILUTION_LIMIT = 0.5        # titres nouveaux offerts à l'introduction / titres existants
+# --- lot I (étape 3) ---
+STORE_STAFF = 2.0               # vendeurs nécessaires par magasin
+STORE_DEMAND_GAIN = 0.05        # hausse maximale des quantités voulues par les ménages, par la commodité d'achat
+STORE_DENSITY = 50.0            # ménages par magasin qui donnent la moitié de cette hausse
+TASTE_DRIFT = 0.01              # écart-type mensuel de la dérive du goût d'un ménage (cercle de longueur 1)
+STYLE_SPEED = 0.02              # déplacement mensuel maximal du style d'un producteur pleinement informé
+FUND_MARKET_SPEED = 0.25        # part de la trésorerie excédentaire d'un fonds placée en actions cotées par mois
+FUND_EXIT_MULTIPLE = 2.0        # valeur / coût d'une participation à partir de laquelle le fonds demande la cotation
+SUBSIDIARY_SUPPORT_SHARE = 0.25  # part de la trésorerie libre d'une société mère apportée à une filiale par mois
+SUBSIDIARY_LOSS_MONTHS = 12     # mois de pertes après lesquels une société mère met sa filiale en vente
+RESCUE_INTERVAL_MONTHS = 24     # délai entre deux reprises d'une même filiale sans salarié par sa société mère
+EXECUTIVE_LEARNING = 0.005      # gain de productivité d'un premier anniversaire de mandat (décroît ensuite)
+BOARD_HURDLE = 0.4              # écart d'exigence entre un conseil prudent et un conseil audacieux
 _SECTOR_LABELS = {key: label.split(" (")[0] for key, label in FIRM_SECTORS}
 
 
@@ -93,6 +108,7 @@ class InvestmentFund(Company):
     bought: dict = field(default_factory=dict)    # entreprise -> titres reçus contre ces apports
     entry: dict = field(default_factory=dict)     # entreprise -> mois du premier apport
     exits: list = field(default_factory=list)     # participations soldées
+    reserve: float = 0.0          # trésorerie d'attente visée ce mois (lot I)
 
 
 @dataclass
@@ -109,6 +125,9 @@ class EnterpriseState:
     fund_history: list = field(default_factory=list)  # un relevé par fonds et par mois
     boards: dict = field(default_factory=dict)        # entreprise -> conseil du mois (lot H)
     retention: dict = field(default_factory=dict)     # entreprise -> part réinvestie avant le conseil (lot H)
+    appetite: dict = field(default_factory=dict)      # entreprise -> goût du risque de son conseil (lot I)
+    divesting: set = field(default_factory=set)       # filiales mises en vente par leur société mère (lot I)
+    rescues: dict = field(default_factory=dict)       # filiale -> mois de sa dernière reprise par la mère (lot I)
     month_stats: dict = field(default_factory=dict)
     history: list = field(default_factory=list)    # un relevé par mois (mesures seules)
 
@@ -211,12 +230,44 @@ class EnterpriseMixin:
         avec ``group_distribution`` (G7)."""
         active = [c for c in self.companies if c.active]
         if not self.live.group_distribution:
-            return {c.id: c.stores for c in active}
+            return {c.id: self._staffed_stores(c) for c in active}
         roots = roots if roots is not None else self._group_roots()
         totals: dict[str, float] = {}
         for company in active:
-            totals[roots[company.id]] = totals.get(roots[company.id], 0.0) + company.stores
+            totals[roots[company.id]] = totals.get(roots[company.id], 0.0) + self._staffed_stores(company)
         return {c.id: totals[roots[c.id]] for c in active}
+
+    @staticmethod
+    def _staffed_stores(company) -> float:
+        """Magasins réellement ouverts (lot I) : il faut ``STORE_STAFF`` salariés par magasin ;
+        un réseau en sous-effectif ne sert qu'au prorata de son personnel."""
+        if company.stores <= 0.0:
+            return 0.0
+        return company.stores * min(1.0, len(company.employees) / (company.stores * STORE_STAFF))
+
+    def _store_staffing(self) -> None:
+        """Vendeurs des magasins (lot I) : ``STORE_STAFF`` postes par magasin s'ajoutent au besoin
+        en personnel du producteur, dans la limite des embauches mensuelles."""
+        hiring = self.live.max_monthly_hiring
+        for company in self.companies:
+            if company.active and company.stores > 0.0:
+                extra = math.ceil(company.stores * STORE_STAFF)
+                company.staffing_need += extra
+                company.target_employees = min(
+                    company.target_employees + extra, len(company.employees) + hiring
+                )
+
+    def _store_demand_boost(self) -> float:
+        """Commodité d'achat (lot I) : plus il y a de magasins ouverts par ménage, plus les
+        ménages veulent acheter d'alimentation et de biens, d'au plus ``STORE_DEMAND_GAIN`` (un
+        magasin pour ``STORE_DENSITY`` ménages en donne la moitié). 0 sans le réglage."""
+        if not self.live.retail_stores or not self.people:
+            return 0.0
+        stores = sum(self._staffed_stores(c) for c in self.companies if c.active)
+        if stores <= 0.0:
+            return 0.0
+        density = stores * STORE_DENSITY / len(self.people)
+        return STORE_DEMAND_GAIN * density / (density + 1.0)
 
     def _sales_affinity(self, sector: str):
         """Facteur du poids de chaque producteur de ``sector`` dans les achats de chaque ménage
@@ -368,6 +419,7 @@ class EnterpriseMixin:
         for company in self.companies:
             if not company.active:
                 continue
+            hurdle = required * self._board_hurdle(company)
             if company.stores > 0.0:
                 company.stores *= 1.0 - decay
                 due = company.stores * running
@@ -390,8 +442,9 @@ class EnterpriseMixin:
             stock = company.inventory if company.sector == "food" else company.goods_inventory
             deliverable = stock + max(0.0, company.potential_output - company.units_produced)
             extra_units = min(gain * max(company.units_sold, company.previous_units_sold), deliverable)
-            monthly = extra_units * margin - running
-            if 12.0 * monthly / opening <= required:
+            # un magasin de plus coûte ses charges et ses vendeurs
+            monthly = extra_units * margin - running - STORE_STAFF * max(company.wage_offer, live.minimum_wage)
+            if 12.0 * monthly / opening <= hurdle:
                 continue
             if company.cash - working_capital(company, live) < opening:
                 continue
@@ -414,9 +467,20 @@ class EnterpriseMixin:
         ``DATA_LEARNING_RATE`` de ce qui lui reste à apprendre. Sans vendeur ou sans ménage
         équipé, rien n'est vendu."""
         live = self.live
+        self._evolve_preferences()
         decay = max(0.0, min(1.0, live.data_decay_rate))
-        sellers = any(c.active and c.sector == "technology" and c.employees for c in self.companies)
+        vendors = [c for c in self.companies if c.active and c.sector == "technology" and c.employees]
+        sellers = bool(vendors)
         equipped = any(p.technology_level > 0.0 for p in self.people)
+        # lot I : des vendeurs plus innovants et plus productifs livrent des données plus utiles
+        # (moitié de l'effet garantie, l'autre selon leur niveau moyen, pondéré par leurs effectifs)
+        staff = sum(len(c.employees) for c in vendors)
+        quality = 0.5 + 0.5 * min(1.0, sum(
+            len(c.employees) * c.innovation * c.productivity_trait for c in vendors
+        ) / staff) if staff else 0.0
+        # prix du marché des services technologiques : à budget égal, des données chères en
+        # livrent moins
+        price = max(self.resources.tech_service_price_index, 1e-9)
         for company in self.companies:
             if not company.active or company.sector not in CONSUMER_SECTORS:
                 continue
@@ -428,11 +492,45 @@ class EnterpriseMixin:
             if budget <= 1.0:
                 continue
             paid = pay_business_suppliers(
-                company, budget, {"technology": 1.0}, self.companies, self.resources, priced=False
+                company, budget, {"technology": 1.0}, self.companies, self.resources
             )
             if paid > 0.0:
-                company.market_insight += (1.0 - company.market_insight) * DATA_LEARNING_RATE * paid / full
+                volume = min(1.0, paid / price / full)
+                company.market_insight += (1.0 - company.market_insight) * DATA_LEARNING_RATE * quality * volume
                 self._enterprise_count("donnees", paid)
+
+    def _evolve_preferences(self) -> None:
+        """Lot I : une fois par mois, le goût de chaque ménage dérive un peu (marche aléatoire du
+        générateur des préférences) et chaque producteur informé déplace son style vers le goût
+        moyen des ménages dont il est le producteur le plus proche (son segment), d'au plus
+        ``STYLE_SPEED`` × sa connaissance des clients : sans données, il ne bouge pas."""
+        state = self._enterprise_state()
+        rng = state.random
+        if rng is None:
+            return  # goûts pas encore tirés (premier mois)
+        for person in self.people:
+            if person.taste >= 0.0:
+                person.taste = (person.taste + rng.gauss(0.0, TASTE_DRIFT)) % 1.0
+        for sector in CONSUMER_SECTORS:
+            firms = [c for c in self.companies if c.active and c.sector == sector and c.product_style >= 0.0]
+            if len(firms) < 1 or not any(c.market_insight > 0.0 for c in firms):
+                continue
+            sums = {c.id: [0.0, 0.0] for c in firms}
+            for person in self.people:
+                if person.taste < 0.0:
+                    continue
+                closest = max(firms, key=lambda c: (taste_fit(person.taste, c.product_style), c.id))
+                angle = 2.0 * math.pi * person.taste
+                sums[closest.id][0] += math.cos(angle)
+                sums[closest.id][1] += math.sin(angle)
+            for company in firms:
+                x, y = sums[company.id]
+                if company.market_insight <= 0.0 or (abs(x) < 1e-9 and abs(y) < 1e-9):
+                    continue
+                target = (math.atan2(y, x) / (2.0 * math.pi)) % 1.0
+                gap = (target - company.product_style + 0.5) % 1.0 - 0.5   # plus court chemin sur le cercle
+                step = STYLE_SPEED * company.market_insight
+                company.product_style = (company.product_style + max(-step, min(step, gap))) % 1.0
 
     # ------------------------------------------------------------------ G8 : fonds des banques
     def _ensure_funds(self) -> list:
@@ -494,7 +592,7 @@ class EnterpriseMixin:
                     assets -= fee
                     fund.fees += fee
                     self._enterprise_count("fonds_frais", fee)
-            targets[fund.id] = dry_powder + 3.0 * fund.requests
+            targets[fund.id] = fund.reserve = dry_powder + 3.0 * fund.requests
             unit_price[fund.id] = assets / fund.units if fund.units > 1e-9 and assets > 0.0 else 1.0
         self._distribute_fund_cash(funds, targets, unit_price, prices)
         self._household_fund_flows(funds, targets, unit_price)
@@ -551,7 +649,9 @@ class EnterpriseMixin:
         """La trésorerie d'un fonds au-delà de sa réserve d'attente (dividendes reçus, produit des
         cessions) est versée aux porteurs de parts, au prorata : revenu du capital du ménage."""
         for fund in funds:
-            excess = fund.cash - targets[fund.id]
+            # lot I : la trésorerie au-delà de la réserve est d'abord placée en actions cotées
+            # (``_fund_buy_orders``) ; seul ce qui dépasse deux fois la réserve est reversé
+            excess = fund.cash - 2.0 * targets[fund.id]
             if excess <= 1.0 or fund.units <= 1e-9:
                 continue
             holders = [(p, p.fund_units[fund.id]) for p in self.people if p.fund_units.get(fund.id, 0.0) > 0.0]
@@ -631,9 +731,13 @@ class EnterpriseMixin:
             if not company.active or company.listed or company.sector == "bank" or company.parent_id is not None:
                 continue
             need = self._financing_need(company)
-            exit_due = (
-                company.fund_backed_month >= 0
-                and self.month - company.fund_backed_month >= max(1, live.fund_exit_months)
+            backer = next((f for f in funds if f.cost.get(company.id, 0.0) > 0.0), None)
+            # sortie décidée sur la valeur (lot I) : la participation vaut ``FUND_EXIT_MULTIPLE``
+            # fois ce qu'elle a coûté ; au plus tard après ``fund_exit_months``
+            exit_due = company.fund_backed_month >= 0 and (
+                self.month - company.fund_backed_month >= max(1, live.fund_exit_months)
+                or (backer is not None and backer.shares.get(company.id, 0.0) * company.stock_price
+                    >= FUND_EXIT_MULTIPLE * backer.cost[company.id])
             )
             remaining = need
             if need > 1.0 and company.loss_streak < live.bankruptcy_months:
@@ -681,18 +785,55 @@ class EnterpriseMixin:
         self._enterprise_count("introductions")
 
     def _fund_sell_orders(self) -> list:
-        """Sortie des fonds : chaque mois, ``FUND_EXIT_SPEED`` de leurs titres cotés est mis en
-        vente à la séance de Bourse (ordres servis par de vrais acheteurs, au cours)."""
+        """Ordres de vente de la séance de Bourse hors ménages et État (servis par de vrais
+        acheteurs, au cours), ``FUND_EXIT_SPEED`` de la ligne par mois :
+
+        - un fonds vend un titre coté quand son cours atteint sa valeur fondamentale (il garde un
+          titre sous-évalué), ou quand sa trésorerie passe sous la moitié de sa réserve (lot I) ;
+        - une société mère vend la filiale cotée qu'elle a mise en vente (lot I)."""
         state = getattr(self, "enterprise", None)
-        if state is None or not state.funds:
+        if state is None or not (state.funds or state.divesting):
             return []
-        listed = {c.id for c in self.companies if c.active and c.listed}
-        return [
-            (fund, company_id, quantity * FUND_EXIT_SPEED if quantity > 1.0 else quantity)
-            for fund in state.funds
-            for company_id, quantity in fund.shares.items()
-            if company_id in listed and quantity > 0.0
+        live = self.live
+        annual_rate = 12.0 * max(0.0, self.policy_rate)
+        listed = {c.id: c for c in self.companies if c.active and c.listed}
+        values: dict[str, float] = {}
+        orders = []
+        for fund in state.funds:
+            short = fund.cash < 0.5 * fund.reserve
+            for company_id, quantity in fund.shares.items():
+                company = listed.get(company_id)
+                if company is None or quantity <= 0.0:
+                    continue
+                if not short:
+                    if company_id not in values:
+                        values[company_id] = _fundamental_price(company, self.companies, live, annual_rate)
+                    if company.stock_price < values[company_id]:
+                        continue
+                orders.append((fund, company_id, quantity * FUND_EXIT_SPEED if quantity > 1.0 else quantity))
+        by_id = {c.id: c for c in self.companies}
+        for company_id in sorted(state.divesting):
+            company = listed.get(company_id)
+            parent = by_id.get(company.parent_id) if company is not None and company.parent_id else None
+            if parent is None:
+                continue
+            quantity = parent.shares.get(company_id, 0.0)
+            if quantity > 0.0:
+                orders.append((parent, company_id, quantity * FUND_EXIT_SPEED if quantity > 1.0 else quantity))
+        return orders
+
+    def _fund_buy_orders(self) -> list | None:
+        """Placements cotés des fonds (lot I) : chaque mois, ``FUND_MARKET_SPEED`` de la trésorerie
+        d'un fonds au-delà de sa réserve d'attente achète le panier du marché, comme un ménage
+        (``stock_market.update_prices_and_trade``, ``extra_buyers``). ``None`` sans fonds."""
+        state = getattr(self, "enterprise", None)
+        if state is None or not state.funds or not self.live.private_startups:
+            return None
+        orders = [
+            (fund, FUND_MARKET_SPEED * (fund.cash - fund.reserve))
+            for fund in state.funds if fund.cash - fund.reserve > 1.0
         ]
+        return orders or None
 
     def _value_private_companies(self) -> None:
         """Valeur estimée d'une action non cotée : rappelée vers sa valeur fondamentale à la vitesse
@@ -728,6 +869,16 @@ class EnterpriseMixin:
             return 0.0
         gap = buyer.productivity_trait / max(target.productivity_trait, 1e-9) - 1.0
         return MANAGEMENT_TRANSFER * min(0.5, gap)
+
+    def _board_hurdle(self, company) -> float:
+        """Exigence du conseil d'actionnaires sur un investissement (lot I) : 1 sans conseil ; de
+        1 + ``BOARD_HURDLE`` / 2 pour un conseil prudent à 1 − ``BOARD_HURDLE`` / 2 pour un
+        conseil audacieux (goût du risque moyen de ses membres, pondéré par leurs titres)."""
+        if not self.live.shareholder_governance:
+            return 1.0
+        state = getattr(self, "enterprise", None)
+        appetite = state.appetite.get(company.id, 0.5) if state is not None else 0.5
+        return 1.0 + BOARD_HURDLE * (0.5 - appetite)
 
     def _integration_months(self, buyer) -> int:
         if self.live.experience_learning:
@@ -799,8 +950,10 @@ class EnterpriseMixin:
                     1.0 + self._distribution_synergy(buyer, target, network)
                     + self._management_synergy(buyer, target)
                 )
-                surplus = (value - offer) * need
-                if value > offer and (best is None or surplus > best[0]):
+                # le conseil de l'acquéreur vote l'offre : prudent, il exige une marge sur le prix
+                hurdle = offer * self._board_hurdle(buyer)
+                surplus = (value - hurdle) * need
+                if value > hurdle and (best is None or surplus > best[0]):
                     best = (surplus, target, need, offer)
             if best is None:
                 continue
@@ -911,7 +1064,8 @@ class EnterpriseMixin:
             if not options:
                 continue
             sector = max(options, key=lambda s: (signals.get(s, 0.0), s))
-            if signals.get(sector, 0.0) < live.entry_signal_scale:
+            # le conseil vote la création : prudent, il attend un attrait plus fort
+            if signals.get(sector, 0.0) < live.entry_signal_scale * self._board_hurdle(parent):
                 continue
             contribution = min(free * 0.5, live.startup_max_capital * scale)
             market_prices = entry.get("market_prices") or {}
@@ -1037,11 +1191,13 @@ class EnterpriseMixin:
 
     def _close_group_link(self, company, entry: dict) -> None:
         """Filiale sortie de son groupe : consignée avec son issue (mesure seule)."""
+        state = self._enterprise_state()
         if not company.active:
             outcome = {"bankrupt": "faillite", "acquired": "absorbée", "dissolved": "liquidée",
                        "idle": "fermée sans salarié"}.get(company.exit_reason, "fermée")
         else:
-            outcome = "contrôle perdu"
+            outcome = "vendue en Bourse" if company.id in state.divesting else "contrôle perdu"
+        state.divesting.discard(company.id)
         self._enterprise_state().group_exits.append(
             {**entry, "filiale": company.id, "sortie": self.month, "issue": outcome}
         )
@@ -1069,6 +1225,10 @@ class EnterpriseMixin:
                 continue
             if not any(o.active and o.id != company.id and o.sector == company.sector for o in self.companies):
                 continue
+            # lot I : reprise par la société mère, sinon vente à un concurrent ; liquidation en
+            # dernier recours
+            if self._rescue_by_parent(company) or self._sell_to_competitor(company, holders, protected):
+                continue
             if can_dissolve(company):
                 dissolve_company(company, self.people, self.companies, holders,
                                  self.month, self.resolution_events)
@@ -1077,6 +1237,114 @@ class EnterpriseMixin:
             else:
                 forced.append(company.id)
         return frozenset(forced)
+
+    def _rescue_by_parent(self, company) -> bool:
+        """Filiale sans salarié reprise par sa société mère : la mère souscrit des titres nouveaux,
+        au cours, pour trois mois de la paie visée (réserve d'embauche), si sa trésorerie libre
+        les paie ; la filiale a de nouveau ``staffless_closure_months`` mois pour embaucher. Une
+        seule reprise par filiale tous les ``RESCUE_INTERVAL_MONTHS`` mois."""
+        parent = next((c for c in self.companies if c.id == company.parent_id and c.active), None)
+        if parent is None:
+            return False
+        rescues = self._enterprise_state().rescues
+        if self.month - rescues.get(company.id, -10 ** 6) < RESCUE_INTERVAL_MONTHS:
+            return False
+        amount = 3.0 * max(1, company.target_employees) * max(company.wage_offer, self.live.minimum_wage, 1.0)
+        if parent.cash - working_capital(parent, self.live) < amount:
+            return False
+        self._subscribe_subsidiary_shares(parent, company, amount)
+        rescues[company.id] = self.month
+        company.idle_months = 0
+        self._enterprise_count("reprises_par_la_mere")
+        return True
+
+    def _subscribe_subsidiary_shares(self, parent, company, amount: float) -> None:
+        """Augmentation de capital d'une filiale souscrite par sa société mère, au cours."""
+        quantity = amount / max(company.stock_price, 1.0)
+        company.shares_outstanding += quantity
+        parent.shares[company.id] = parent.shares.get(company.id, 0.0) + quantity
+        transfer_cash(parent, company, amount)
+        entry = self._enterprise_state().group_log.get(company.id)
+        if entry is not None:
+            entry["cout"] += amount
+
+    def _sell_to_competitor(self, company, holders: tuple, protected: set) -> bool:
+        """Entreprise sans salarié vendue à un concurrent : l'entreprise du même secteur qui a des
+        salariés et le plus de trésorerie l'absorbe (``consolidation._merge_into`` : actifs,
+        dettes et trésorerie repris, actionnaires payés en titres de l'acquéreur au rapport des
+        cours), si les actifs de la cible couvrent ses dettes. Ni acquéreur ni secteur sous
+        contrôle public ; le secteur garde au moins ``min_firms_per_sector`` entreprises."""
+        live = self.live
+        if company_balance_sheet(company, self.companies, live)["Capitaux propres"] < 0.0:
+            return False
+        rivals = [
+            c for c in self.companies
+            if c.active and c is not company and c.sector == company.sector and c.employees
+            and c.id not in protected
+        ]
+        sector_size = sum(1 for c in self.companies if c.active and c.sector == company.sector)
+        if not rivals or sector_size <= max(1, live.min_firms_per_sector):
+            return False
+        buyer = max(rivals, key=lambda c: (c.cash, c.id))
+        _merge_into(buyer, company, self.people, self.companies, holders)
+        company.exit_month = self.month
+        buyer.acquisition_count += 1
+        self._enterprise_count("reprises_par_un_concurrent")
+        return True
+
+    # ------------------------------------------------------------------ lot I : vie des groupes
+    def _manage_subsidiaries(self) -> None:
+        """Chaque mois, une société mère décide du sort de chaque filiale :
+
+        - **mise en vente** : la filiale perd de l'argent depuis ``SUBSIDIARY_LOSS_MONTHS`` mois, ou
+          la mère elle-même manque de trésorerie (sous son fonds de roulement) ; la filiale est
+          introduite en Bourse si besoin et la mère vend ses titres à la séance, par dixièmes
+          (``_fund_sell_orders``) ; le lien de groupe tombe quand elle passe sous le contrôle ;
+        - **recapitalisation** : sinon, si la filiale a un besoin de trésorerie
+          (``_financing_need``) et n'est pas en pertes durables, la mère souscrit des titres
+          nouveaux au cours, au plus ``SUBSIDIARY_SUPPORT_SHARE`` de sa trésorerie libre."""
+        live = self.live
+        state = self._enterprise_state()
+        by_id = {c.id: c for c in self.companies}
+        for company in self.companies:
+            if not company.active or company.parent_id is None:
+                continue
+            parent = by_id.get(company.parent_id)
+            if parent is None or not parent.active:
+                continue
+            free = parent.cash - working_capital(parent, live)
+            if company.id in state.divesting:
+                continue
+            if company.loss_streak >= SUBSIDIARY_LOSS_MONTHS or free < 0.0:
+                state.divesting.add(company.id)
+                if not company.listed:
+                    self._list_company(company)
+                self._enterprise_count("filiales_mises_en_vente")
+                continue
+            if company.loss_streak >= live.bankruptcy_months or company.sector == "bank":
+                continue
+            need = self._financing_need(company)
+            amount = min(need, SUBSIDIARY_SUPPORT_SHARE * max(0.0, free))
+            if amount > 1.0:
+                self._subscribe_subsidiary_shares(parent, company, amount)
+                self._enterprise_count("recapitalisations", amount)
+
+    # ------------------------------------------------------------------ lot I : dirigeants
+    def _executive_learning(self) -> None:
+        """Expérience du dirigeant (G1, lot I) : à chaque anniversaire de mandat, l'entreprise
+        gagne en productivité ``EXECUTIVE_LEARNING`` × ce qui reste à apprendre au dirigeant
+        (1 − compétence acquise, années de mandat / (années + ``experience_half_count``)) :
+        environ +0,4 % la première année, de moins en moins ensuite ; productivité bornée à 1,8.
+        Un dirigeant remplacé repart de zéro (``ceo_tenure``)."""
+        live = self.live
+        for company in self.companies:
+            if not company.active or company.executive_id is None or company.ceo_tenure <= 0:
+                continue
+            if company.ceo_tenure % 12:
+                continue
+            years = company.ceo_tenure / 12.0
+            gain = EXECUTIVE_LEARNING * (1.0 - experience_skill(years, live))
+            company.productivity_trait = min(1.8, company.productivity_trait * (1.0 + gain))
 
     def _mark_staffless_closures(self, closures: frozenset) -> None:
         """Motif de fermeture des entreprises liquidées d'office (affichage et relevés)."""
@@ -1172,6 +1440,7 @@ class EnterpriseMixin:
                 quantity * (holder.risk_tolerance if isinstance(holder, Person) else 0.5)
                 for holder, quantity in board
             ) / weight
+            self._enterprise_state().appetite[company.id] = appetite
             wanted = max(0.05, min(1.0, retention.setdefault(
                 company.id, company.reinvestment_preference) * (0.5 + appetite)))
             company.reinvestment_preference += 0.05 * (wanted - company.reinvestment_preference)

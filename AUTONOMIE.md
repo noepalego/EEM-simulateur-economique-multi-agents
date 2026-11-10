@@ -157,6 +157,17 @@ l'acquéreur, lien de filiale gardé jusqu'aux deux tiers du seuil de contrôle,
 dégradé d'au moins 30 % du loyer du marché, un quart de l'écart de productivité transmis par une
 société mère à une cible rachetée (ce que l'acquéreur apporte, et la raison de son offre).
 
+Constantes du lot I (`economy/enterprise.py`, non réglables, actives seulement avec le mécanisme
+concerné) : deux vendeurs par magasin ; hausse des quantités voulues par les ménages d'au plus 5 %
+par la commodité d'achat (un magasin pour 50 ménages en donne la moitié) ; dérive mensuelle du
+goût d'un ménage d'écart-type 0,01 et déplacement du style d'un producteur informé d'au plus 0,02
+par mois ; un quart de la trésorerie excédentaire d'un fonds placé en actions cotées par mois,
+demande de cotation quand sa participation vaut deux fois son coût ; soutien d'une filiale d'au
+plus un quart de la trésorerie libre de sa société mère par mois, mise en vente après douze mois
+de pertes, reprise d'une filiale sans salarié une fois tous les 24 mois ; gain de productivité
+d'un anniversaire de mandat d'au plus 0,5 % ; exigence du conseil d'actionnaires de ± 20 % autour
+du coût des fonds propres. Aucune ne vise un résultat.
+
 | Réglage | Défaut | Justification |
 |---|---|---|
 | `experience_learning` | faux (G1) | Apprentissage par la pratique : un fondateur qui a déjà créé des entreprises fonde mieux, un salarié qui a souvent changé d'employeur et un employeur qui a beaucoup recruté négocient mieux le salaire d'embauche, un acquéreur expérimenté intègre plus vite et garde les meilleures pratiques. L'expérience disparaît à la succession du ménage. |

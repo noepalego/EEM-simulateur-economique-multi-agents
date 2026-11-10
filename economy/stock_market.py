@@ -70,6 +70,7 @@ def update_prices_and_trade(
     primary_first: frozenset = frozenset(),
     unlisted: frozenset = frozenset(),
     strategic: dict[str, frozenset] | None = None,
+    extra_buyers: list | None = None,
 ) -> float:
     """Rééquilibre les portefeuilles, forme les cours et exécute les échanges.
 
@@ -87,7 +88,8 @@ def update_prices_and_trade(
     introduction en Bourse, dont les titres offerts servent la demande avant les vendeurs.
     ``unlisted`` (lot G8) : entreprises non cotées, sans carnet d'ordres ni cours de marché.
     ``strategic`` (lot G, groupes) : pour chaque société mère, ses filiales, dont elle ne vend
-    pas les titres en rééquilibrant son portefeuille.
+    pas les titres en rééquilibrant son portefeuille. ``extra_buyers`` (lot I, fonds) : porteurs
+    hors ménages et entreprises (porteur, budget) qui achètent le panier du marché comme un ménage.
     Retourne le volume d'échanges entre investisseurs (marché secondaire).
     """
     config = config or SimulationConfig()
@@ -171,6 +173,11 @@ def update_prices_and_trade(
             if abs(bond_order) > 1.0:
                 bond_orders.append((person, bond_order))
 
+    if extra_buyers and total_weight > 0.0:
+        for holder, budget in extra_buyers:
+            budget = min(budget, max(0.0, holder.cash))
+            if budget > 1.0:
+                household_buys.append((holder, budget))
     # Construire chaque carnet en une fois évite une recherche et un append par
     # couple ménage/titre. Même ordre des ménages et même multiplication/division.
     buys = {

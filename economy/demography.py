@@ -189,6 +189,7 @@ class DemographyMixin:
         # de travail en cours, donc le salaire négocié, est gardé)
         person.ventures = 0
         person.negotiations = 0
+        person.taste = -1.0  # lot I : l'héritier a son propre goût (tiré au premier usage)
         person.employer_tenure = 0
         person.rank = -1
         person.lifetime_earnings = 0.0

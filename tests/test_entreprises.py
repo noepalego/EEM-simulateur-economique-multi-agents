@@ -352,6 +352,7 @@ class StoreTests(unittest.TestCase):
         goods = [c for c in sim.companies if c.active and c.sector == "goods"]
         parent, subsidiary, outsider = food[0], goods[0], goods[1]
         parent.stores = 3.0
+        parent.employees = [f"vendeur{i}" for i in range(6)]   # deux vendeurs par magasin
         subsidiary.parent_id = parent.id
         network = sim._network_stores()
         self.assertEqual((network[parent.id], network[subsidiary.id], network[outsider.id]), (3.0, 3.0, 0.0))
@@ -359,6 +360,8 @@ class StoreTests(unittest.TestCase):
         self.assertAlmostEqual(row[subsidiary.id], 1.25)
         self.assertEqual(row[outsider.id], 1.0)
         self.assertAlmostEqual(sim._distribution_synergy(parent, outsider, network), 0.25)
+        parent.employees = parent.employees[:3]   # sous-effectif : la moitié du réseau seulement
+        self.assertAlmostEqual(sim._network_stores()[subsidiary.id], 1.5)
         alone = simulation(retail_stores=True)
         alone.companies[0].stores = 3.0
         self.assertEqual(alone._network_stores()[alone.companies[1].id], alone.companies[1].stores)
@@ -614,7 +617,8 @@ class StaffRequirementTests(unittest.TestCase):
         self.assertEqual(SimulationConfig().staffless_closure_months, 0)
 
     def test_idle_company_without_debt_is_wound_up_and_money_is_conserved(self) -> None:
-        sim = simulation(months=2, staffless_closure_months=6)
+        # ``min_firms_per_sector`` élevé : aucun concurrent ne peut la reprendre, reste la liquidation
+        sim = simulation(months=2, staffless_closure_months=6, min_firms_per_sector=99)
         company = self._idle(sim, "services", debt=0.0, inventory=0.0, goods_inventory=0.0,
                              production_capacity=0.0, energy_capacity=0.0, bond_holdings=0.0)
         company.bank_loan_accounts.clear()
@@ -627,8 +631,49 @@ class StaffRequirementTests(unittest.TestCase):
         self.assertEqual(company.exit_reason, "idle")
         self.assertAlmostEqual(money(sim), before, delta=1e-6)
 
-    def test_idle_company_with_debt_goes_through_liquidation(self) -> None:
+    def test_idle_company_is_first_sold_to_a_competitor(self) -> None:
         sim = simulation(months=2, staffless_closure_months=6)
+        company = self._idle(sim, "goods")
+        rivals = [c for c in sim.companies if c.active and c.sector == "goods" and c.employees]
+        buyer = max(rivals, key=lambda c: (c.cash, c.id))
+        capacity = buyer.production_capacity + company.production_capacity
+        debt, before = buyer.debt + company.debt, money(sim)
+        self.assertEqual(sim._staffless_closures(sim._outside_shareholders()), frozenset())
+        self.assertFalse(company.active)
+        self.assertEqual((company.exit_reason, company.acquired_by), ("acquired", buyer.id))
+        self.assertAlmostEqual(buyer.production_capacity, capacity)   # actifs et dettes repris
+        self.assertAlmostEqual(buyer.debt, debt)
+        self.assertAlmostEqual(money(sim), before, delta=1e-6)
+        self.assertEqual(sim.enterprise.month_stats["reprises_par_un_concurrent"], 1.0)
+        self.assertEqual([row["Entreprise"] for row in sim.absorbed_companies(buyer.id)],
+                         [sim.company_labels()[company.id]])
+
+    def test_insolvent_shell_is_not_sold(self) -> None:
+        sim = simulation(months=2, staffless_closure_months=6)
+        company = self._idle(sim, "goods", debt=1e9)   # dettes au-delà des actifs : personne n'en veut
+        self.assertEqual(sim._staffless_closures(sim._outside_shareholders()), frozenset({company.id}))
+        self.assertTrue(company.active)
+
+    def test_parent_rescues_its_idle_subsidiary_once(self) -> None:
+        sim = simulation(months=2, staffless_closure_months=6, diversification=True)
+        company = self._idle(sim, "services")
+        parent = next(c for c in sim.companies if c.active and c.sector == "food" and c.employees)
+        company.parent_id, parent.cash = parent.id, 1e7
+        held = parent.shares.get(company.id, 0.0)
+        cash, shares, before = company.cash, company.shares_outstanding, money(sim)
+        self.assertEqual(sim._staffless_closures(sim._outside_shareholders()), frozenset())
+        self.assertTrue(company.active)
+        self.assertEqual(company.idle_months, 0)
+        self.assertGreater(company.cash, cash)
+        self.assertAlmostEqual(parent.shares[company.id] - held, company.shares_outstanding - shares)
+        self.assertAlmostEqual(money(sim), before, delta=1e-6)
+        self.assertEqual(sim.enterprise.month_stats["reprises_par_la_mere"], 1.0)
+        company.idle_months = 6   # de nouveau à l'arrêt avant deux ans : la mère ne paie pas deux fois
+        sim._staffless_closures(sim._outside_shareholders())
+        self.assertFalse(company.active)
+
+    def test_idle_company_with_debt_goes_through_liquidation(self) -> None:
+        sim = simulation(months=2, staffless_closure_months=6, min_firms_per_sector=99)
         company = self._idle(sim, "real_estate")   # parc de logements et dette : pas de liquidation amiable
         self.assertGreater(company.debt, 0.0)
         self.assertEqual(sim._staffless_closures(sim._outside_shareholders()), frozenset({company.id}))
@@ -834,6 +879,188 @@ class DisplayAndTrackingTests(unittest.TestCase):
         self.assertEqual(fund.exits[-1]["entreprise"], company.id)
         self.assertAlmostEqual(fund.exits[-1]["investi"], invested)
         self.assertEqual(fund.exits[-1]["issue"], "cédée")
+
+
+class StepThreeTests(unittest.TestCase):
+    """Lot I : magasins avec vendeurs, goûts qui évoluent, données au prix du marché, fonds placés
+    en Bourse, vie des groupes, conseil et dirigeants."""
+
+    def test_stores_need_staff_and_raise_demand_a_little(self) -> None:
+        from economy.enterprise import STORE_DEMAND_GAIN, STORE_STAFF
+        sim = simulation(months=2, retail_stores=True)
+        self.assertEqual(sim._store_demand_boost(), 0.0)
+        firm = next(c for c in sim.companies if c.active and c.sector == "food" and c.employees)
+        firm.employees = [f"v{i}" for i in range(4)]
+        firm.stores = 2.0
+        need, target = firm.staffing_need, firm.target_employees
+        sim._store_staffing()
+        self.assertEqual(firm.staffing_need, need + int(2 * STORE_STAFF))
+        self.assertGreaterEqual(firm.target_employees, target)
+        self.assertLessEqual(firm.target_employees, len(firm.employees) + sim.live.max_monthly_hiring)
+        boost = sim._store_demand_boost()
+        self.assertTrue(0.0 < boost < STORE_DEMAND_GAIN)
+        firm.stores = 1e6
+        firm.employees = [f"v{i}" for i in range(4)]   # 4 vendeurs : 2 magasins ouverts, pas un million
+        self.assertAlmostEqual(sim._store_demand_boost(), boost)
+        self.assertEqual(simulation(months=1)._store_demand_boost(), 0.0)
+
+    def test_demand_boost_raises_wanted_quantities_within_cash(self) -> None:
+        from economy.goods import sell_food
+        results = {}
+        for boost in (0.0, 0.05):
+            firm = Company("a", "A", "food", 0.0, 10.0, price=100.0, inventory=1e6)
+            person = Person("p", "P", 1e6, expected_income=3000.0, income_months=1)
+            sold, revenue, _ = sell_food([firm], [person], 100.0, SimulationConfig(), demand_boost=boost)
+            results[boost] = sold
+            self.assertAlmostEqual(person.cash + firm.cash + revenue * SimulationConfig().vat_rate, 1e6)
+        self.assertAlmostEqual(results[0.05], results[0.0] * 1.05)
+
+    def test_tastes_drift_and_informed_producers_follow_their_customers(self) -> None:
+        sim = simulation(consumer_preferences=True)
+        sim._sales_affinity("food")
+        food = [c for c in sim.companies if c.active and c.sector == "food"]
+        informed, blind = food[0], food[1]
+        for firm in food[2:]:
+            firm.active = False
+        informed.product_style, blind.product_style = 0.10, 0.60
+        for person in sim.people:
+            person.taste = 0.20   # tous les clients du producteur informé sont à 0,20
+        informed.market_insight, blind.market_insight = 1.0, 0.0
+        states = (sim.random.getstate(), sim.labor_random.getstate())
+        sim._evolve_preferences()
+        self.assertEqual(states, (sim.random.getstate(), sim.labor_random.getstate()))
+        self.assertTrue(all(0.0 <= p.taste < 1.0 for p in sim.people))
+        self.assertTrue(any(p.taste != 0.20 for p in sim.people))           # les goûts dérivent
+        self.assertAlmostEqual(informed.product_style, 0.12)                 # un pas vers ses clients
+        self.assertEqual(blind.product_style, 0.60)                          # sans données, immobile
+        sim._succeed(sim.people[0], 0.0)
+        self.assertLess(sim.people[0].taste, 0.0)                            # l'héritier aura son goût
+
+    def test_data_is_worth_less_when_expensive_or_from_weak_sellers(self) -> None:
+        gains = {}
+        for label, price, innovation in (("base", 1.0, 1.0), ("cher", 2.0, 1.0), ("faible", 1.0, 0.1)):
+            sim = simulation(months=3, consumer_preferences=True)
+            buyer = next(c for c in sim.companies if c.active and c.sector == "goods" and c.employees)
+            for seller in sim.companies:
+                if seller.sector == "technology":
+                    seller.innovation, seller.productivity_trait = innovation, 1.0
+            sim.people[0].technology_level = 1.0
+            sim.resources.tech_service_price_index = price
+            buyer.previous_profit, buyer.previous_revenue, buyer.cash = 1000.0, 200_000.0, 5e6
+            buyer.market_insight = 0.0
+            sim._trade_customer_data()
+            gains[label] = buyer.market_insight
+        self.assertGreater(gains["base"], gains["cher"])
+        self.assertGreater(gains["base"], gains["faible"])
+        self.assertGreater(gains["faible"], 0.0)
+
+    def test_fund_invests_idle_cash_in_listed_shares_and_exits_on_value(self) -> None:
+        from economy.enterprise import FUND_MARKET_SPEED
+        sim = simulation(months=3, private_startups=True)
+        sim._fund_operations()
+        fund = sim.enterprise.funds[0]
+        fund.cash = fund.reserve + 1000.0
+        orders = sim._fund_buy_orders()
+        self.assertEqual([(holder.id, round(budget, 6)) for holder, budget in orders],
+                         [(fund.id, round(FUND_MARKET_SPEED * 1000.0, 6))])
+        fund.cash = fund.reserve
+        self.assertIsNone(sim._fund_buy_orders())
+        self.assertIsNone(simulation(months=1)._fund_buy_orders())
+        listed = next(c for c in sim.companies if c.active and c.sector == "food")
+        fund.shares[listed.id] = 100.0
+        value = _fundamental_price(listed, sim.companies, sim.live, 12.0 * max(0.0, sim.policy_rate))
+        listed.stock_price = value * 0.5     # sous-évalué : le fonds garde
+        self.assertEqual(sim._fund_sell_orders(), [])
+        listed.stock_price = value * 1.2     # au-dessus de sa valeur : il vend
+        self.assertAlmostEqual(sim._fund_sell_orders()[0][2], 10.0)
+        listed.stock_price, fund.cash = value * 0.5, 0.0   # à court de trésorerie : il vend aussi
+        self.assertEqual(len(sim._fund_sell_orders()), 1)
+
+    def test_fund_asks_for_the_listing_once_the_stake_doubled(self) -> None:
+        sim = simulation(months=3, private_startups=True)
+        company = next(c for c in sim.companies if c.active and c.sector == "services" and c.employees)
+        company.listed, company.cash, company.founder_id = False, 1e7, sim.people[0].id
+        sim._fund_operations()
+        fund = sim.enterprise.funds[0]
+        company.fund_backed_month = sim.month
+        fund.shares[company.id], fund.cost[company.id] = 100.0, 100.0 * company.stock_price
+        sim._fund_operations()
+        self.assertFalse(company.listed)          # la participation vaut ce qu'elle a coûté
+        fund.cost[company.id] = 40.0 * company.stock_price
+        sim._fund_operations()
+        self.assertTrue(company.listed)           # elle vaut plus de deux fois son coût
+
+    def test_bought_shares_reach_the_fund_through_the_market(self) -> None:
+        sim = simulation(months=3, private_startups=True)
+        for person in sim.people:
+            person.cash += 200_000.0
+        sim.ledger.calibrate(sim)
+        for _ in range(12):
+            record = sim.step()
+        self.assertLess(abs(record.ledger_residual), 1e-3)
+        listed = {c.id for c in sim.companies if c.active and c.listed}
+        self.assertTrue(any(cid in listed and q > 0.0 for f in sim.enterprise.funds for cid, q in f.shares.items()))
+
+    def _group(self, sim):
+        parent = next(c for c in sim.companies if c.active and c.sector == "food" and c.employees)
+        subsidiary = next(c for c in sim.companies if c.active and c.sector == "services" and c.employees)
+        subsidiary.parent_id = parent.id
+        parent.shares[subsidiary.id] = subsidiary.shares_outstanding - subsidiary.treasury_shares
+        return parent, subsidiary
+
+    def test_parent_recapitalises_a_subsidiary_in_need(self) -> None:
+        sim = simulation(months=2, diversification=True)
+        parent, subsidiary = self._group(sim)
+        parent.cash, subsidiary.cash, subsidiary.loss_streak = 1e7, 0.0, 0
+        need, shares, before = sim._financing_need(subsidiary), parent.shares[subsidiary.id], money(sim)
+        self.assertGreater(need, 0.0)
+        sim._manage_subsidiaries()
+        self.assertAlmostEqual(subsidiary.cash, need)
+        self.assertGreater(parent.shares[subsidiary.id], shares)
+        self.assertAlmostEqual(money(sim), before, delta=1e-6)
+        self.assertAlmostEqual(sim.enterprise.month_stats["recapitalisations"], need)
+        self.assertNotIn(subsidiary.id, sim.enterprise.divesting)
+
+    def test_parent_puts_a_losing_subsidiary_up_for_sale(self) -> None:
+        sim = simulation(months=2, diversification=True)
+        parent, subsidiary = self._group(sim)
+        parent.cash, subsidiary.cash, subsidiary.loss_streak, subsidiary.listed = 1e7, 0.0, 12, False
+        sim._manage_subsidiaries()
+        self.assertIn(subsidiary.id, sim.enterprise.divesting)
+        self.assertTrue(subsidiary.listed)
+        self.assertEqual(subsidiary.cash, 0.0)   # plus de soutien
+        orders = sim._fund_sell_orders()
+        self.assertEqual([(holder.id, cid) for holder, cid, _ in orders], [(parent.id, subsidiary.id)])
+        self.assertAlmostEqual(orders[0][2], 0.1 * parent.shares[subsidiary.id])
+        sim.enterprise.group_log[subsidiary.id] = {"mere": parent.id, "mois": 1, "origine": "rachetée",
+                                                   "cout": 0.0, "productivite": 1.0, "dividendes": 0.0}
+        parent.shares[subsidiary.id] = 0.0
+        sim._enterprise_housekeeping()
+        self.assertIsNone(subsidiary.parent_id)
+        self.assertEqual(sim.enterprise.group_exits[-1]["issue"], "vendue en Bourse")
+        self.assertNotIn(subsidiary.id, sim.enterprise.divesting)
+
+    def test_board_sets_the_hurdle_of_investments(self) -> None:
+        from economy.enterprise import BOARD_HURDLE
+        sim = simulation(months=2, shareholder_governance=True)
+        company = sim.companies[0]
+        self.assertEqual(simulation()._board_hurdle(company), 1.0)
+        for appetite, expected in ((0.0, 1.0 + BOARD_HURDLE / 2), (0.5, 1.0), (1.0, 1.0 - BOARD_HURDLE / 2)):
+            sim.enterprise.appetite[company.id] = appetite
+            self.assertAlmostEqual(sim._board_hurdle(company), expected)
+
+    def test_long_serving_executive_improves_the_company(self) -> None:
+        sim = simulation(months=2, experience_learning=True)
+        firms = [c for c in sim.companies if c.active and c.executive_id is not None][:3]
+        for firm, tenure in zip(firms, (12, 120, 7)):
+            firm.ceo_tenure, firm.productivity_trait = tenure, 1.0
+        sim._executive_learning()
+        first, tenth, between = (firm.productivity_trait for firm in firms)
+        self.assertGreater(first, 1.0)
+        self.assertGreater(first, tenth)      # rendements décroissants
+        self.assertGreater(tenth, 1.0)
+        self.assertEqual(between, 1.0)        # seulement à l'anniversaire du mandat
+        self.assertLess(first, 1.005 + 1e-12)
 
 
 class EverythingTogetherTests(unittest.TestCase):
