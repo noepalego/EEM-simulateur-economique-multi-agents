@@ -269,6 +269,8 @@ def ui_path(args, root, result, excluded, engine, AppTest, EconomySimulation) ->
     from economy import models
     app = AppTest.from_file(str(root / "main.py"), default_timeout=900)
     app.session_state["seed"] = 1001
+    # Mesurer le coût réel des clics et du moteur sans préparation concurrente.
+    app.session_state["prepare_advance"] = False
     rows = []
 
     def run(label, action, align=True):
@@ -297,6 +299,12 @@ def ui_path(args, root, result, excluded, engine, AppTest, EconomySimulation) ->
         app.session_state["results_tab"] = label
         app.run()
 
+    def section(key, label):
+        # Les anciennes versions rendent tous les sous-onglets en même temps.
+        if key in app.session_state:
+            app.session_state[key] = label
+            app.run()
+
     def options(kind, key):
         try:
             return list(getattr(app, kind)(key=key).options)
@@ -304,31 +312,39 @@ def ui_path(args, root, result, excluded, engine, AppTest, EconomySimulation) ->
             return []
 
     def interactions(suffix):
+        from economy.institutions import SERVICE_LABELS
+
         sim = app.session_state["simulation"]
         run(f"tab_state_{suffix}", lambda: tab("État"))
+        section("state_section", "Journal")
         authors = options("selectbox", "state_journal_author")
         if len(authors) > 1:
             run(f"journal_author_{suffix}",
                 lambda: app.selectbox(key="state_journal_author").set_value(authors[1]).run())
-        services = options("selectbox", "public_service_filter")
-        if len(services) > 1:
+        section("state_section", "Fonction publique")
+        if len(options("selectbox", "public_service_filter")) > 1:
             run(f"service_filter_{suffix}",
-                lambda: app.selectbox(key="public_service_filter").set_value(services[1]).run())
+                lambda: app.selectbox(key="public_service_filter").set_value(next(iter(SERVICE_LABELS))).run())
         run(f"tab_firms_{suffix}", lambda: tab("Entreprises & bourse"))
+        section("firms_section", "Fiche d'une entreprise")
         choice = [c.id for c in sim.companies if c.active][-1]
         run(f"company_{suffix}", lambda: app.selectbox(key="company_selector").set_value(choice).run())
-        stock_choices = [c.id for c in sim.companies if c.active][1:3]
+        section("firms_section", "Bourse")
+        stock_choices = [c.id for c in sim.companies if c.active and c.listed][1:3]
         run(f"stock_companies_{suffix}",
             lambda: app.multiselect(key="stock_chart_companies").set_value(stock_choices).run())
         run(f"tab_households_{suffix}", lambda: tab("Ménages"))
+        section("households_section", "Fiche d'un ménage")
         person = sim.people[-1].id
         run(f"household_{suffix}", lambda: app.selectbox(key="household_selector").set_value(person).run())
         run(f"tab_model_{suffix}", lambda: tab("Modèle & réglages"))
         run(f"tab_overview_{suffix}", lambda: tab("Vue d’ensemble"))
         # sélections conservées après un aller-retour entre onglets (hors chronométrage)
         tab("Entreprises & bourse")
-        assert app.selectbox(key="company_selector").value == choice
         assert app.multiselect(key="stock_chart_companies").value == stock_choices
+        section("firms_section", "Fiche d'une entreprise")
+        assert app.selectbox(key="company_selector").value == choice
+        section("firms_section", "Bourse")
         tab("Ménages")
         assert app.selectbox(key="household_selector").value == person
         tab("Vue d’ensemble")
@@ -388,6 +404,7 @@ def ui_path(args, root, result, excluded, engine, AppTest, EconomySimulation) ->
     assert app.session_state["simulation"].config.seed == 1003
     second = AppTest.from_file(str(root / "main.py"), default_timeout=900)
     second.session_state["warmup_years"] = 0
+    second.session_state["prepare_advance"] = False
     second.run()
     assert not second.exception, str(second.exception)
     assert second.session_state["simulation"] is not app.session_state["simulation"]

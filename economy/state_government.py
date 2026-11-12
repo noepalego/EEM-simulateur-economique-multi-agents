@@ -231,11 +231,18 @@ class StateGovernmentMixin:
         count = len(order)
         rank = {p.id: (i / (count - 1) if count > 1 else 0.5) for i, p in enumerate(order)}
         deflator = max(self.price_index, 1e-9)
+        # monde à plusieurs régions : écart de croissance avec les autres régions (0 sinon)
+        yardstick = getattr(self, "yardstick_bonus", 0.0)
         voters = []
         for person in self.people:
             start = inst.term_income.get(person.id)
             now = person.expected_income / deflator
             growth = now / start - 1.0 if start and start > 0.0 else 0.0
+            if self.live.media_sector:
+                # lot M : le ton du média du ménage colore le revenu qu'il perçoit
+                growth += self._media_vote_bias(person.id)
+            if yardstick:
+                growth += yardstick
             voters.append(Voter(inst.lean[person.id], rank[person.id], growth, person.unemployment_risk))
         return voters
 
@@ -270,6 +277,8 @@ class StateGovernmentMixin:
             if objective.lever == lever and not objective.met(objective.value):
                 weight = live.secondary_objective_weight if objective.rank == "secondaire" else 1.0
                 pressure += max(0.0, live.objective_effort) * max(0.0, weight)
+        if live.adaptive_agents:
+            pressure *= self._learned_minister_effort(office, role)
         return pressure
 
     def _close_term(self) -> None:

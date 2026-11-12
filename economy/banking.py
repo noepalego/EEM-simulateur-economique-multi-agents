@@ -78,6 +78,8 @@ class BankingMixin:
         # coussin volontaire : une banque qui a perdu sur ses prêts au cours du cycle exige
         # plus de fonds propres par euro prêté (sa propre décision, pas la règle)
         requirement *= 1.0 + voluntary_buffer(bank, self.live)
+        if self.live.adaptive_agents:
+            requirement *= 1.0 + self._learned_bank_buffer(bank.id)
         return max(0.0, max(0.0, bank.bank_equity) / requirement - exposure)
 
     def credit_capacity(self) -> float:
@@ -226,6 +228,9 @@ class BankingMixin:
         (``_bank_deposit_charges``), payé par chacune au prorata de ses dépôts.
         """
         self._update_bank_loss_rates()
+        if self.live.bank_relationships:
+            # lot S : chaque ménage est rémunéré par sa banque, au taux qu'elle offre
+            return self._pay_relationship_interest()
         deposits = max(0.0, self.ledger.deposits_from_cash(self))
         money = self.ledger.nonbank_cash(self)
         rate, bank_charges = self._bank_deposit_charges()
@@ -343,6 +348,11 @@ class BankingMixin:
         # La marge couvre uniquement l'arrondi de la somme des capacités.
         if not opening_balance and (capacity <= 0.0 or amount > capacity + 8 * math.ulp(capacity)):
             raise ValueError("Capacité bancaire insuffisante")
+        if self.live.bank_relationships:
+            # lot S : la banque principale de l'emprunteur d'abord, puis les autres
+            for bank, part in self._allocate_loan(borrower_id, amount):
+                bank.bank_loan_accounts[borrower_id] = bank.bank_loan_accounts.get(borrower_id, 0.0) + part
+            return
         for bank, weight in self._capacity_weights():
             bank.bank_loan_accounts[borrower_id] = (
                 bank.bank_loan_accounts.get(borrower_id, 0.0) + amount * weight
@@ -446,6 +456,7 @@ class BankingMixin:
         self, previous_debts: dict[str, float]
     ) -> None:
         companies_by_id = {company.id: company for company in self.companies}
+        banks = [company for company in self.companies if company.sector == "bank"]
         for borrower_id, previous_debt in previous_debts.items():
             borrower = companies_by_id.get(borrower_id)
             if borrower is None:
@@ -454,9 +465,8 @@ class BankingMixin:
                 continue
             lenders = [
                 bank
-                for bank in self.companies
-                if bank.sector == "bank"
-                and bank.bank_loan_accounts.get(borrower_id, 0.0) > 0.0
+                for bank in banks
+                if bank.bank_loan_accounts.get(borrower_id, 0.0) > 0.0
             ]
             total_booked = sum(
                 bank.bank_loan_accounts[borrower_id] for bank in lenders
@@ -619,7 +629,7 @@ class BankingMixin:
                 hole = -bank.bank_equity
                 public = self._public_share_of_bank_hole(hole)
                 bank.bond_holdings += public
-                self._haircut_deposits(hole - public)
+                self._haircut_deposits(hole - public, bank)
                 bank.bank_equity = 0.0
                 self._log_resolution(bank.id, "bank_last", public_cost=public,
                                      depositor_loss=hole - public)
@@ -705,7 +715,7 @@ class BankingMixin:
         créanciers puis les déposants absorbent la perte)."""
         return min(hole, self.live.bank_bailout_cap_gdp * self._annual_gdp())
 
-    def _haircut_deposits(self, loss: float) -> float:
+    def _haircut_deposits(self, loss: float, bank=None) -> float:
         """Perte imposée aux déposants (ménages et entreprises, au prorata de leurs dépôts).
 
         Le dépôt détruit correspond au trou de fonds propres non comblé : la
@@ -713,6 +723,9 @@ class BankingMixin:
         """
         if loss <= 0.0:
             return 0.0
+        if bank is not None and self.live.bank_relationships:
+            # lot S : les clients de la banque en cause d'abord
+            return self._localized_haircut(loss, bank)
         holders = [p for p in self.people if p.cash > 0.0] + [
             c for c in self.companies if c.sector != "bank" and c.cash > 0.0
         ]
@@ -829,6 +842,9 @@ class BankingMixin:
         failed_bank.bank_equity = 0.0
         failed_bank.bank_loan_accounts.clear()
         failed_bank.active = False
+        if self.live.bank_relationships:
+            # lot S : ses clients suivent leurs comptes chez le repreneur
+            self._transfer_clients(failed_bank, receiver)
         failed_bank.exit_reason = "resolved"
         failed_bank.exit_month = self.month
         failed_bank.stock_price = 0.0

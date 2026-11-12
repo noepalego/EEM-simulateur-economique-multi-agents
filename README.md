@@ -1,18 +1,30 @@
 # Économie en mouvement
 
-**Une économie entière simulée mois par mois : des centaines de ménages, des dizaines
-d'entreprises, des banques, un État élu et une banque centrale, qui décident chacun selon
-leurs propres règles. Personne ne fixe le PIB, le chômage ou l'inflation : ils résultent
-des décisions des agents.**
+**Une économie simulée mois par mois : des ménages, des entreprises, des banques,
+un gouvernement élu et une banque centrale prennent leurs propres décisions. Le PIB,
+le chômage et l’inflation émergent de leurs interactions.**
+
+Le scénario historique documenté ici part de **500 ménages et 24 entreprises**, active les
+**mécanismes des lots C à K**, dont les **objectifs ministériels enrichis** et le **régime de propriété**, et applique
+une **croissance démographique de 0,5 % par mois**, plafonnée à **+100 %**. Après la chauffe,
+il reste 20 mois avant d’atteindre **1 000 ménages**. Les graphiques suivent trois graines
+pendant **400 mois**. [Réglages et résultats](#7-le-scénario-complet-en-chiffres) ·
+[Statistiques détaillées](docs/statistiques_scenario_complet.md).
+
+Les **lots L à S** ajoutent un monde de quatre régions au plus, les médias, les travailleurs
+frontaliers et déménagements, les rachats multirégionaux, la concurrence fiscale, l'apprentissage
+et les relations bancaires individuelles. Ils sont **désactivés au démarrage**. Leur protocole
+et leurs mesures sont séparés du scénario historique : [rapport de livraison](results/lot_l_monde/RESUME.md).
 
 <p align="center">
-  <img src="docs/images/chronologie_temoin.png" width="820"
-       alt="Chronologie d'une simulation : PIB réel, chômage, inflation et gouvernements élus sur 33 ans">
+  <img src="docs/images/complet_chronologie.png" width="900"
+       alt="Population, PIB réel total et par ménage, chômage, inflation et taux directeur : médiane et étendue des trois graines sur 400 mois">
 </p>
 
 - **Multi-agents** : chaque ménage, entreprise et banque est un objet avec sa trésorerie, ses dettes,
   ses titres, son emploi ou ses salariés.
-- **Mensuel et reproductible** : une graine donne exactement la même histoire, au bit près.
+- **Mensuel et reproductible** : les réglages, la graine, la version du moteur et
+  l’environnement d’exécution définissent la trajectoire.
 - **Monnaie cohérente** : la monnaie naît du crédit bancaire, chaque paiement a une contrepartie,
   et les bilans sont rapprochés tous les mois.
 - **Politique endogène** : les ménages votent tous les cinq ans. Le gouvernement élu nomme
@@ -22,7 +34,7 @@ des décisions des agents.**
   l'État prélève des droits de succession.
 - **Interface Streamlit** : on peut tout observer et intervenir en cours de route, par exemple
   donner de l'argent à un ménage, imposer un gouvernement ou forcer un taux d'impôt.
-- **Moteur en Python pur** (bibliothèque standard), environ 16 000 lignes, et plus de 500 tests.
+- **Moteur en Python pur** (bibliothèque standard) et une suite de plus de 600 tests.
 
 > Les crises, faillites, pénuries et récessions font partie des résultats possibles : le modèle
 > n'est pas recalibré pour les éviter.
@@ -37,7 +49,7 @@ des décisions des agents.**
 4. [Un mois de simulation, phase par phase](#4-un-mois-de-simulation-phase-par-phase)
 5. [Les mécanismes en détail](#5-les-mécanismes-en-détail)
 6. [L'État et la politique](#6-létat-et-la-politique)
-7. [Expérience : toujours la gauche, toujours la droite, ou des élections ?](#7-expérience--toujours-la-gauche-toujours-la-droite-ou-des-élections-)
+7. [Le scénario complet en chiffres](#7-le-scénario-complet-en-chiffres)
 8. [L'interface](#8-linterface)
 9. [Utiliser le moteur en Python](#9-utiliser-le-moteur-en-python)
 10. [Organisation du code](#10-organisation-du-code)
@@ -62,7 +74,15 @@ Dans la barre latérale, réglez les conditions de départ puis cliquez sur
 **Réinitialiser la simulation**. **Un mois** fait avancer d'une période ; **Avancer** en
 enchaîne plusieurs. Au démarrage, le moteur simule d'abord **120 mois de chauffe** (dix ans)
 pour que l'économie trouve son propre régime avant l'observation. Le résultat de la chauffe est
-mis en cache dans `.cache/` : le deuxième démarrage est immédiat.
+mis en cache dans `.cache/` : une réinitialisation avec le même code et les mêmes réglages
+réutilise cet état.
+
+Pour rejouer les mesures de ce README dans l’interface, appliquez les
+[réglages du scénario complet](#réglages-et-protocole) avant la réinitialisation.
+Gardez le monde, les médias, les relations bancaires individuelles et les agents apprenants
+désactivés pour reproduire ces anciens graphiques. Pour explorer les nouveautés, **Tout activer**
+puis **Réinitialiser** ouvre le monde ; choisissez la **Région observée** et consultez **Monde**.
+Les commandes d'avance font progresser toutes les régions simultanément.
 
 Pour les graphiques et les expériences (Matplotlib) :
 
@@ -74,11 +94,11 @@ python -m pip install -r requirements-docs.txt
 
 ## 2. Les agents
 
-| Agent | Nombre au départ | Ce qu'il possède | Ce qu'il décide |
+| Agent | Avant la chauffe du scénario complet | Ce qu'il possède | Ce qu'il décide |
 |---|---|---|---|
-| **Ménages** | 240 (environ 360 après 30 ans) | trésorerie, compétence, métier, âge, logement, actions, obligations, dettes | travailler, consommer, épargner, placer, acheter ou louer un logement, devenir bailleur, se reconvertir, créer une entreprise, voter |
-| **Entreprises** | 3 par secteur, 8 secteurs | stocks, capacité de production, centrales, technologie, salariés, dettes, titres | produire, fixer prix et salaires, embaucher, licencier, investir, emprunter, verser des dividendes, racheter un concurrent |
-| **Banques** | 3 (secteur « Banque ») | prêts, dépôts, fonds propres, titres publics | prêter selon leurs fonds propres, fixer leurs marges, absorber les pertes ; elles peuvent faire faillite et être résolues |
+| **Ménages** | 500 ; plafond de 1 000 | trésorerie, compétence, métier, âge, logement, actions, obligations, dettes | travailler, consommer, épargner, placer, acheter ou louer un logement, devenir bailleur, se reconvertir, créer une entreprise, voter |
+| **Entreprises** | 24, soit 3 dans chacun des 8 secteurs, banques comprises | stocks, capacité de production, centrales, technologie, salariés, dettes, titres | produire, fixer prix et salaires, embaucher, licencier, investir, emprunter, verser des dividendes, racheter un concurrent |
+| **Banques** | 3 des 24 entreprises | prêts, dépôts, fonds propres, titres publics | prêter selon leurs fonds propres, fixer leurs marges, absorber les pertes ; elles peuvent faire faillite et être résolues |
 | **Banque centrale** | 1 | réserves, avances aux banques | taux directeur par une règle de Taylor lissée, avances de réserves |
 | **État** | 1 | trésorerie, dette, participations, fonction publique | voir [§ 6](#6-létat-et-la-politique) : élection, ministres, budget, impôts, salaire minimum, politique industrielle |
 
@@ -89,12 +109,14 @@ commercial, financier, bâtiment, extracteur et agent. Chaque secteur demande so
 mélange de métiers, et un ménage au chômage peut se reconvertir.
 
 <p align="center">
-  <img src="docs/images/secteurs.png" width="820"
-       alt="Chiffre d'affaires et emplois par secteur">
+  <img src="docs/images/complet_secteurs.png" width="900"
+       alt="Chiffre d’affaires et emplois dans les huit secteurs et la fonction publique, moyenne des 120 derniers mois de la graine 1001">
 </p>
 
-L'alimentation, les biens courants et les services emploient la plupart des ménages. L'énergie, la
-technologie et l'immobilier réalisent un chiffre d'affaires important avec peu de salariés.
+Sur les 120 derniers mois de la graine 1001, l’alimentation, les biens courants et les services
+rassemblent environ **599 emplois** en moyenne ; la fonction publique en compte **91**.
+La technologie et l’énergie ont des chiffres d’affaires de **2,39 M** et **2,77 M u.m. par
+mois**, avec environ **5 et 6 emplois**. Le chiffre d’affaires comprend les ventes intermédiaires.
 
 ---
 
@@ -145,36 +167,37 @@ sans salarié ne livre rien et n'encaisse rien : la commande refusée est mesur�
 
 ### Les ordres de grandeur
 
-Les flux mesurés dans une simulation témoin (graine 1001, moyenne des dix dernières années, en
-unités monétaires simulées par mois) :
+Quelques flux du scénario complet, en moyenne sur les mois **281 à 400** de la graine **1001**.
+Les montants sont nominaux ; **u.m.** désigne une unité monétaire simulée.
 
 <p align="center">
-  <img src="docs/images/flux_mensuels.png" width="820" alt="Flux mensuels moyens entre agents">
+  <img src="docs/images/complet_flux.png" width="900" alt="Flux mensuels moyens : salaires, dividendes, loyers, impôts, achats publics et transferts">
 </p>
 
-Le PIB nominal mensuel vaut alors environ 18 M. Les salaires (environ 10 M) financent l'essentiel
-de la consommation : alimentation, biens et services. Les dividendes, à environ 3,7 M, sont
-importants. Ils reviennent aux ménages actionnaires, ce qui fait de la Bourse un canal majeur de
-répartition des revenus.
+La masse salariale estimée est de **44,67 M u.m. par mois** (salaire moyen × emplois),
+les dividendes de **16,74 M** et les loyers privés estimés de **7,70 M** (loyer de référence
+× baux occupés). Le graphique juxtapose des flux de différentes natures : une vente peut financer
+des salaires, des impôts et des dividendes, donc les barres ne s’additionnent pas.
 
 ### La monnaie naît du crédit
 
-Aucune monnaie n'est distribuée « d'en haut ». Lorsqu'une banque accorde un prêt, elle crée un
-dépôt du même montant ; un remboursement le détruit. La banque centrale fournit seulement les
-réserves exigées (10 % des dépôts) sous forme d'avances au taux directeur. Son profit revient
-à l'État. Le contrôle mensuel `validate_financial_accounts` vérifie que la trésorerie des agents
-correspond aux billets et aux dépôts inscrits dans les bilans bancaires. L'écart mesuré reste de
-l'ordre de 10⁻⁶ sur des centaines de millions.
+Lorsqu’une banque accorde un prêt, elle crée un dépôt du même montant ; le remboursement
+du principal détruit ce dépôt. La banque centrale peut fournir aux banques les réserves
+exigées (10 % des dépôts au réglage de départ), au taux directeur. Son profit revient à l’État.
+`validate_financial_accounts` rapproche les dettes des emprunteurs avec les créances bancaires
+et la dette publique avec les titres détenus. Le résidu monétaire est un contrôle distinct
+des billets et dépôts : son maximum absolu est de **0,000314 u.m.** sur les trois graines.
 
 <p align="center">
-  <img src="docs/images/monnaie_credit.png" width="820"
-       alt="Dépôts, prêts bancaires, dette immobilière et dette publique">
+  <img src="docs/images/complet_credit.png" width="900"
+       alt="Dépôts, portefeuille bancaire, dettes immobilière et à la consommation, dette publique et solde budgétaire sur 400 mois">
 </p>
 
-Les sauts visibles sont de vrais événements. Vers l'année 18, une faillite bancaire est résolue :
-le portefeuille de prêts chute et la dette publique augmente avec la recapitalisation. Dans cette
-graine, la dette immobilière des ménages s'éteint peu à peu. Le modèle ne force rien : c'est un
-comportement observé, pas un objectif.
+Les trajectoires de crédit divergent fortement. Au mois 400, l’encours des prêts bancaires
+va de **114,52 M** à **1 641,56 M u.m.**, selon la graine. Le registre des résolutions
+distingue les reprises de banques, les interventions sur la dernière banque et les
+recapitalisations de dernier recours. Le [détail comptable](docs/statistiques_scenario_complet.md#5-rapprochements-comptables)
+signale aussi un écart ponctuel dans le livre de trésorerie de l’État, à la graine 1001.
 
 ---
 
@@ -253,8 +276,8 @@ c'est ce qui permet une reproduction exacte.
   recherche, en jugeant la rentabilité au taux d'actualisation du moment. La connaissance
   accumulée fait monter la productivité globale (PGF).
 - **Finance** : crédit d'exploitation, dividendes, émission d'actions, obligations, offres
-  publiques de rachat sur des concurrents moins bien valorisés. Une entreprise ne rachète pas
-  ses propres actions (aucun rachat d'actions par l'émetteur dans le moteur).
+  publiques de rachat sur des concurrents moins bien valorisés. Le régime de propriété permet
+  aussi un rachat ciblé de titres pour constituer les parts salariées (voir [§ 6](#6-létat-et-la-politique)).
 - **Cours de Bourse** : les ordres font bouger le cours (±15 % par mois au plus), rappelé de 18 %
   par mois vers une valeur fondamentale qui mêle fonds propres et bénéfices capitalisés. Par
   défaut, c'est le bénéfice du mois, extrapolé, qui est capitalisé ; avec
@@ -412,6 +435,46 @@ Mesure : `results/lot_g_entreprises/RESUME.md`, section « Lot J ».
 
 ---
 
+### Régions, médias, apprentissage et banques individuelles (lots L à S)
+
+| Lot | Mécanisme | Où l'observer |
+|---|---|---|
+| L | Une à quatre économies avec gouvernements, banques centrales, monnaies et entreprises indépendants. Profils Nord industriel, Sud agricole, Littoral technologique et Bassin minier. Chauffe indépendante, puis isolement réglable avant intégration. | Monde ; sélecteur Région observée |
+| M | Entreprises de médias fondées avec l'argent des ménages : journalistes, abonnements, publicité, propriétaires, ligne éditoriale, biais de perception et enquêtes soumises aux conflits d'intérêts. | Entreprises & bourse → Médias |
+| N | Commandes d'alimentation et de biens sur la production du mois suivant, avantage de prix après transport et change, compensation sans création de monnaie régionale. | Monde : importations, exportations, change et chambres |
+| O | Frontaliers conservant résidence, logement, crédits, consommation et vote ; mandataires salariés dans la région d'emploi. Déménagement après solde du logement et des crédits, avec maintien des actions à l'étranger. | Monde : frontaliers, arrivées et départs ; fiches des ménages |
+| P | Ramassage de titres d'un concurrent étranger, prise de contrôle sans fusion, transmission de productivité et rapatriement des dividendes. | Monde → Groupes & filiales |
+| Q | Filtrage des rachats de secteurs critiques selon la doctrine, vote comparatif et objectif d'impôt sur les sociétés tenant compte des voisins moins imposés. La contrainte budgétaire peut empêcher la baisse. | Monde : orientation, impôts ; État : budget et journal |
+| R | Essais de prix et réinvestissement, imitation des pairs, style transportable des dirigeants ; précaution et goût du risque des ménages ; essais de coussin prudentiel des banques et d'effort des ministres. | Entreprises & bourse → Apprentissage |
+| S | Banque principale par agent, dépôts et encours par clientèle, choix du prêteur, spécialisation, changements de banque, fuite des déposants et décotes localisées. | Entreprises & bourse → Relations bancaires |
+
+L'onglet **Monde** a quatre sous-onglets (`economy/world_views.py`, lectures seules, montants en
+unité commune : monnaie de la région × son taux de change) : **Régions** (totaux du monde, poids
+de chaque région, comparaison dans le temps), **Entreprises du monde** (classement mondial par
+capitalisation, chiffre d'affaires, salariés ou bénéfice ; leader de chaque secteur),
+**Groupes & filiales** (filiales de chaque groupe par région, société mère et part détenue,
+prises de contrôle, titres détenus d'une région à l'autre) et **Fortunes** (ménages les plus
+riches du monde, titres gardés dans une autre région compris).
+
+Tous les réglages sont dans les rubriques **Monde & régions** et **Médias, banques & apprentissage**
+de la barre latérale ; ils s'appliquent à la réinitialisation. **Tout désactiver** retrouve une
+simulation nationale sans ces mécanismes. Le registre exhaustif et les constantes se trouvent dans
+[AUTONOMIE.md](AUTONOMIE.md). Les trois modules internes possèdent leur propre générateur aléatoire.
+
+La compensation réserve les fonds disponibles de chaque payeur avant de résoudre les flux entre
+régions. Une facture non financée ne finance pas une autre facture ; les produits non réglés
+reviennent au stock. L'épargne d'un migrant déjà versée dans une chambre reste une créance jusqu'à
+conversion, sans être comptée une seconde fois comme un apport de liquidité.
+La TVA des importations et les recettes publiques tardives entrent dans le livre de l'État
+du même mois ; la TVA entre également dans les impôts et le PIB publiés.
+
+Les mandataires frontaliers restent hors de la population résidente. Ils occupent des postes
+vacants après le recrutement local et reçoivent salaire et primes, conservés dans un compte de la
+région d'emploi jusqu'à compensation. Le salaire effectivement rapatrié est déclaré et imposé à
+résidence le mois suivant, avant consommation ; aucun salaire bloqué n'est imposé par anticipation.
+Les ministres apprennent seulement avec les **objectifs enrichis** activés. Les banques apprennent
+un coussin supplémentaire, sans pouvoir abaisser l'exigence réglementaire.
+
 ## 6. L'État et la politique
 
 ### L'élection
@@ -558,137 +621,150 @@ Mesure : `results/lot_k_pouvoir/RESUME.md`.
 
 ---
 
-## 7. Expérience : toujours la gauche, toujours la droite, ou des élections ?
+## 7. Le scénario complet en chiffres
 
-Que se passe-t-il si une économie est gouvernée **pendant 33 ans** uniquement par la droite la
-plus libérale, uniquement par la gauche la plus sociale, ou par les gouvernements que ses
-ménages élisent ?
+### Réglages et protocole
 
-### Protocole
+| Où régler | Valeur utilisée |
+|---|---|
+| **Population & entreprises** | **500 ménages**, **3 entreprises par secteur** (24 au total), **10 ans de chauffe** |
+| **Croissance démographique mensuelle** | **0,5 %**, soit environ **6,17 % par an** tant que le plafond n’est pas atteint, avant les effets d’arrondi |
+| **Plafond de croissance de la population** | **100 %** au-dessus de la population initiale, soit **1 000 ménages** au maximum |
+| Bouton **Tout activer** | **24 mécanismes sur 24**, dont la fermeture des entreprises sans salarié après **6 mois** |
+| **État institutionnel** | Cocher **Objectifs ministériels enrichis** et **Régime de propriété selon l’orientation**. L’État institutionnel est déjà le modèle utilisé par l’interface. |
+| **Politique publique & hasard** | Garder **Élections et alternance politique** et **Vote économique** actifs. Mandats de **5 ans**, sans orientation imposée. |
+| **Concurrence, dette & entreprises** | Activer aussi les leviers à curseur pour cette expérience : **22 %** de remise maximale sur le volume, **10 %** de frais de structure et **3 mois** de lissage du bénéfice pour la valeur fondamentale des actions. |
 
-- **10 graines** (1001 à 1010), configuration par défaut, **120 mois de chauffe identiques**,
-  puis **400 mois observés**. Les statistiques portent sur les 33 années complètes.
-- **Droite** : un gouvernement d'orientation **0** est imposé au premier mois observé, puis à
-  chaque élection, via le mode intervention.
-- **Gauche** : la même chose avec l'orientation **100**.
-- **Témoin** : élections normales. Les orientations élues vont de 21 à 81.
-- **Rien d'autre ne change** : chaque gouvernement applique sa propre doctrine (impôts,
-  allocations, salaire minimum, budget, politique industrielle).
-- La comparaison est **appariée** : même graine et même point de départ pour les trois
-  scénarios. Les 30 simulations se terminent sans valeur non finie, avec un écart comptable
-  maximal de 10⁻⁶.
+Les trois derniers réglages sont des choix de l’expérience. Les autres curseurs et la liste
+des secteurs critiques restent à leur valeur de base. La campagne utilise les graines
+**1001, 1002 et 1003**, avec **120 mois de chauffe** et **400 mois observés** par graine
+(33 ans et 4 mois), sans intervention manuelle. Le **mois 0** est la fin de la chauffe ;
+il sert de point de départ des graphiques et ne compte pas dans les moyennes ni dans les
+cumuls. Dans l’interface, choisir la graine, cliquer sur **Réinitialiser la simulation**,
+puis avancer par lots de **120 + 120 + 120 + 40 mois**.
 
-Pour reproduire l'expérience (environ 5 minutes sur 8 cœurs) :
+Les graphiques de trajectoires montrent la médiane **à chaque mois** et une bande entre
+la plus basse et la plus haute des trois valeurs. Cette bande donne l’étendue observée.
+Les graphiques de flux et de secteurs détaillent la graine 1001. Pour reproduire la
+campagne et régénérer le rapport (Python 3.13.5, `PYTHONHASHSEED=0`) :
 
-```bash
-python experiences/gauche_droite_campagne.py 400 1001 1002 1003 1004 1005 1006 1007 1008 1009 1010 --jobs 8
-python experiences/gauche_droite_analyse.py
-python docs/figures_readme.py
+```powershell
+python -m pip install -r requirements-docs.txt
+$env:PYTHONHASHSEED = "0"
+python docs/scenario_complet.py --jobs 3
+python docs/figures_scenario_complet.py
 ```
 
-### Les trajectoires
+Sous Bash, utiliser `export PYTHONHASHSEED=0`. Les exports JSON et CSV de
+`results/readme_complet/` couvrent les relevés des marchés, de l’État, des entreprises,
+du pouvoir et les objectifs de chaque ministre. L’[annexe statistique](docs/statistiques_scenario_complet.md)
+donne les extrêmes et moyennes, les résultats par secteur et service public, le détail des
+élections et des objectifs, ainsi que les rapprochements comptables.
 
-<p align="center">
-  <img src="docs/images/gd_trajectoires.png" width="900"
-       alt="Trajectoires de neuf indicateurs pour la droite, la gauche et le témoin">
-</p>
+### Activité, emploi et niveau de vie
 
-Le témoin oscille autour du centre, au gré des alternances :
+Dans les trois graines, la population passe de **500 à 909** pendant la chauffe, puis
+atteint **1 000 au mois 20**. Les décès changent le chef du ménage, pas le nombre de
+lignées. Au-delà du mois 20, les différences de PIB total reflètent donc aussi des
+différences de PIB par ménage, puisque les trois populations ont la même taille.
 
-<p align="center">
-  <img src="docs/images/gd_orientations_temoin.png" width="820"
-       alt="Orientation des gouvernements élus dans les dix simulations témoins">
-</p>
+| Indicateur sur les 400 mois observés | Graine 1001 | Graine 1002 | Graine 1003 |
+|---|---:|---:|---:|
+| PIB réel mensuel moyen (M u.m.) | 5,03 | 7,77 | 8,89 |
+| PIB réel mensuel moyen par ménage (u.m.) | 5 046 | 7 801 | 8 917 |
+| Chômage moyen | 9,9 % | 5,0 % | 3,8 % |
+| Pic de chômage | 36,3 % (M395) | 42,0 % (M126) | 5,9 % (M273) |
+| Inflation sur 12 mois, moyenne des valeurs disponibles | 5,7 % | 10,2 % | 9,8 % |
+| Salaire réel moyen (u.m.) | 2 405 | 2 081 | 2 226 |
+| Pauvreté relative moyenne | 8,9 % | 7,1 % | 4,5 % |
+| Part moyenne de ménages sans logement | 21,3 % | 22,1 % | 21,5 % |
+| Logements dont la construction s’achève (cumul) | 645 | 655 | 616 |
+| Décès et successions (cumul) | 405 | 415 | 416 |
 
-### Les moyennes
+Au mois 400, le chômage est à **35,5 %** dans la graine 1001, contre **3,7 %** et
+**4,3 %** dans les deux autres. La graine 1002 montre qu’une moyenne de 5 % peut
+masquer une crise profonde en cours de trajectoire. La part des ménages sans logement
+est nulle au mois 400 dans les trois graines, alors qu’elle dépasse **20 %** en moyenne
+sur la période. Le graphique des ménages montre quand cette pénurie se résorbe.
 
-<p align="center">
-  <img src="docs/images/gd_indicateurs.png" width="900"
-       alt="Moyennes des principaux indicateurs par scénario">
-</p>
+![Salaire réel, pauvreté relative, Gini du revenu et du patrimoine, concentration et ménages sans logement](docs/images/complet_menages.png)
 
-| Indicateur (moyenne de 10 graines sur 33 ans) | Droite (0) | Témoin | Gauche (100) | Gauche > Droite |
-|---|---:|---:|---:|---:|
-| **Activité** | | | | |
-| PIB réel mensuel | 2,21 M | 2,14 M | 2,07 M | 3/10 |
-| Croissance réelle annuelle | 1,57 % | 1,37 % | 1,61 % | 5/10 |
-| Productivité (PGF en fin de période) | 2,56 | 2,37 | 2,25 | 1/10 |
-| Entreprises actives | 68 | 61 | 54 | 0/10 |
-| Faillites par an | 1,1 | 1,5 | 2,0 | 10/10 |
-| Créations d'entreprises par an | 1,6 | 1,7 | 1,9 | 6/10 |
-| **Emploi et prix** | | | | |
-| Chômage | 4,9 % | 4,8 % | 4,6 % | 2/10 |
-| Inflation annuelle | 3,1 % | 3,6 % | 3,7 % | 9/10 |
-| Salaire réel moyen, 10 dernières années | 3 554 | 3 308 | 3 001 | 0/10 |
-| Salaire minimum / salaire moyen | 12 % | 36 % | 50 % | 10/10 |
-| **Ménages et inégalités** | | | | |
-| Revenu réel total des ménages (transferts compris) | 1,53 M | 1,58 M | 1,61 M | 7/10 |
-| Taux de pauvreté (< 60 % du revenu médian) | 20,5 % | 10,7 % | 0,2 % | 0/10 |
-| Gini du revenu disponible | 0,39 | 0,29 | 0,17 | 0/10 |
-| Gini du patrimoine | 0,45 | 0,38 | 0,26 | 0/10 |
-| Part des 10 % les plus riches | 35,7 % | 29,5 % | 22,3 % | 0/10 |
-| Part du 1 % le plus riche | 9,2 % | 7,0 % | 4,6 % | 0/10 |
-| Patrimoine médian réel, 10 dernières années | 259 k | 268 k | 206 k | 0/10 |
-| **État** | | | | |
-| Dépenses publiques / PIB | 6,7 % | 17,5 % | 24,6 % | 10/10 |
-| Recettes publiques / PIB | 7,5 % | 17,8 % | 23,8 % | 10/10 |
-| Dette publique / PIB annuel (fin) | 0,1 % | 12 % | 26 % | 10/10 |
-| Emplois publics | 13 | 19 | 25 | 10/10 |
+### Entreprises, marchés et ressources
 
-La dernière colonne indique le nombre de graines où la valeur obtenue à gauche dépasse celle
-obtenue à droite. 10/10 ou 0/10 signifie que l'écart va dans le même sens dans toutes les
-histoires simulées.
+| Indicateur | Période | Graine 1001 | Graine 1002 | Graine 1003 |
+|---|---|---:|---:|---:|
+| Entreprises actives, banques comprises | M400 | 140 | 169 | 164 |
+| Dont banques actives | M400 | 7 | 14 | 4 |
+| Filiales actives | M400 | 95 | 110 | 143 |
+| Part de l’emploi privé dans les groupes | M400 | 91,0 % | 96,4 % | 99,9 % |
+| Actif des fonds (M u.m.) | M400 | 4,06 | 70,27 | 15,68 |
+| Obligations d’entreprise en circulation (M u.m.) | M400 | 1,41 | 25,51 | 8,91 |
+| Demande d’énergie non satisfaite | Moyenne mensuelle | 14,8 % | 29,0 % | 21,4 % |
+| Créations par des ménages | Cumul | 247 | 543 | 548 |
+| Faillites | Cumul | 111 | 221 | 223 |
+| Filiales créées | Cumul | 47 | 107 | 150 |
+| Rachats entre secteurs | Cumul | 99 | 171 | 174 |
+| Accords salariaux / grèves | Cumul | 187 / 48 | 205 / 67 | 210 / 71 |
+| Exportations / importations (M u.m.) | Cumul | 313,07 / 308,94 | 1 733,77 / 1 735,39 | 1 853,65 / 1 841,24 |
 
-### Graine par graine
+Une filiale active reste une entreprise distincte : un rachat entre secteurs peut donc
+augmenter la part d’emploi des groupes sans supprimer une entreprise du registre. Les
+faillites, fermetures sans salarié, fusions et reprises ont des compteurs distincts.
 
-<p align="center">
-  <img src="docs/images/gd_ecarts_apparies.png" width="860"
-       alt="Écarts gauche moins droite, graine par graine">
-</p>
+![Entreprises actives, filiales, actifs des fonds, obligations privées, solde commercial et demande d’énergie non satisfaite](docs/images/complet_entreprises.png)
 
-### Ce qu'on en retient
+### État, banques et pouvoir
 
-**La droite produit plus ; la gauche partage plus.** Dans ce modèle, la différence porte
-surtout sur le **niveau** de production et sa **répartition**, pas sur le rythme de croissance.
+| Indicateur | Période | Graine 1001 | Graine 1002 | Graine 1003 |
+|---|---|---:|---:|---:|
+| Dette publique / PIB annuel | M400 | 29,0 % | 35,0 % | 0,0 % |
+| Dépôts bancaires (M u.m.) | M400 | 151,01 | 2 405,12 | 1 475,83 |
+| Prêts bancaires (M u.m.) | M400 | 114,52 | 1 352,53 | 1 641,56 |
+| Emplois publics | M400 | 115 | 91 | 54 |
+| Qualité de l’éducation publique | M400 | 75,1 % | 50,1 % | 39,3 % |
+| Reprises de banques (code `bank`) | Cumul | 49 | 75 | 98 |
+| Recapitalisations de dernier recours (code `bank_recap`) | Cumul | 100 | 136 | 108 |
+| Aides aux entreprises (M u.m.) | Cumul | 70,53 | 214,74 | 180,53 |
+| Dont aides de faveur (M u.m.) | Cumul | 3,32 | 1,85 | 13,81 |
+| Lois de pouvoir votées / abrogées | Cumul | 11 / 8 | 5 / 5 | 10 / 6 |
+| Scandales révélés | Cumul | 24 | 3 | 18 |
+| Élections / alternances | Cumul | 7 / 2 | 7 / 2 | 7 / 3 |
+| Objectifs principaux / secondaires atteints | Mandats clos | 12 / 16 | 9 / 12 | 10 / 13 |
 
-- **Pour la droite, les écarts sont réguliers mais modérés.** Le PIB réel est plus élevé d'environ
-  7 %, la productivité de 14 % en fin de période et le salaire réel de 18 % sur la dernière
-  décennie (10 graines sur 10). L'inflation est plus basse, les entreprises sont plus nombreuses
-  et font moins faillite. L'État est minimal (7 % du PIB) et sans dette.
-- **Pour la gauche, les écarts sont très marqués.** La pauvreté disparaît presque (0,2 % contre
-  20 %). Les inégalités de revenu disponible sont **divisées par plus de deux** (Gini 0,17 contre
-  0,39). Le chômage est un peu plus bas, et le revenu réel total des ménages plus élevé, transferts
-  compris.
-- **La gauche a des contreparties.** Le salaire minimum atteint la moitié du salaire moyen. Les
-  faillites sont presque deux fois plus fréquentes (2,0 contre 1,1 par an) et il y a moins
-  d'entreprises, donc plus de concentration.
-  La dette publique monte à 26 % du PIB et le patrimoine médian réel est **plus bas**
-  (−20 %, 10 graines sur 10).
-- **Les deux régimes croissent au même rythme** (environ 1,6 % par an) **et aucun ne
-  s'effondre.** Les pires années (−20 % à −25 % de PIB réel) se rencontrent dans les trois
-  scénarios avec une fréquence comparable.
-- **Le témoin se situe entre les deux** sur presque tous les indicateurs. Il obtient le meilleur
-  patrimoine médian, mais la croissance la plus faible.
-- Fait notable visible sur les trajectoires : le chômage remonte en fin de période sous la droite
-  (vers 6–7 % après l'année 25), alors qu'il reste vers 4 % sous la gauche.
+Le régime de propriété suit l’orientation du gouvernement avec un délai : un changement
+de bout en bout prend 48 mois. Le graphique distingue donc l’élection (changement par
+paliers) de la mise en œuvre progressive. Un vote peut reconduire le camp sortant tout
+en faisant évoluer son orientation.
 
-> ⚠️ **Ce sont les conséquences des règles de ce modèle, pas une mesure du monde réel.** Les
-> doctrines sont des hypothèses codées dans `economy/institutions.py`. Les gouvernements imposés
-> sont extrêmes et durables (33 ans sans alternance), ce qu'aucune élection ne produit. Dix
-> graines donnent des comparaisons reproductibles, pas une validation statistique.
+![Orientation des gouvernements, régime de propriété effectif, emplois et éducation publics, lois de pouvoir et aides](docs/images/complet_institutions.png)
+
+**Comment lire ces chiffres.** L’inflation sur 12 mois compare l’IPC à celui du même
+mois de l’année précédente (premier point au mois 12, cible annuelle composée
+d’environ 2,43 %). Le taux directeur est annualisé en multipliant le taux mensuel
+par 12. La pauvreté est relative au revenu disponible médian du mois (seuil de 60 %).
+Le chômage de longue durée est rapporté à tous les ménages. La pénurie d’énergie
+rapporte les unités non servies à la somme des unités livrées et non servies. Les
+patrimoines, dettes et flux monétaires sont nominaux, sauf indication contraire.
+
+Ces trois trajectoires montrent ce qui peut se produire avec les mécanismes combinés.
+Pour mesurer l’effet propre d’une option, il faut la comparer à un témoin apparié,
+à graine et réglages identiques. La [campagne historique gauche/droite](docs/experience_gauche_droite.md)
+illustre cette méthode sur une configuration antérieure.
 
 ---
 
 ## 8. L'interface
 
-`python -m streamlit run main.py` ouvre cinq onglets :
+`python -m streamlit run main.py` ouvre six onglets :
 
 | Onglet | Contenu |
 |---|---|
-| **Vue d'ensemble** | PIB, chômage, inflation, salaires, prix, inégalités, logement, monnaie, événements du mois |
-| **État** | gouvernement et cabinet, budget, fonction publique, salaire minimum, industrie, journal des décisions, et **Pouvoir & influence** (lot K) en cinq sous-onglets : **Influence** (les dix personnes les plus influentes et ce qui compose leur score ; affiché même sans réglage), **Popularité & élections** (traits, notoriété et opinion du cabinet, candidats, élections passées), **Lois de pouvoir** (lois en vigueur, capital politique), **Aides & favoritisme** (aides versées, scandales révélés, vue omnisciente), **Réseaux** (dons, lobbying, conseillers, dynasties, événements) |
-| **Entreprises & bourse** | cinq sous-onglets : **Toutes les entreprises** (résumé par secteur, une ligne par entreprise en activité), **Fiche d'une entreprise** (indicateurs, bilan, principaux actionnaires ou conseil, groupe : société mère, filiales, entreprises absorbées, équipe, historiques), **Groupes & filiales** (ce que chaque filiale a coûté et rapporté, poids des groupes dans l'emploi, filiales sorties, fusions, magasins), **Fonds d'investissement** (actif, valeur de la part, épargne confiée, apports, frais, participations en portefeuille et soldées), **Bourse** (cours des entreprises cotées), **Obligations** (encours, émetteurs, taux, flux), **Commerce extérieur** (importations, exportations, taux de change), **Syndicats** (accords par secteur, grèves, pouvoir de négociation) |
+| **Vue d'ensemble** | **Marchés** (prix, salaires, PIB, inflation, taux et résultats du mois), **Fortunes & concentration** (inégalités et palmarès), **Secteurs & ressources** (emploi, ventes, stocks et ressources) |
+| **Monde** | Comparaison des régions, chômage, salaires, PIB par ménage, impôts, change, échanges, frontaliers, migrations, groupes étrangers, compensation et journal |
+| **État** | **Gouvernement** (cabinet et objectifs), **Budget**, **Fonction publique**, **Salaire minimum**, **Industrie**, **Journal** et **Pouvoir & influence** : classement et détail de l’influence, popularité et élections, lois de pouvoir, aides et scandales, réseaux (dons, lobbying, conseillers et dynasties) |
+| **Entreprises & bourse** | **Toutes les entreprises**, **Fiche d’une entreprise**, **Groupes & filiales**, **Fonds d’investissement**, **Bourse**, **Obligations**, **Commerce extérieur**, **Syndicats**, **Médias** (audience, recettes et enquêtes), **Relations bancaires** (clients, dépôts, encours et changements), **Apprentissage** (traits et essais des agents) |
 | **Ménages** | trois sous-onglets : **Vue d'ensemble** (indicateurs, répartition des fortunes), **Fiche d'un ménage** (revenus, patrimoine, actions, parts de fonds, expérience, état de ses logements, historiques), **Tous les ménages** (une ligne par ménage, triable) |
+| **Modèle & réglages** | comparaison des paramètres de base et en vigueur, description des mécanismes |
 
 Les entreprises fermées ou absorbées ne sont plus listées ; une entreprise absorbée par fusion
 apparaît dans la fiche de son acquéreur et dans « Groupes & filiales », qui dessine aussi
@@ -704,7 +780,28 @@ puis des bornes rondes calculées sur le cœur des fortunes positives (quantiles
 échelle logarithmique (1-1,5-2-3-5-7 par décade, ou plus grossière) s'il couvre plus d'une
 décade, régulière sinon — et deux classes ouvertes pour les queues. La légende donne la
 médiane, l'étendue et le nombre de ménages en patrimoine négatif.
-| **Modèle & réglages** | paramètres, description des mécanismes |
+
+La barre latérale et le tableau de bord s’exécutent dans des fragments Streamlit distincts.
+Sur les versions qui prennent en charge les onglets dynamiques, les panneaux calculent leur
+contenu à l’ouverture. Les graphiques transmettent leurs données au format Arrow ; les cours
+et les fortunes sont réutilisés pour un même état de la simulation. Les séries restent
+consultables sur toute la période observée. Avancer, réinitialiser ou intervenir actualise
+les résultats affichés.
+
+**Préparer l’avance pendant la lecture**, activé par défaut sous les commandes d'avance,
+calcule sur une copie privée la période choisie (jusqu'à 120 mois), en gardant le premier
+mois pour le bouton « Un mois ». Un clic utilise ce qui est déjà prêt, avec exactement le même
+état et les mêmes tirages aléatoires : l'avance entière si elle est terminée, sinon les mois
+déjà calculés, et seuls les mois restants sont calculés avec une progression par mois. Une
+intervention, une avance ou tout changement de l'état du moteur abandonne la préparation ; un
+changement d'onglet ou de filtre la laisse continuer. Cette option utilise du processeur et
+de la mémoire pendant la consultation ; décochez-la pour privilégier ces ressources. Elle se
+désactive automatiquement pour les états trop volumineux (au-delà de 64 Mio sérialisés) et
+pendant un diagnostic. Les historiques restent complets.
+
+À la réinitialisation d'un monde à plusieurs régions, les chauffes des régions, indépendantes,
+sont calculées en parallèle par des processus auxiliaires (`economy/warmup_worker.py`), un cœur
+par région ; les états obtenus sont identiques à ceux d'un calcul l'un après l'autre.
 
 **Mode intervention 🛠** : sans réinitialiser la simulation, vous pouvez :
 
@@ -748,10 +845,35 @@ for month in range(120):
 request_orientation(sim, 100.0)   # impose un gouvernement social au mois suivant
 ```
 
+Pour utiliser le scénario de ce README, importer
+`configuration` depuis `docs.scenario_complet` et construire
+`EconomySimulation(configuration(seed=1001))`.
+
 Tous les paramètres sont des champs de `SimulationConfig` (`economy/models.py`), par exemple
 `population_size`, `companies_per_sector`, `warmup_months`, `election_period_months`,
 `vat_rate`, `income_tax_rate`, `reserve_requirement`, `capital_requirement`, `inflation_target`,
 `mortality_level` ou `policy_strength`.
+
+Un monde à quatre régions, initialement isolées pendant 24 mois :
+
+```python
+from economy.world import World, WorldConfig
+
+world = World(WorldConfig(
+    base=SimulationConfig(seed=1001, media_sector=True,
+                          bank_relationships=True, adaptive_agents=True,
+                          enriched_objectives=True),
+    regions=4, integration_month=24,
+))
+for _ in range(120):
+    world.step()                       # un mois pour toutes les régions
+print(world.region_table())
+print(world.foreign_groups())
+print(world.money_residuals())
+```
+
+Pour retrouver exactement une simulation nationale :
+`World(WorldConfig(base=config, regions=1, profiles=()))`.
 
 Outils en ligne de commande :
 
@@ -790,6 +912,11 @@ economy/                   Moteur, sans dépendance à Streamlit
 ├── enterprise.py          Expérience, gros entretien, préférences et données, filiales, rachats entre
 │                          secteurs, magasins, non cotées et fonds des banques (lots G à I)
 ├── macro.py               Obligations d'entreprise, commerce extérieur, négociation collective (lot J)
+├── world.py, world_region.py   Régions, compensation, commerce, frontaliers, migrations,
+│                          groupes multirégionaux et politiques comparées (lots L, N à Q)
+├── media.py               Entreprises de médias, publicité, audience et enquêtes (lot M)
+├── learning.py            Apprentissage des entreprises, ménages, banques et ministres (lot R)
+├── bank_relations.py      Clientèle bancaire, choix du prêteur et financement (lot S)
 ├── power.py               Influence, popularité, élection à candidats, lois de pouvoir, aides aux
 │                          entreprises, favoritisme, lobbying, pantouflage, dynasties (lot K)
 ├── state_government.py    Gouvernement, cabinet, journal
@@ -800,9 +927,13 @@ economy/                   Moteur, sans dépendance à Streamlit
 ├── demography.py          Âge, décès, successions
 ├── interventions.py       Mode intervention
 ├── ledger.py, payments.py Bilans consolidés, transferts sécurisés
-└── warmup_cache.py        Cache de la chauffe
+├── warmup_cache.py        Cache de la chauffe, chauffes des régions en parallèle
+├── warmup_worker.py       Processus auxiliaire d'une chauffe
+└── advance_cache.py       Préparation des prochaines avances dans l'interface
 experiences/               Campagne gauche / droite / témoin
-docs/figures_readme.py     Graphiques de ce README (docs/images/)
+docs/scenario_complet.py   Configuration, campagne et exports CSV/JSON
+docs/figures_scenario_complet.py   Graphiques et annexe statistique de ce README
+docs/figures_readme.py     Graphiques de la campagne historique
 docs/make_charts.py        Cinq graphiques d'une simulation
 evaluate.py, experiments.py, realism_probe.py, diagnose.py, autonomy_probe.py
 diagnostic/                Sondes réutilisables (lots de variantes, tableaux de bord)
@@ -820,6 +951,8 @@ python run_tests.py -j 4      # toute la suite, en parallèle
 python identity_check.py      # 5 trajectoires de référence, comparées au bit près
 python performance_probe.py identity --output results/identity_before
 python performance_probe.py ui --repeats 1 --output results/ui   # parcours de l'interface
+python results/lot_l_monde/parcours_interface.py  # quatre régions, options et retour au témoin
+python results/lot_l_monde/comparaison.py --months 400 --jobs 4  # 8 variantes × 5 graines
 python experiences/gauche_droite_campagne.py 400 1001 1002 1003 1004 1005 --output lot_e_propriete/active --set ownership_regime=1
 python experiences/gauche_droite_analyse.py lot_e_propriete/active
 ```
@@ -835,8 +968,17 @@ fusion ; le parcours UI, comparé avec les exclusions, reste identique. `python 
 l'interface avec les huit mécanismes du lot G activés ;
 `python results/lot_g_entreprises/comparaison.py 400 1001 1002 1003 1004 1005` refait la mesure.
 
-- La suite contient plus de 500 tests : mécanismes, cohérence comptable, stabilité, État,
+- La suite contient 690 tests : mécanismes, cohérence comptable, stabilité, État,
   interventions et régression.
+- `tests/test_advance_cache.py` contrôle l'identité des avances préparées, leur annulation,
+  l'isolation des copies et des régions, la sérialisation des comptes de prêts, l'attribution
+  des logements et la recherche exacte des préférences. `performance_probe.py ui` désactive
+  la préparation pour mesurer les clics sans calcul concurrent.
+- Les paiements d'un même lot réutilisent leurs poids et normalisations ; les fortunes
+  déjà relevées servent au classement d'influence, et les émissions obligataires réutilisent
+  le bilan de chaque candidat. Les agrégats sectoriels gardent leurs sommes dans le même
+  ordre. Les tests dédiés comparent les états et flux exactement, y compris les diagnostics,
+  les entreprises fermées et les historiques partagés construits via l'API.
 - `identity_check.py` recalcule cinq simulations et compare leur empreinte à
   `identity_reference.json`. Le moindre changement dans l'ordre d'un calcul flottant ou d'un
   tirage est détecté.
@@ -846,14 +988,30 @@ l'interface avec les huit mécanismes du lot G activés ;
   garde parfois des titres de la banque fermée. Le test correspondant est marqué « échec
   attendu » et le lanceur l'affiche explicitement.
 
+### Optimisations du moteur et de l’interface
+
+Le moteur réutilise les index de sociétés et de banques lors des paiements, rapprochements
+et rachats. En Bourse, la préparation des ordres et des dividendes parcourt moins de
+portefeuilles ; la valorisation des fortunes réutilise les cours et le tri des revenus.
+Les comparaisons avant/après ont vérifié les trajectoires et les états complets à réglages
+identiques.
+
+Les mesures locales, distinctes de la campagne à 500 ménages, donnent **4,3 % à 9,4 %**
+de temps moteur en moins sur six fenêtres de 25 mois à 240 ménages au départ (Python 3.13.5,
+médiane de cinq répétitions, chauffe hors chronomètre). Côté interface, à la période 313,
+le panneau **Ménages → Vue d’ensemble** est passé de **495 à 287 ms** ; le volume Arrow
+des graphiques de la vue d’ensemble de **870 032 à 142 576 octets**. Ce sont des mesures
+du rendu côté Streamlit 1.66.1, hors calcul du moteur.
+
 ---
 
 ## 12. Limites connues
 
-- **Pas de calibration sur des données réelles.** Les ordres de grandeur sont cohérents entre
-  eux, mais l'unité monétaire est fictive et la population très petite (240 à 360 ménages).
+- **Pas de calibration sur des données réelles.** L’unité monétaire est fictive. Même avec
+  1 000 ménages au plafond, quelques décisions peuvent déplacer un marché entier.
 - **Monnaie en flottants.** Les bilans sont rapprochés au niveau consolidé, sans comptes de dépôt
-  individuels par banque. Une version en centimes existe à l'état de prototype
+  individuels en partie double. Le lot S attribue les soldes et les prêts à des banques nommées,
+  avec compensation mensuelle des écarts de financement. Une version en centimes existe à l'état de prototype
   (`bank_ledger.py`, `bank_opening.py`), mais elle n'est pas branchée.
 - **Stabilité non garantie.** Les récessions longues, la concentration bancaire et les booms de
   crédit qui finissent en faillites restent possibles. Le modèle est sensible à certaines
@@ -881,6 +1039,20 @@ l'interface avec les huit mécanismes du lot G activés ;
   pas de mouvements de capitaux. Une grève ne réduit la production que dans l'alimentation, les
   biens et les matières (les autres secteurs ne mesurent pas le travail heure par heure). Les
   obligations sont détenues au pair, sans marché secondaire ni cours.
+- **Lots L à S : simplifications.** Le commerce régional porte sur l'alimentation et les biens,
+  sans énergie ni matières importées. Les monnaies restent distinctes ; pas d'union monétaire.
+  Le transport est une majoration du prix rendu, sans entreprise logistique autonome. Un migrant
+  vend son logement avant de partir ; les bailleurs et les détenteurs de placements bloqués restent.
+  La conversion de l'épargne, des salaires et des dividendes peut attendre des contre-flux.
+  Les frontaliers sont représentés par un mandataire et leur impôt est payé à résidence, avec
+  un mois de retard ; il n'y a ni convention fiscale bilatérale ni réseau de transport.
+  Les médias emploient les métiers existants ; leur tutelle agit sur la ligne et les enquêtes.
+  Les agents apprennent des heuristiques bornées, sans modèle du futur ni optimisation parfaite.
+  Les essais ministériels portent sur l'effort pour l'objectif principal, pas sur un programme
+  politique complet. Les banques ne règlent pas chaque paiement en temps réel dans un grand livre
+  en partie double. Les titres étrangers sont conservés dans le registre du monde et leurs
+  dividendes sont reversés ; leur valeur n'entre pas encore dans les palmarès patrimoniaux locaux.
+  Mesures sur cinq graines et 400 mois, sans calibration empirique.
 - **Démographie simplifiée.** Il n'y a ni retraites, ni enfants à charge, ni partage d'héritage.
   Un ménage est une lignée, et l'héritier garde l'emploi.
 - **Politique sur un seul axe.** Il n'y a ni partis ni coalitions ; les candidats et les campagnes
@@ -901,10 +1073,14 @@ l'interface avec les huit mécanismes du lot G activés ;
   limite de ±15 %, pendant toute la simulation (pas seulement au début) : le marché est mince et
   la valeur fondamentale capitalise un bénéfice mensuel très variable. Le lissage du bénéfice
   (`stock_earnings_smoothing_months`) calme les cours mais dégrade le long terme : non retenu.
-- **Banque unique.** Dans toutes les graines mesurées, le système finit avec une seule banque ;
-  l'exigence contracyclique et la recapitalisation de dernier recours (lot F1) réduisent les gels
-  du crédit de 79 %, mais pas le nombre de crises, et augmentent les faillites d'entreprises. Les fiches des entreprises et des ménages n'affichent que
-  les mois observés ; leur historique interne garde aussi les mois de chauffe.
+- **Concentration bancaire variable.** Les anciennes expériences du lot F finissaient avec
+  une seule banque. Dans le scénario complet, il en reste **4 à 14** au mois 400, avec des
+  reprises et des recapitalisations répétées. Les fiches des entreprises et des ménages
+  affichent les mois observés ; leur historique interne garde aussi les mois de chauffe.
+- **Écart du livre de trésorerie de l’État.** Graine 1001, mois 381 : la variation de
+  trésorerie est inférieure de **8,31 M u.m.** au montant expliqué par les lignes du livre
+  et le financement du mois. Le rapprochement monétaire consolidé mesure un autre objet ;
+  voir les [écarts relevés séparément](docs/statistiques_scenario_complet.md#5-rapprochements-comptables).
 - **Calendrier des comptes.** Certaines recettes tardives (ventes de capacité des centrales) ne
   sont pas comptées dans le bénéfice du mois.
 

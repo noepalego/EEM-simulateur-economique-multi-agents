@@ -29,7 +29,7 @@ from economy.models import Company
 from economy.payments import transfer_cash
 from economy.sectors import FIRM_SECTORS
 from economy.treasury import working_capital
-from economy.wealth import company_balance_sheet
+from economy.wealth import company_balance_sheet, share_prices
 
 TRADED_SECTORS = ("food", "goods")
 UNION_SECTORS = tuple(sector for sector, _ in FIRM_SECTORS if sector != "bank")
@@ -60,8 +60,13 @@ class MacroMixin:
     def _corporate_bond_rate(self, company) -> float:
         """Taux mensuel d'une émission : taux directeur + prime de crédit, qui croît avec
         l'endettement total de l'émetteur (banques et obligations) rapporté à ses actifs."""
+        balance = company_balance_sheet(company, self.companies, self.live)
+        return self._corporate_bond_rate_from_balance(company, balance)
+
+    def _corporate_bond_rate_from_balance(self, company, balance: dict[str, float]) -> float:
+        """Même taux à partir du bilan déjà lu pendant la préparation des émissions."""
         live = self.live
-        assets = max(company_balance_sheet(company, self.companies, live)["Total des actifs"], 1.0)
+        assets = max(balance["Total des actifs"], 1.0)
         leverage = min(2.0, (company.debt + company.bond_debt) / assets)
         return max(0.0, self.policy_rate) + live.credit_risk_spread * (0.5 + leverage)
 
@@ -172,6 +177,7 @@ class MacroMixin:
         excluded = self._public_controlled_ids()
         minimum = BOND_MINIMUM_ISSUE * self._wage_scale()
         issues = []
+        prices = None
         for company in self.companies:
             if (
                 not company.active or company.sector == "bank" or company.id in excluded
@@ -179,10 +185,15 @@ class MacroMixin:
                 or not company.employees
             ):
                 continue
-            rate = self._corporate_bond_rate(company)
+            # Aucun paiement, changement de cours ni de portefeuille pendant la
+            # préparation : le même bilan sert au taux puis au plafond de dette.
+            if prices is None:
+                prices = share_prices(self.companies)
+            balance = company_balance_sheet(company, self.companies, live, prices)
+            rate = self._corporate_bond_rate_from_balance(company, balance)
             if rate <= self.deposit_rate:
                 continue
-            equity = company_balance_sheet(company, self.companies, live)["Capitaux propres"]
+            equity = balance["Capitaux propres"]
             room = max(0.0, live.corporate_bond_leverage) * max(0.0, equity) - company.bond_debt
             need = self._financing_need(company)
             bank_rate = company.debt_interest_rate if company.debt_interest_rate is not None else 0.0

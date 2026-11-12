@@ -4,7 +4,9 @@ import random
 from contextlib import nullcontext
 
 from economy.finance import borrowing_share, extend_credit, new_loan_rate
-from economy.intersector import pay_business_suppliers, pay_suppliers_from_household, household_suppliers
+from economy.intersector import (
+    business_suppliers, household_suppliers, pay_business_suppliers,
+)
 from economy.models import Company, ConstructionProject, Person, Resources, SimulationConfig
 from economy.payments import transfer_cash
 from economy.deliveries import deliver_capital_work
@@ -189,19 +191,23 @@ def allocate_housing_and_collect_rent(
 
     tenants = [person for person in people if not person.owns_home]
     occupancy = {owner_id: 0 for owner_id, _, _ in landlords}
+    capacities = {owner_id: capacity for owner_id, capacity, _ in reversed(landlords)}
+    # L'occupation ne fait que croître pendant l'attribution : un bailleur plein
+    # ne redevient jamais disponible. Le curseur garde l'ordre du parc sans
+    # reparcourir tous les bailleurs pour chaque ménage à reloger.
+    first_available = 0
     for tenant in tenants:
         owner_id = tenant.rental_owner_id
         if owner_id not in occupancy:
             tenant.rental_owner_id = None
             owner_id = None
-        if owner_id is None or occupancy[owner_id] >= next(
-            (capacity for landlord_id, capacity, _ in landlords if landlord_id == owner_id), 0
-        ):
-            owner_id = next(
-                (landlord_id for landlord_id, capacity, _ in landlords
-                 if occupancy[landlord_id] < capacity),
-                None,
-            )
+        if owner_id is None or occupancy[owner_id] >= capacities[owner_id]:
+            while first_available < len(landlords):
+                landlord_id, capacity, _ = landlords[first_available]
+                if occupancy[landlord_id] < capacity:
+                    break
+                first_available += 1
+            owner_id = landlords[first_available][0] if first_available < len(landlords) else None
             tenant.rental_owner_id = owner_id
         if owner_id is not None:
             occupancy[owner_id] += 1
@@ -255,23 +261,21 @@ def maintain_housing(
     )
     total_paid = 0.0
 
-    for company in companies:
-        if not company.active or company.sector != "real_estate":
-            continue
+    suppliers_by_sector = business_suppliers(companies)
+    for company in suppliers_by_sector.get("real_estate", ()):
         homes = company.property_inventory
         maintenance = homes * maintenance_per_home
         # l'entretien est une commande de services (corps de métier) et de matériaux
         total_paid += pay_business_suppliers(
-            company, maintenance, {"services": 0.7, "materials": 0.3}, companies, resources
+            company, maintenance, {"services": 0.7, "materials": 0.3}, companies, resources,
+            suppliers_by_sector=suppliers_by_sector,
         )
 
-    suppliers = household_suppliers(companies, ("services", "materials"))
+    suppliers = household_suppliers(companies, ("services", "materials"), {"services": 0.7, "materials": 0.3})
     for person in people:
         homes = int(person.owns_home) + person.investment_homes
         maintenance = homes * maintenance_per_home
-        total_paid += pay_suppliers_from_household(
-            person, maintenance, {"services": 0.7, "materials": 0.3}, companies, resources, suppliers
-        )
+        total_paid += suppliers.pay(person, maintenance, resources)
 
     return total_paid
 

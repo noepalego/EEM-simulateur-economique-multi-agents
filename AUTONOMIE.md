@@ -275,3 +275,98 @@ cabinet, mandat de trente-six mois, honoraires de la moitié du salaire d'un min
 | `corporate_lobbying` | faux | Dons de campagne des entreprises bénéficiaires de taille au moins moyenne au candidat le plus proche de leur dirigeant, et dépenses de conseil d'une entreprise visée par un dossier de monopole, qui freinent son instruction. Dépenses réelles payées aux entreprises de services. |
 | `revolving_door` | faux | Pantouflage : un ancien membre du cabinet devient conseiller rémunéré de la plus grande entreprise bénéficiaire des secteurs de son ancien portefeuille ; ce conseiller relie l'entreprise au président qu'il a servi. Honoraires payés par l'entreprise au ménage. |
 | `political_dynasties` | faux | L'héritier d'un ménage connu (notoriété d'au moins 0,2) garde 30 % de sa notoriété ; ses traits et son opinion sont les siens. Sans ce réglage, la notoriété disparaît à la succession. Sans effet sans la popularité. |
+
+## Réglages des lots M, R et S : médias, agents apprenants, relations bancaires (novembre 2026)
+
+Trois mécanismes, chacun derrière son réglage, **désactivé par défaut** et neutre pour l'empreinte
+d'identité : médias (`economy/media.py`, état dans `simulation.media`), agents apprenants
+(`economy/learning.py`, `simulation.learning`), relations bancaires individuelles
+(`economy/bank_relations.py`, `simulation.bankrel`). `NewLotsRegistryTests` (`tests/test_monde.py`)
+vérifie que la liste ci-dessous correspond aux réglages ajoutés. Aucun ne vise un résultat (audience,
+résultat d'une élection, concentration bancaire, niveau des marges) : ce sont des règles de décision
+d'agents, des coûts et des vitesses, non calibrés sur des données. Tirages : un générateur propre à
+chaque lot, créé à l'activation ; aucun autre générateur n'est déplacé.
+
+Constantes non réglables. Médias : capital de départ de 60 000 € de départ indexé sur les salaires,
+au plus la moitié de la trésorerie du fondateur, trois journalistes visés à la création, nouvelle
+fondation au plus une fois par an, ligne rapprochée de 5 % par mois de la position de l'actionnaire
+d'au moins 10 %, média reconsidéré une fois par an par chaque ménage, ton nul à 25 points d'écart
+avec le gouvernement, déplacement du jugement sur la présidence d'au plus 0,30, tutelle (loi
+« médias ») : dérive moitié moins rapide vers le pouvoir et effort d'enquête divisé par deux, stock
+de publicité oublié de 20 % par mois (moitié de l'effet à cinq salaires mensuels), annonceur ménagé
+au-delà de 10 % des recettes publicitaires, 2 % par mois de chance maximale de révéler une affaire,
+0,10 de crédibilité gagnée par révélation. Apprentissage : moitié du style d'un nouveau dirigeant
+appliquée, précaution d'au plus 30 % de la propension à consommer (atteinte à un mois sur deux sans
+emploi), pas maximal du goût du risque à ± 50 % de variation des titres, imitation d'un collègue à
+la moitié de `imitation_rate`. Banques : coût de changement doublé pour un emprunteur, au plus la
+moitié des clients hors tour fuient une banque fragile en un mois.
+
+Complément de livraison : les banques essaient un coussin prudentiel **supplémentaire** entre
+0 et 1 (multiplicateur de l'exigence, jamais une baisse de la règle), selon leur rendement des
+fonds propres, pertes incluses. Les ministres dotés d'objectifs enrichis essaient un multiplicateur
+d'effort entre 0,5 et 1,5 selon la progression de leur objectif principal ; la mémoire est propre
+à la personne, sa génération, sa fonction et l'objectif en cours. Même période et même taille
+d'essai que les entreprises, générateur du lot R. Ces bornes décrivent des décisions, pas des
+résultats à atteindre. Une direction d'essai est réfléchie lorsqu'elle atteint une borne.
+
+| Réglage | Défaut | Justification |
+|---|---|---|
+| `media_sector` | faux (lot M) | Entreprises de médias : des ménages aisés des trois camps politiques fondent chacun un média avec leur trésorerie (secteur « media », salariés journalistes). Recettes : abonnements des ménages et publicité des producteurs. La ligne éditoriale suit l'actionnaire de contrôle, colore le jugement des lecteurs et le vote, et les enquêtes remplacent la probabilité fixe de révélation par la presse du lot K. |
+| `media_outlets` | 3 (lot M) | Nombre de médias que des ménages cherchent à fonder (un par camp politique au départ) ; les fusions et les faillites peuvent le réduire, une nouvelle fondation est tentée au plus une fois par an. Ne fixe pas le pluralisme observé, qui dépend des audiences. |
+| `media_subscription_share` | 0,04 (lot M) | Part du budget de services d'un ménage consacrée à l'abonnement à son média, TVA comprise, dans la limite de sa trésorerie : ordre de grandeur de la dépense de presse et d'audiovisuel d'un ménage, non calibré. |
+| `media_ad_share` | 0,01 (lot M) | Part du chiffre d'affaires du mois écoulé qu'un producteur bénéficiaire d'alimentation ou de biens consacre à la publicité, sans entamer son fonds de roulement ; répartie entre les médias selon leur audience. Même ordre que le budget de données du lot G. |
+| `media_ad_reach` | 0,3 (lot M) | Hausse maximale du poids d'un annonceur dans les achats des ménages (poids × 1,3 pour un stock de publicité très élevé) : rendements décroissants, inférieure à la portée des magasins, pour limiter la boucle « plus gros, plus de publicité, plus gros ». |
+| `media_vote_weight` | 0,10 (lot M) | Écart maximal entre le revenu réel qu'un électeur perçoit et le sien, selon le ton de son média et sa crédibilité : au plus ± 0,4 dans le logit du vote, moins que l'écart idéologique entre deux programmes. Un biais de perception, pas un transfert de voix. |
+| `bank_relationships` | faux (lot S) | Relations bancaires individuelles : une banque principale par agent, dépôts lus par banque, prêt demandé d'abord à sa banque, taux des dépôts propre à chaque banque, changements de banque, fuite des banques fragiles, règlement entre banques des écarts de financement, décote localisée. Les soldes restent ceux du moteur en flottants ; le prototype en centimes n'est pas branché. |
+| `bank_review_share` | 0,08 (lot S) | Part de la clientèle qui compare les banques chaque mois, à tour de rôle (un client revoit son choix environ une fois par an) : inertie des relations bancaires, sans tirage. |
+| `bank_run_threshold` | 0,5 (lot S) | Solidité (fonds propres rapportés à ceux qu'exige l'encours) sous laquelle une banque est fuie par ses clients et n'en attire plus : la moitié de l'exigence réglementaire. Déclenche une décision des déposants, ne borne aucun résultat. |
+| `bank_specialization` | 0,5 (lot S) | Avantage d'information d'une banque sur un secteur qu'elle finance déjà : son appétit pour un prêt hors de sa clientèle vaut sa capacité × (1 + 0,5 × la part de son encours dans ce secteur). Fait émerger des banques spécialisées, donc des risques concentrés. |
+| `adaptive_agents` | faux (lot R) | Agents apprenants : chaque entreprise ajuste par essais et erreurs son agressivité de prix et sa part réinvestie d'après sa propre marge et imite la plus rentable de son secteur ; un dirigeant emporte son style ; les ménages adaptent précaution et goût du risque à ce qu'ils ont vécu ; les banques essaient un coussin prudentiel et les ministres leur effort avec les objectifs enrichis. Aucun agent ne connaît le modèle. |
+| `learning_period_months` | 12 (lot R) | Durée d'un essai : une entreprise juge un changement sur une année de marge, un ménage révise ses habitudes une fois par an. Assez long pour lisser les à-coups mensuels du bénéfice. |
+| `learning_step` | 0,05 (lot R) | Taille moyenne d'un pas d'essai sur un trait compris entre 0 et 1 (tirée entre la moitié et une fois et demie), et pas maximal du goût du risque d'un ménage par période : exploration lente, vingt périodes pour traverser l'intervalle. |
+| `imitation_rate` | 0,25 (lot R) | Part de l'écart de traits qu'une entreprise comble avec la plus rentable de son secteur à chaque période (la moitié pour un ménage envers son collègue le plus riche) : diffusion des pratiques sans alignement immédiat. |
+
+## Réglages du monde (lots L, N, O, P, Q, novembre 2026)
+
+Un monde (`economy/world.py`) porte plusieurs régions, chacune une `EconomySimulation` complète.
+Ses réglages sont ceux de `WorldConfig` ; `base` (un `SimulationConfig`) reste la source des
+paramètres de chaque région, modifiée par son profil (`REGION_PROFILES`). Un monde d'une région sans
+profil est identique au moteur (`WorldTests`). `NewLotsRegistryTests` vérifie la liste ci-dessous.
+Aucun réglage ne vise un résultat (solde extérieur, taux de change, solde migratoire, nombre de
+groupes). Constantes du module, non réglables : départ possible avant 45 ans, région jamais sous
+40 ménages, prime de rachat de 30 %, un quart de la trésorerie libre de l'acquéreur engagé par
+mois, ramassage abandonné après 36 mois, acquéreur d'au moins 24 mois, cible d'au plus la moitié
+de sa capitalisation et moins productive d'au moins 10 %, 24 mois entre deux opérations d'un même
+acquéreur, contrôle à la moitié du capital en circulation, un quart de l'avance de productivité
+transmis, filtrage au-delà d'une orientation de 65, écart de croissance pris en compte borné à 20 %,
+taux de change entre 0,2 et 5 et de moyenne géométrique 1.
+
+Compensation : les trésoreries sont réservées une seule fois par payeur avant résolution des
+flux ; les créances migratoires prépayées n'ajoutent pas une seconde fois de liquidité. Une
+circulation à capacité finie maximise le volume réglé, en unité commune, dans un graphe de cinq
+nœuds au plus (régions et réserve). Les intentions d'un même couple sont servies au prorata ;
+les cycles résiduels sont résolus par Bellman-Ford (précision des capacités 10⁻⁹). Une chambre
+déjà au-delà du plafond ne peut pas accroître cet avoir. Refus explicite si un crédit n'est pas
+financé à 10⁻⁶ près. Normalisation du change par translation des
+logarithmes et projection entre les deux bornes (64 itérations), afin que la moyenne géométrique
+ne fasse pas sortir un taux de son intervalle.
+
+| Réglage | Défaut | Justification |
+|---|---|---|
+| `regions` | 3 | Nombre de régions (1 à 4), chacune avec ses ménages, ses entreprises, ses banques, sa banque centrale, son gouvernement et sa monnaie. Les profils leur donnent des populations, des productivités, des ressources et une orientation de départ différentes. |
+| `integration_month` | 0 | Nombre de mois pendant lesquels les régions restent isolées avant l'ouverture du commerce, des départs et des rachats : permet d'observer des économies d'abord indépendantes, puis leur intégration. |
+| `interregional_trade` | vrai | Commerce entre régions : une région achète aux autres une part de sa demande non servie d'alimentation et de biens, prise sur leur production du mois suivant, seulement si son prix dépasse le prix du vendeur converti et majoré du transport. |
+| `transport_cost` | 0,10 | Majoration du prix d'un produit venu d'une autre région : sans écart de prix d'au moins 10 % entre deux régions, aucun échange n'a lieu. Ordre de grandeur d'un coût de transport et de distribution, non calibré. |
+| `migration` | vrai | Mobilité des ménages : un ménage mobile part pour la région où le revenu réel attendu, loyer déduit, dépasse le sien, après avoir vendu son logement et remboursé ses crédits ; il emporte sa trésorerie convertie et garde ses actions. |
+| `migration_monthly_share` | 0,005 | Part maximale des ménages d'une région qui la quittent en un mois (6 % par an au plus) : les départs sont étalés, une région ne se vide pas d'un coup et les salaires ont le temps de réagir. |
+| `migration_gain` | 0,15 | Gain de revenu réel attendu au-delà duquel un ménage mobile part : coût de déménagement et attachement à sa région, auquel s'ajoute la décote de la vente rapide de son logement. |
+| `commuting` | vrai | Travail frontalier : un ménage conserve sa résidence, son logement, ses crédits, sa consommation et son vote ; un mandataire occupe un poste vacant dans une autre région. Les salaires et primes sont rapatriés par compensation et imposés à résidence le mois suivant leur encaissement. Les mandataires ne comptent jamais dans la population. |
+| `commuting_monthly_share` | 0,005 | Nombre maximal de nouveaux contrats frontaliers par mois en part de la population de résidence. Les fractions s'accumulent ; les postes restés vacants après les embauches locales sont pourvus en premier par métier et compétence. Ne fixe pas l'effectif frontalier observé. |
+| `commuting_gain` | 0,15 | Gain minimal du salaire converti après le barème d'impôt de résidence par rapport au salaire net actuel ou au revenu attendu hors emploi. Représente l'inertie et le coût du trajet dans la décision, sans inventer un prélèvement monétaire ni garantir un gain réalisé. |
+| `cross_border_takeovers` | vrai | Groupes multirégionaux : une entreprise rentable ramasse les titres d'un concurrent d'une autre région, plus petit et moins productif, quand le bénéfice attendu couvre le coût de ses fonds propres ; au-delà de la moitié du capital elle le contrôle et en reçoit les dividendes. |
+| `investment_screening` | vrai | Filtrage des investissements : un gouvernement d'orientation supérieure à 65 refuse le rachat par une entreprise d'une autre région d'une entreprise d'un secteur critique (`critical_sectors`). Décision de doctrine, comptée au relevé. |
+| `yardstick_voting` | vrai | Vote comparatif : les électeurs d'une région jugent aussi leur gouvernement sur l'écart entre la croissance de leur PIB réel par ménage et celle des autres régions, en plus de leur propre revenu. |
+| `yardstick_weight` | 0,5 | Part de l'écart de croissance avec les autres régions (borné à ± 20 %) ajoutée à la croissance du revenu réel que perçoit l'électeur : au plus ± 0,1, soit ± 0,4 dans le logit du vote, du même ordre que le biais d'un média. |
+| `tax_competition` | vrai | À la prochaine loi de finances, un gouvernement non social peut rapprocher son objectif d'impôt sur les sociétés du taux moyen observé chez les voisins moins imposés. La contrainte budgétaire peut annuler cette baisse ; les gouvernements sociaux conservent l'objectif de leur doctrine. |
+| `tax_competition_weight` | 0,25 | Part maximale de l'écart relatif de taux comblée dans l'objectif fiscal, multipliée par le libéralisme du gouvernement (1 − orientation / 65, jamais négatif). La vitesse annuelle de vote reste celle de budget_tax_speed et aucun taux réalisé n'est fixé. |
+| `clearing_holding_share` | 0,02 | Avoirs maximaux de la chambre de compensation d'une région, en part de son PIB annuel, au-delà de ce qu'elle doit reverser : le reste du monde n'accumule pas sa monnaie, une région ne paie durablement à l'extérieur que ce qu'elle en reçoit. Même valeur que le plafond du reste du monde du lot J. |

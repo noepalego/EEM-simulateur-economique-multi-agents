@@ -59,6 +59,8 @@ def pay_business_suppliers(
     (indice de prix)^(−élasticité) : au-delà de 1, une hausse de prix réduit la
     dépense de l'acheteur, et le fournisseur ne peut plus élever son prix sans perdre
     de recettes. À 0, volume fixe (ancien comportement).
+
+    L'index facultatif regroupe les fournisseurs par secteur pour un lot d'achats.
     """
     price_elasticity = resources.b2b_price_elasticity
     if amount <= 0.0:
@@ -82,6 +84,7 @@ def pay_business_suppliers(
         if part <= 0.0:
             continue
         if sector == "energy" and priced:
+            energy_suppliers = companies if suppliers_by_sector is None else suppliers_by_sector.get(sector, companies)
             desired_payment = part * resources.energy_price_index * (1.0 - buyer.energy_saving)
             if price_elasticity > 0.0:
                 desired_payment *= resources.energy_price_index ** -price_elasticity
@@ -89,10 +92,10 @@ def pay_business_suppliers(
             discount = 0.0
             if resources.volume_discount_max > 0.0:
                 # lot D : remise sur le volume, à la marge des producteurs d'énergie
-                producers = [c for c in companies if c.active and c.sector == "energy" and c.id != buyer.id]
+                producers = [c for c in energy_suppliers if c.active and c.sector == "energy" and c.id != buyer.id]
                 discount = volume_discount(part / max(resources.input_cost_index, 1e-9), producers, resources)
             paid = deliver_energy(buyer, desired_payment / resources.energy_unit_price,
-                                  budget, companies, resources, discount)
+                                  budget, energy_suppliers, resources, discount)
             # Le montant de base a déjà été débité ; ne payer que l'énergie livrée.
             buyer.cash += part - paid
             buyer.expenses += paid - part
@@ -121,9 +124,8 @@ def pay_business_suppliers(
         candidates = companies if suppliers_by_sector is None else suppliers_by_sector.get(sector, ())
         suppliers = [
             c for c in candidates
-            if c.active and c.sector == sector and c.id != buyer.id
+            if c.active and c.sector == sector and c.id != buyer.id and c.employees
         ]
-        suppliers, weights = _delivering_suppliers(suppliers)
         if not suppliers:
             # commande non servie : pas de paiement, l'acheteur garde son argent
             buyer.cash += part
@@ -147,18 +149,19 @@ def pay_business_suppliers(
                     buyer.energy_bill -= rebate
                 part -= rebate
         paid_total += part
+        weights = [len(c.employees) * max(0.25, c.productivity_trait) for c in suppliers]
         total_weight = sum(weights)
         tracking = diagnostics.active()  # compteurs inactifs : aucun appel dans la boucle
+        buyer_id = buyer.id
+        spending = buyer.supplier_spending
         for supplier, weight in zip(suppliers, weights):
             payment = part * weight / total_weight
             supplier.cash += payment
             supplier.revenue += payment
-            supplier.customer_revenue[buyer.id] = (
-                supplier.customer_revenue.get(buyer.id, 0.0) + payment
-            )
-            buyer.supplier_spending[supplier.id] = (
-                buyer.supplier_spending.get(supplier.id, 0.0) + payment
-            )
+            revenue = supplier.customer_revenue
+            revenue[buyer_id] = revenue.get(buyer_id, 0.0) + payment
+            supplier_id = supplier.id
+            spending[supplier_id] = spending.get(supplier_id, 0.0) + payment
             if tracking:
                 diagnostics.flow("recette_b2b_au_poids", payment)
                 if not supplier.employees:
@@ -178,11 +181,79 @@ def business_suppliers(companies: list[Company]) -> dict[str, list[Company]]:
     return sectors
 
 
-def household_suppliers(companies: list[Company], sectors) -> dict:
-    """Index local à un lot sans embauche ni fermeture ; ordre des fournisseurs inchangé."""
-    return {sector: _delivering_suppliers(
+class _HouseholdSupplierBatch(dict):
+    """Index local et normalisations d'un lot d'achats à répartition constante.
+
+    Les valeurs publiques restent les couples (fournisseurs, poids). Comme les
+    poids déjà relevés par household_suppliers, ces couples ne doivent pas être
+    modifiés pendant le lot. Aucune fraction prédivisée : les deux opérations
+    de chaque paiement restent dans l'ordre historique.
+    """
+
+    __slots__ = ("parts", "divisor")
+
+    def __init__(self, suppliers: dict, split: dict[str, float]) -> None:
+        super().__init__(suppliers)
+        positive = tuple((sector, max(0.0, share)) for sector, share in split.items())
+        self.divisor = max(sum(share for _, share in positive), 1e-9)
+        self.parts = tuple(
+            (sector, share, tuple(zip(*suppliers[sector])), sum(suppliers[sector][1]))
+            for sector, share in positive
+        )
+
+    def pay(self, person, amount: float, resources: Resources) -> float:
+        """Achats du lot figé, équivalents au chemin scalaire public.
+
+        Le lot capture sa répartition et les poids ; modifier le dictionnaire
+        ``split`` d'origine ne modifie pas ce plan. Recréer le lot dès que la
+        répartition ou les fournisseurs changent.
+        """
+        amount = min(max(0.0, amount), max(0.0, person.cash))
+        if amount <= 0.0:
+            return 0.0
+        person.cash -= amount
+        person.expenses_this_turn += amount
+        person.cumulative_expenses += amount
+        unserved = 0.0
+        for sector, share, providers, total_weight in self.parts:
+            part = amount * share / self.divisor
+            if not providers:
+                person.cash += part
+                person.expenses_this_turn -= part
+                person.cumulative_expenses -= part
+                unserved += part
+                resources.refused_orders[sector] = resources.refused_orders.get(sector, 0.0) + part
+                diagnostics.flow("achat_menage_non_servi", part)
+                continue
+            tracking = diagnostics.active()
+            person_id = person.id
+            for supplier, weight in providers:
+                payment = part * weight / total_weight
+                supplier.cash += payment
+                supplier.revenue += payment
+                revenue = supplier.customer_revenue
+                revenue[person_id] = revenue.get(person_id, 0.0) + payment
+                if tracking:
+                    diagnostics.flow("recette_menages_au_poids", payment)
+                    if not supplier.employees:
+                        diagnostics.flow("recette_menages_sans_salarie", payment)
+        return amount - unserved
+
+
+def household_suppliers(companies: list[Company], sectors,
+                        split: dict[str, float] | None = None) -> dict:
+    """Index local à un lot sans changement d'effectif ni de productivité.
+
+    Avec ``split``, relève aussi les sommes et parts positives immuables pendant
+    ce lot ; ``lot.pay(person, amount, resources)`` effectue ensuite ses paiements.
+    Recréer le lot si sa répartition ou ses poids changent. Sans ``split``, le
+    dictionnaire ordinaire historique est conservé. L'ordre des fournisseurs
+    n'est jamais modifié.
+    """
+    suppliers = {sector: _delivering_suppliers(
         [c for c in companies if c.active and c.sector == sector]
     ) for sector in sectors}
+    return suppliers if split is None else _HouseholdSupplierBatch(suppliers, split)
 
 
 def pay_suppliers_from_household(

@@ -769,6 +769,42 @@ class SimulationConfig:
     revolving_door: bool = field(default=False, metadata={"identity": "neutre"})
     # Dynasties : l'héritier d'une personne connue garde une part de sa notoriété.
     political_dynasties: bool = field(default=False, metadata={"identity": "neutre"})
+    # Lot M (novembre 2026, ``economy/media.py``) : entreprises de médias. Désactivé par défaut et
+    # neutre pour l'empreinte d'identité. Vrai : des ménages aisés fondent ``media_outlets``
+    # entreprises du secteur « media » (journalistes salariés, abonnements des ménages, publicité
+    # des producteurs) ; leur ligne éditoriale colore le jugement des électeurs et leurs enquêtes
+    # remplacent la probabilité fixe de révélation par la presse (lot K).
+    media_sector: bool = field(default=False, metadata={"identity": "neutre"})
+    media_outlets: int = field(default=3, metadata={"identity": "neutre"})
+    # part du budget de services d'un ménage consacrée à l'abonnement à son média
+    media_subscription_share: float = field(default=0.04, metadata={"identity": "neutre"})
+    # part du chiffre d'affaires qu'un producteur bénéficiaire consacre à la publicité
+    media_ad_share: float = field(default=0.01, metadata={"identity": "neutre"})
+    # hausse maximale du poids d'un annonceur dans les achats des ménages
+    media_ad_reach: float = field(default=0.3, metadata={"identity": "neutre"})
+    # déplacement maximal du revenu réel perçu par un électeur selon le ton de son média
+    media_vote_weight: float = field(default=0.10, metadata={"identity": "neutre"})
+    # Lot S (novembre 2026, ``economy/bank_relations.py``) : relations bancaires individuelles.
+    # Vrai : chaque agent a une banque (dépôts suivis par banque), l'emprunteur s'adresse d'abord
+    # à sa banque, les banques règlent entre elles les écarts de financement, un client change de
+    # banque pour un meilleur taux ou fuit une banque fragile, et la perte d'une faillite bancaire
+    # retombe sur ses seuls déposants.
+    bank_relationships: bool = field(default=False, metadata={"identity": "neutre"})
+    # part de la clientèle qui compare les banques chaque mois
+    bank_review_share: float = field(default=0.08, metadata={"identity": "neutre"})
+    # ratio fonds propres / exigence sous lequel les clients d'une banque commencent à la fuir
+    bank_run_threshold: float = field(default=0.5, metadata={"identity": "neutre"})
+    # avantage d'information d'une banque sur un secteur qu'elle connaît (part du prêt qu'elle
+    # accepte de porter au-delà de sa part de capacité)
+    bank_specialization: float = field(default=0.5, metadata={"identity": "neutre"})
+    # Lot R (novembre 2026, ``economy/learning.py``) : agents apprenants. Vrai : chaque entreprise
+    # ajuste par essais et erreurs son agressivité de prix et sa part réinvestie et imite la plus
+    # rentable de son secteur ; un dirigeant emporte son style ; les ménages adaptent leur épargne
+    # de précaution et leur goût du risque à ce qu'ils ont vécu et imitent leurs collègues.
+    adaptive_agents: bool = field(default=False, metadata={"identity": "neutre"})
+    learning_period_months: int = field(default=12, metadata={"identity": "neutre"})
+    learning_step: float = field(default=0.05, metadata={"identity": "neutre"})
+    imitation_rate: float = field(default=0.25, metadata={"identity": "neutre"})
     # Lot C (novembre 2026) : objectifs ministériels enrichis. Vrai : chaque ministre a un objectif
     # principal et un secondaire (nouveaux indicateurs), des cibles relevées quand la situation de
     # départ les remplit déjà, et chaque objectif en retard actionne un levier de son ministère avec
@@ -1172,6 +1208,13 @@ class LoanAccounts(dict):
     version = 0
     _book_version = -1
     _book = 0.0
+
+    def __reduce_ex__(self, protocol):
+        # Le protocole ordinaire remplit un dict dérivé par __setitem__, qui
+        # incrémente version et déplace cet attribut avant la restauration de
+        # l'état. Construire le contenu par dict.__init__ conserve aussi l'ordre
+        # exact des attributs et les compteurs lors d'un pickle ou deepcopy.
+        return type(self), (dict(self),), self.__dict__
 
     def __setitem__(self, key, value) -> None:
         self.version += 1

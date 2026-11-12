@@ -32,6 +32,7 @@ conservée et le livre mensuel de l'État reste rapproché.
 from __future__ import annotations
 
 import math
+from heapq import nsmallest
 import random
 from dataclasses import dataclass, field
 
@@ -261,7 +262,9 @@ class PowerMixin:
         }
 
     # ------------------------------------------------------------------ influence
-    def influence_scores(self, refresh: bool = False) -> dict[str, dict]:
+    def influence_scores(
+        self, refresh: bool = False, *, household_wealth: dict[str, float] | None = None,
+    ) -> dict[str, dict]:
         """Influence de chaque ménage : ``fortune`` (au plus 30), ``fonction`` (35), ``capital``
         (20), ``popularite`` (15) et ``total`` ; ``poste`` décrit sa fonction. Lecture seule.
 
@@ -270,13 +273,22 @@ class PowerMixin:
           plus 3 pour un siège au conseil d'actionnaires ;
         - capital contrôlé : 20 × √(Σ poids × part détenue / 0,25) sur les entreprises dont il
           détient au moins 10 % ;
-        - popularité : 15 × notoriété × opinion (0 sans le réglage)."""
+        - popularité : 15 × notoriété × opinion (0 sans le réglage).
+
+        ``household_wealth`` transmet les fortunes déjà calculées dans la même phase,
+        sans cache persistant. L'appelant garantit que leurs déterminants n'ont pas
+        changé ; sans ce relevé explicite, la valorisation est toujours refaite.
+        """
         state = getattr(self, "power", None)
         if state is not None and not refresh and state.scores_month == self.month:
             return state.scores
         live = self.live
-        prices = share_prices(self.companies)
-        worth = {p.id: max(0.0, household_net_worth(p, self.companies, live, prices)) for p in self.people}
+        if household_wealth is None:
+            prices = share_prices(self.companies)
+            worth = {p.id: max(0.0, household_net_worth(p, self.companies, live, prices)) for p in self.people}
+        else:
+            # Même ordre de population et même plancher que la valorisation directe.
+            worth = {p.id: max(0.0, household_wealth[p.id]) for p in self.people}
         mean = sum(worth.values()) / len(worth) if worth else 0.0
         weights = self._company_weights()
         by_id = {c.id: c for c in self.companies if c.active}
@@ -287,6 +299,16 @@ class PowerMixin:
         seats = set()
         if enterprise is not None and live.shareholder_governance:
             seats = {holder for board in enterprise.boards.values() for holder, _ in board}
+        # Capital contrôlé : (titres en circulation, seuil sûr, poids) de chaque entreprise active.
+        # Sous le seuil (un peu moins de ``CONTROL_STAKE`` × titres en circulation), la part
+        # détenue est certainement inférieure à ``CONTROL_STAKE`` : la ligne est écartée sans
+        # division ; au-dessus, le calcul exact historique décide.
+        control = {}
+        for company_id, target in by_id.items():
+            circulating = target.shares_outstanding - target.treasury_shares
+            if circulating > 0.0:
+                control[company_id] = (circulating, circulating * (CONTROL_STAKE * 0.999),
+                                       weights.get(company_id, 0.0))
         scores = {}
         for person in self.people:
             pid = person.id
@@ -306,13 +328,12 @@ class PowerMixin:
                 office = min(INFLUENCE_OFFICE, office + BOARD_POINTS)
             controlled = 0.0
             for company_id, quantity in person.shares.items():
-                target = by_id.get(company_id)
-                if target is None or quantity <= 0.0:
+                entry = control.get(company_id)
+                if entry is None or quantity < entry[1]:
                     continue
-                circulating = target.shares_outstanding - target.treasury_shares
-                stake = quantity / circulating if circulating > 0.0 else 0.0
+                stake = quantity / entry[0]
                 if stake >= CONTROL_STAKE:
-                    controlled += weights.get(company_id, 0.0) * min(1.0, stake)
+                    controlled += entry[2] * min(1.0, stake)
             capital = INFLUENCE_CAPITAL * min(1.0, math.sqrt(controlled / CONTROL_FULL))
             popularity = INFLUENCE_POPULARITY * self._appeal(pid)
             scores[pid] = {
@@ -357,6 +378,10 @@ class PowerMixin:
             growth = sum(r.real_gdp for r in recent) / before - 1.0 if before > 0.0 else 0.0
         gap = sum(r.unemployment for r in recent) / len(recent) - live.natural_unemployment_rate
         signal = _clip(4.0 * growth - 6.0 * gap + (self._objectives_met_share() - 0.5), -1.0, 1.0)
+        if live.media_sector:
+            # lot M : le ton des médias, pondéré par leur audience, remplace l'effet forfaitaire
+            # de la loi « médias » (qui rapproche alors leurs lignes du pouvoir)
+            return _clip(signal + self._media_spin(), -1.0, 1.0)
         if signal < 0.0 and "medias" in self.power.laws:
             signal *= 0.5
         return signal
@@ -832,8 +857,14 @@ class PowerMixin:
             if affair["revele"] is not None or self.month - affair["mois"] > AFFAIR_MEMORY_MONTHS:
                 continue
             chance = max(0.0, self.live.audit_detection_chance) * (AUDIT_WEAKENED if "controle" in state.laws else 1.0)
-            chance += PRESS_CHANCE * (0.5 if "medias" in state.laws else 1.0)
+            press = PRESS_CHANCE * (0.5 if "medias" in state.laws else 1.0)
+            if self.live.media_sector:
+                # lot M : enquêtes des médias, selon leurs journalistes et leur indépendance
+                press = self._media_press_chance(affair)
+            chance += press
             if state.random.random() < chance:
+                if self.live.media_sector:
+                    self._media_scoop(affair, press, chance)
                 self._reveal_affair(affair)
 
     def _reveal_affair(self, affair: dict) -> None:
@@ -1054,7 +1085,7 @@ class PowerMixin:
         if state.candidates is not None and pid in (state.candidates["sortant"], state.candidates["opposant"]):
             state.candidates = None
 
-    def _power_record(self) -> None:
+    def _power_record(self, *, household_wealth: dict[str, float] | None = None) -> None:
         """Phase 8 : relevé mensuel du lot K (mesures seules)."""
         state = self._power_state()
         live = self.live
@@ -1088,8 +1119,8 @@ class PowerMixin:
         if live.revolving_door:
             stats["conseillers"] = len(state.advisors)
         if live.influence_ranking:
-            scores = self.influence_scores(refresh=True)
-            order = sorted(scores, key=lambda pid: (-scores[pid]["total"], pid))[:10]
+            scores = self.influence_scores(refresh=True, household_wealth=household_wealth)
+            order = nsmallest(10, scores, key=lambda pid: (-scores[pid]["total"], pid))
             state.top_history.append({"mois": self.month, "top": [(pid, scores[pid]["total"]) for pid in order]})
             if order:
                 stats["influence_max"] = scores[order[0]]["total"]

@@ -176,7 +176,7 @@ def validate_financial_accounts(sim: "EconomySimulation") -> None:
         bonds.append(person.bond_holdings)
 
     def compare(label, owed, parts):
-        if not math.isfinite(owed) or owed < 0 or any(not math.isfinite(v) or v < 0 for v in parts):
+        if not math.isfinite(owed) or owed < 0:
             raise ArithmeticError(f"Solde invalide : {label}")
         booked = math.fsum(parts)
         tolerance = 64 * (len(parts) + 1) * math.ulp(max(1.0, owed, booked))
@@ -184,7 +184,13 @@ def validate_financial_accounts(sim: "EconomySimulation") -> None:
             raise ArithmeticError(f"Compte {label} non rapproché : {booked - owed!r} euro")
 
     for account in claims.keys() | debts.keys():
-        compare(account, debts.get(account, 0.0), claims.get(account, []))
+        # Les créances ont déjà été validées à la lecture des comptes bancaires.
+        owed = debts.get(account, 0.0)
+        parts = claims.get(account, ())
+        if owed != 0.0 or parts:
+            compare(account, owed, parts)
+    if any(not math.isfinite(value) or value < 0 for value in bonds):
+        raise ArithmeticError("Solde invalide : dette publique")
     compare("dette publique", sim.public.debt, bonds)
 
 
@@ -212,9 +218,25 @@ def build_record(
         operated = [c for c in companies if c.active or c.exit_month == sim.month]
     if business_investment is None:
         business_investment = smoothed_investment
+    # Ces groupes sont immuables pendant la lecture du relevé. Chaque liste
+    # garde exactement la sous-séquence historique, donc le même ordre de sum.
+    active_by_sector = {}
+    for company in companies:
+        if company.active:
+            active_by_sector.setdefault(company.sector, []).append(company)
+    operated_by_sector = {}
+    for company in operated:
+        operated_by_sector.setdefault(company.sector, []).append(company)
+
+    def sector_sum(sector, attribute):
+        return sum(getattr(c, attribute) for c in active_by_sector.get(sector, ()))
+
+    def flow_sum(sector, attribute):
+        return sum(getattr(c, attribute) for c in operated_by_sector.get(sector, ()))
+
     total_revenue = sum(c.revenue for c in operated)
     total_profit = sum(c.profit for c in operated)
-    bank_interest_income = _flow_sum(operated, "bank", "revenue")
+    bank_interest_income = flow_sum("bank", "revenue")
     occupied = sum(p.rental_owner_id is not None for p in people)
     owner_occupied = sum(p.owns_home for p in people)
     household_fisim = _household_financial_services(sim)
@@ -282,9 +304,15 @@ def build_record(
         real_gdp += f.exports * deflator
     events = [e for e in sim.resolution_events if e.month == sim.month]
     consumer_revenue = f.food_revenue + f.goods_revenue
-    active_housing = _sector_sum(sim, "real_estate", "property_inventory")
+    active_housing = sector_sum("real_estate", "property_inventory")
     household_income = sum(p.income_this_turn for p in people)
     sector_keys = [sector for sector, _ in FIRM_SECTORS]
+    sector_employment = {s: sum(len(c.employees) for c in active_by_sector.get(s, ())) for s in sector_keys}
+    # Aucun paiement pendant la construction du relevé : ces trois lectures
+    # historiques parcouraient les mêmes trésoreries. Garder les deux
+    # soustractions et leur ordre, avec une seule somme inchangée.
+    money_supply = sim.ledger.nonbank_cash(sim)
+    deposits_from_cash = money_supply - sim.ledger.currency
     return MarketRecord(
         month=sim.period,
         food_price=sim.food_price,
@@ -317,14 +345,14 @@ def build_record(
         bankruptcies=f.bankruptcies,
         bank_reserves=sim.central_bank.reserves,
         bank_liquidity=sim.bank_liquidity,
-        deposits=max(0.0, sim.ledger.deposits_from_cash(sim)),
+        deposits=max(0.0, deposits_from_cash),
         credit_capacity=sim.credit_capacity(),
         cb_advances=sim.central_bank.advances,
-        ledger_residual=sim.ledger.residual(sim),
+        ledger_residual=deposits_from_cash - sim.ledger.deposits(sim),
         deposit_rate=sim.deposit_rate,
         bank_loan_portfolio=sum(c.debt for c in companies if c.active)
         + sum(p.mortgage_debt + p.consumer_debt for p in people),
-        bank_equity=_sector_sum(sim, "bank", "bank_equity"),
+        bank_equity=sector_sum("bank", "bank_equity"),
         bank_interest_income=bank_interest_income,
         housing_construction=f.housing_units_built * live.housing_build_cost,
         resource_market_cash=resources.market_cash,
@@ -347,7 +375,7 @@ def build_record(
         government_purchases=f.public_spent,
         public_transfers=f.public_transfers,
         money_issued=f.money_issued,
-        money_supply=sim.ledger.nonbank_cash(sim),
+        money_supply=money_supply,
         government_balance=sim.government_balance,
         wage_reference=sim.wage_reference,
         public_debt=sim.public.debt,
@@ -370,11 +398,11 @@ def build_record(
         productivity_index=sim.productivity_index,
         household_technology_revenue=resources.household_technology_revenue,
         household_technology_units=resources.household_technology_units,
-        food_inventory=_sector_sum(sim, "food", "inventory"),
-        goods_inventory=_sector_sum(sim, "goods", "goods_inventory"),
-        technology_inventory=_sector_sum(sim, "technology", "tech_inventory"),
-        food_produced=_sector_sum(sim, "food", "units_produced"),
-        goods_produced=_sector_sum(sim, "goods", "units_produced"),
+        food_inventory=sector_sum("food", "inventory"),
+        goods_inventory=sector_sum("goods", "goods_inventory"),
+        technology_inventory=sector_sum("technology", "tech_inventory"),
+        food_produced=sector_sum("food", "units_produced"),
+        goods_produced=sector_sum("goods", "units_produced"),
         production_capacity_investment=f.production_capacity_investment,
         new_households=sim.new_households_this_turn,
         population_count=len(people),
@@ -419,18 +447,16 @@ def build_record(
             c.id: c.stock_price if c.active else 0.0 for c in companies
         },
         sector_employment={
-            **{s: sum(len(c.employees) for c in companies if c.active and c.sector == s)
-               for s in sector_keys},
+            **sector_employment,
             "public": sim.public.employees,
         },
         sector_revenue={
-            **{s: _flow_sum(operated, s, "revenue") for s in sector_keys},
+            **{s: flow_sum(s, "revenue") for s in sector_keys},
         },
-        sector_profit={s: _flow_sum(operated, s, "profit") for s in sector_keys},
+        sector_profit={s: flow_sum(s, "profit") for s in sector_keys},
         sector_average_wage={
             **{
-                s: _sector_sum(sim, s, "wage_bill")
-                / max(1, sum(len(c.employees) for c in companies if c.active and c.sector == s))
+                s: sector_sum(s, "wage_bill") / max(1, sector_employment[s])
                 for s in sector_keys
             },
         },

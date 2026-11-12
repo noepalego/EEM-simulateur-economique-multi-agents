@@ -10,11 +10,14 @@ def household_net_worth(
     prices: dict[str, float] | None = None,
 ) -> float:
     prices = prices if prices is not None else share_prices(companies)
-    stock_value = sum([
+    return _net_worth(person, _household_stock_value(person, prices), config)
+
+
+def _household_stock_value(person: Person, prices: dict[str, float]) -> float:
+    return sum([
         shares * prices.get(company_id, 0.0)
         for company_id, shares in person.shares.items()
     ])
-    return _net_worth(person, stock_value, config)
 
 
 def _net_worth(person: Person, stock_value: float, config: SimulationConfig) -> float:
@@ -158,7 +161,11 @@ def company_valuation_metrics(
 
 
 def gini(values: list[float]) -> float:
-    positive = sorted(max(0.0, value) for value in values)
+    return _gini_sorted(sorted(max(0.0, value) for value in values))
+
+
+def _gini_sorted(positive: list[float]) -> float:
+    """Gini d'une série déjà triée et ramenée à des valeurs positives ou nulles."""
     total = sum(positive)
     if not positive or total <= 0.0:
         return 0.0
@@ -176,27 +183,21 @@ def wealth_leaderboards(
     # cours relevés une fois (auparavant une fois par ménage et par titre détenu : 36 000
     # appels à 300 périodes) ; mêmes valeurs et mêmes sommes
     prices = share_prices(companies)
-    households = sorted(
-        (
-            {
-                "id": person.id,
-                "Ménage": person.name,
-                "Fortune nette": household_net_worth(person, companies, config, prices),
-                "Trésorerie": person.cash,
-                "Immobilier": (
-                    int(person.owns_home) + person.investment_homes
-                ) * config.housing_price,
-                "Dette immobilière": person.mortgage_debt,
-                "Actions": sum(
-                    shares * prices.get(company_id, 0.0)
-                    for company_id, shares in person.shares.items()
-                ),
-            }
-            for person in people
-        ),
-        key=lambda row: float(row["Fortune nette"]),
-        reverse=True,
-    )
+    households = []
+    for person in people:
+        stock_value = _household_stock_value(person, prices)
+        households.append({
+            "id": person.id,
+            "Ménage": person.name,
+            "Fortune nette": _net_worth(person, stock_value, config),
+            "Trésorerie": person.cash,
+            "Immobilier": (
+                int(person.owns_home) + person.investment_homes
+            ) * config.housing_price,
+            "Dette immobilière": person.mortgage_debt,
+            "Actions": stock_value,
+        })
+    households.sort(key=lambda row: float(row["Fortune nette"]), reverse=True)
     firms = sorted(
         (
             {
@@ -223,27 +224,24 @@ def capture_wealth_record(
     config: SimulationConfig,
     month: int,
 ) -> tuple[float, float, float, float, float, float]:
+    values, _, _ = _capture_wealth_record(people, companies, config, month)
+    return values
+
+
+def _capture_wealth_record(people, companies, config, month):
+    """Relevé et classement décroissant, réutilisé par les indicateurs du même mois."""
     prices = share_prices(companies)
-    # valeur du portefeuille calculée une fois par ménage (fortune et historique)
-    stock_values = {
-        person.id: sum([
-            shares * prices.get(company_id, 0.0)
-            for company_id, shares in person.shares.items()
-        ])
-        for person in people
-    }
-    household_wealth = {
-        person.id: _net_worth(person, stock_values[person.id], config)
-        for person in people
-    }
     firm_wealth = {
         company.id: company_net_worth(company, companies, config, prices)
         for company in companies
         if company.active
     }
-    household_values = list(household_wealth.values())
+    household_values = []
     for person in people:
-        person.wealth_history.append(household_wealth[person.id])
+        stock_value = _household_stock_value(person, prices)
+        worth = _net_worth(person, stock_value, config)
+        household_values.append(worth)
+        person.wealth_history.append(worth)
         person.financial_history.append(
             {
                 "Période": float(month),
@@ -251,8 +249,8 @@ def capture_wealth_record(
                 "Revenus": person.income_this_turn,
                 "Dividendes": person.dividend_income_this_turn,
                 "Dépenses": person.expenses_this_turn,
-                "Fortune": household_wealth[person.id],
-                "Actions": stock_values[person.id],
+                "Fortune": worth,
+                "Actions": stock_value,
                 "Valeur immobilière": (
                     int(person.owns_home) + person.investment_homes
                 ) * config.housing_price,
@@ -291,12 +289,17 @@ def capture_wealth_record(
     top_household = max(household_values, default=0.0)
     top_firm = max(firm_wealth.values(), default=0.0)
     top_count = max(1, (len(household_values) + 9) // 10)
+    ranked_wealth = sorted(household_values, reverse=True)
     top_ten_share = (
-        sum(sorted(household_values, reverse=True)[:top_count]) / total
+        sum(ranked_wealth[:top_count]) / total
         if total > 0.0
         else 0.0
     )
-    return gini(household_values), median, total, top_household, top_firm, top_ten_share
+    # Le moteur crée un historique indépendant par ménage. L'API publique
+    # accepte aussi des listes partagées manuellement : dans ce cas, les
+    # indicateurs doivent relire les dernières valeurs comme auparavant.
+    ranking = ranked_wealth if len({id(p.wealth_history) for p in people}) == len(people) else None
+    return (gini(household_values), median, total, top_household, top_firm, top_ten_share), ranking, household_values
 
 
 def enrich_wealth_record(
@@ -305,7 +308,13 @@ def enrich_wealth_record(
     companies: list[Company],
     config: SimulationConfig,
     price_index: float = 100.0,
+    *, household_wealth: dict[str, float] | None = None,
 ) -> None:
+    values, ranked_wealth, individual_wealth = _capture_wealth_record(people, companies, config, record.month)
+    if household_wealth is not None:
+        # Transmettre les valeurs à leur point de calcul, même si un appelant
+        # public a construit des historiques partagés entre plusieurs personnes.
+        household_wealth.update((p.id, value) for p, value in zip(people, individual_wealth))
     (
         record.household_gini,
         record.household_wealth_median,
@@ -313,8 +322,8 @@ def enrich_wealth_record(
         record.top_household_wealth,
         record.top_company_wealth,
         record.household_top10_share,
-    ) = capture_wealth_record(people, companies, config, record.month)
-    _inequality_indicators(record, people, config)
+    ) = values
+    _inequality_indicators(record, people, config, ranked_wealth=ranked_wealth)
     record.company_debt = sum(company.debt for company in companies if company.active)
     record.active_companies = sum(company.active for company in companies)
     for person in people:
@@ -325,7 +334,8 @@ def enrich_wealth_record(
         )
 
 
-def _inequality_indicators(record: MarketRecord, people: list[Person], config: SimulationConfig) -> None:
+def _inequality_indicators(record: MarketRecord, people: list[Person], config: SimulationConfig,
+                           *, ranked_wealth: list[float] | None = None) -> None:
     """Indicateurs d'inégalités et de logement du mois (mesure seule, aucun effet sur les agents).
 
     Revenu = ``income_this_turn`` en fin de mois : salaires, allocations, transferts, dividendes et
@@ -336,13 +346,15 @@ def _inequality_indicators(record: MarketRecord, people: list[Person], config: S
     incomes = [max(0.0, p.income_this_turn) for p in people]
     disposable = [max(0.0, p.income_this_turn - p.taxes_paid) for p in people]
     record.income_gini = gini(incomes)
-    record.disposable_income_gini = gini(disposable)
-    median = sorted(disposable)[len(disposable) // 2]
+    disposable.sort()
+    record.disposable_income_gini = _gini_sorted(disposable)
+    median = disposable[len(disposable) // 2]
     record.poverty_rate = sum(v < 0.6 * median for v in disposable) / len(people) if median > 0 else 0.0
     record.unhoused_households = sum(
         1 for p in people if not p.owns_home and p.rental_owner_id is None
     )
-    wealth = sorted((p.wealth_history[-1] for p in people if p.wealth_history), reverse=True)
+    wealth = (ranked_wealth if ranked_wealth is not None else
+              sorted((p.wealth_history[-1] for p in people if p.wealth_history), reverse=True))
     total = sum(wealth)
     top = max(1, len(wealth) // 100)
     record.household_top1_share = sum(wealth[:top]) / total if total > 0.0 else 0.0

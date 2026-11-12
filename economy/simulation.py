@@ -17,7 +17,7 @@ from economy.energy import (
     invest_in_energy_plants,
     trade_infrastructure,
 )
-from economy.intersector import pay_suppliers_from_household, settle_operating_inputs, household_suppliers
+from economy.intersector import settle_operating_inputs, household_suppliers
 from economy.finance import (
     create_household_startups,
     request_operating_credit,
@@ -102,6 +102,10 @@ from economy.ownership import OwnershipMixin
 from economy.enterprise import EnterpriseMixin
 from economy.macro import MacroMixin
 from economy.power import PowerMixin
+from economy.media import MediaMixin
+from economy.bank_relations import BankRelationsMixin
+from economy.learning import LearningMixin
+from economy.world_region import WorldRegionMixin
 from economy.state_government import StateGovernmentMixin
 from economy.state_industry import StateIndustryMixin
 from economy.state_labor import StateLaborMixin
@@ -109,7 +113,7 @@ from economy.state_services import StateServicesMixin
 from economy.demography import DEMOGRAPHY_SEED_OFFSET, DemographyMixin
 
 
-class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin, EnterpriseMixin, MacroMixin, PowerMixin, StateBudgetMixin, StateServicesMixin, StateLaborMixin, StateIndustryMixin, BankingMixin, CentralBankMixin, PricingMixin, HousingMixin, WageMixin, DemographyMixin, ViewsMixin):
+class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin, EnterpriseMixin, MacroMixin, PowerMixin, MediaMixin, BankRelationsMixin, LearningMixin, WorldRegionMixin, StateBudgetMixin, StateServicesMixin, StateLaborMixin, StateIndustryMixin, BankingMixin, CentralBankMixin, PricingMixin, HousingMixin, WageMixin, DemographyMixin, ViewsMixin):
     def __init__(self, config: SimulationConfig | None = None) -> None:
         # ``config`` : paramètres choisis par l'utilisateur, jamais modifiés par le moteur.
         # ``live`` : copie de travail du mois, où vivent les prix de marché dérivés
@@ -436,6 +440,9 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
         # présidence, ministres, décisions durables (economy/state_government.py) ; la TVA est
         # celle que vote la loi de finances, sans baisse automatique
         self._govern_institutions()
+        if self.live.media_sector:
+            # lot M : fondations, lignes éditoriales, lecteurs
+            self._media_month_start()
         self._apply_shocks()
         # valeur des stocks (garanties, solvabilité) aux prix courants
         self.live.observed_default_rate = self._firm_default_rate
@@ -460,6 +467,9 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
             # refonte bancaire : trésorerie propre = part liquide des fonds propres
             self._reconcile_bank_own_funds()
         self._interbank_market()
+        if self.live.bank_relationships:
+            # lot S : clientèle des banques, changements de banque, règlements entre banques
+            self._bank_relations_month()
         prepare_delivery_month(self.companies, self.resources, self.live)
         # Pas de cliquet de consommation : propension inchangée
         for person in self.people:
@@ -509,6 +519,7 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
         capital, péremption des stocks."""
         live = self.live
         spoiled_food = spoiled_goods = 0.0
+        carried = getattr(self, "world_revenue", None)  # ventes à d'autres régions, encaissées après la clôture
         for company in self.companies:
             if not company.active:
                 continue
@@ -517,6 +528,8 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
             company.previous_profit = company.profit
             company.previous_revenue = company.revenue
             company.revenue = 0.0
+            if carried:
+                company.revenue = carried.pop(company.id, 0.0)
             company.expenses = 0.0
             company.financial_income = 0.0
             company.previous_units_sold = company.units_sold
@@ -580,6 +593,10 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
             company.expenses += company.depreciation_this_turn
         f.spoiled_food = spoiled_food
         f.spoiled_goods = spoiled_goods
+        if carried is not None:
+            carried.clear()
+            f.exports += self.world_exports  # exportations vers les autres régions, comptées au PIB
+            self.world_exports = 0.0
 
     # ------------------------------------------------------------------
     # Phase 2 : crédit d'exploitation, marché du travail, impôts des ménages
@@ -624,6 +641,8 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
                             sponsor=self._training_sponsor)
         # agents et cabinet restent au service de l'État
         public_staff, unavailable = self._public_labor_sets()
+        if getattr(self, "world_commuters", None):
+            unavailable = set(unavailable) | set(self.world_commuters)
         average_wage, _ = allocate_and_pay_labor(
             self.companies,
             self.people,
@@ -637,6 +656,10 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
             full_pay_hiring=True,
             restart_values=self._restart_values() if live.shell_restart_on_value else None,
         )
+        if getattr(self, "world_workers", None):
+            self._world_pay_workers()
+        if getattr(self, "world_commuters", None) or getattr(self, "world_income", None):
+            average_wage = self._world_resident_labor()
         firm_employment = sum(person.employer_id not in (None, "state") for person in self.people)
         # postes par service, recrutement concurrentiel, paie de la grille et du cabinet
         self._staff_public_services(f)
@@ -707,6 +730,9 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
         f.worker_skills = {
             person.id: (person.skill, person.technology_level) for person in self.people
         }
+        if getattr(self, "world_workers", None):
+            f.worker_skills.update({proxy.id: (proxy.skill, proxy.technology_level)
+                                   for proxy, _ in self.world_workers})
         if live.collective_bargaining:
             # lot J : négociation annuelle du secteur dont c'est le mois, grève éventuelle
             self._collective_bargaining(f)
@@ -779,29 +805,38 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
         price_cap = self._price_control_cap()
         f.price_controls = price_cap is not None
         produce_food(self.companies, self.resources, live, food_demand, f.worker_skills)
+        if getattr(self, "world_orders", None):
+            # monde à plusieurs régions : unités commandées par les autres régions mises à quai
+            self._ship_world_orders("inventory")
         self.food_price = update_firm_prices(
             self.companies, "food", live, anchor_growth, self.food_price, price_cap, self._price_ceiling(),
             regulated=self._regulated("food"),
         )
         f.sold_food, f.food_revenue, f.unmet_food_demand = sell_food(
             self.companies, self.people, self.food_price, live,
-            affinity=self._sales_affinity("food"),  # lot G : ``None`` sans réglage
+            # lot G : ``None`` sans réglage ; lot M : publicité (``base`` inchangé sans réglage)
+            affinity=self._media_affinity("food", self._sales_affinity("food")),
             demand_boost=self._store_demand_boost(),  # lot I : 0 sans magasins
         )
         goods_demand = self._goods_demand()
         produce_consumer_goods(self.companies, self.resources, live, goods_demand, f.worker_skills)
+        if getattr(self, "world_orders", None):
+            self._ship_world_orders("goods_inventory")
         self.goods_price = update_firm_prices(
             self.companies, "goods", live, anchor_growth, self.goods_price, price_cap, self._price_ceiling(),
             regulated=self._regulated("goods"),
         )
         f.sold_goods, f.goods_revenue, f.unmet_goods_demand = sell_consumer_goods(
             self.companies, self.people, self.goods_price, live,
-            affinity=self._sales_affinity("goods"),
+            affinity=self._media_affinity("goods", self._sales_affinity("goods")),
             demand_boost=self._store_demand_boost(),
         )
         f.vat_revenue = (f.food_revenue + f.goods_revenue) * live.vat_rate
         self.public.cash += f.vat_revenue
         self._buy_household_services(f)
+        if live.media_sector:
+            # lot M : abonnements des ménages à leur média
+            self._media_subscriptions(f)
         if live.foreign_trade:
             # lot J : importations de ce que le marché intérieur n'a pas servi, exportations
             # des stocks excédentaires
@@ -882,7 +917,7 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
         live = self.live
         tax_factor = 1.0 + live.vat_rate
         spent = vat = 0.0
-        suppliers = household_suppliers(self.companies, ("services",))
+        suppliers = household_suppliers(self.companies, ("services",), {"services": 1.0})
         for person in self.people:
             budget = min(
                 max(0.0, person.cash),
@@ -893,9 +928,7 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
             if budget <= 1.0:
                 continue
             net = budget / tax_factor
-            paid = pay_suppliers_from_household(
-                person, net, {"services": 1.0}, self.companies, self.resources, suppliers
-            )
+            paid = suppliers.pay(person, net, self.resources)
             tax = min(paid * live.vat_rate, max(0.0, person.cash))
             person.cash -= tax
             person.expenses_this_turn += tax
@@ -995,10 +1028,14 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
         if live.retail_stores or live.consumer_preferences or live.private_startups or live.corporate_bonds:
             # lot G : magasins, données clients, fonds des banques (charges avant la clôture)
             self._enterprise_operations()
+        if live.media_sector:
+            # lot M : publicité des producteurs, payée aux médias
+            self._media_operations()
         self._refresh_profits()
         adjust_profit_sharing_wages(
             self.companies,
-            self.people,
+            self.people + [proxy for proxy, _ in self.world_workers]
+            if getattr(self, "world_workers", None) else self.people,
             self.wage_reference,
             live.executive_bonus_rate,
             live.loss_wage_adjustment_strength,
@@ -1126,6 +1163,9 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
                     0.0, company.price - company.unit_input_cost
                 )
                 value = max(value, own)
+            elif company.sector == "media":
+                # lot M : un média sans journaliste vaut les abonnements de ses lecteurs
+                value = max(value, self._media_restart_value(company))
             values[company.id] = value
         # gardé pour la liquidation amiable de la phase 7 (même mois)
         self._restart_value_by_id = values
@@ -1254,6 +1294,9 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
     def _industry_dynamics(self, f: MonthFlows) -> None:
         live = self.live
         state = (self.public.account,)
+        if getattr(self, "nonresident", None) is not None:
+            # monde à plusieurs régions : les non-résidents n'apportent pas leurs titres
+            state = (self.public.account, self.nonresident)
         # recapitalisations décidées avant les faillites ; l'État n'apporte pas ses titres aux
         # offres publiques, les entreprises qu'il contrôle n'en lancent ni n'en reçoivent
         self._rescue_public_companies()
@@ -1391,7 +1434,9 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
         record = build_record(
             self, f, smoothed_investment, business_investment, construction_work, operated
         )
-        enrich_wealth_record(record, self.people, self.companies, live, self.price_index)
+        household_wealth = {} if live.influence_ranking else None
+        enrich_wealth_record(record, self.people, self.companies, live, self.price_index,
+                             household_wealth=household_wealth)
         # mesures des cinq idées de novembre 2026 (aucune décision ne les lit)
         record.long_term_unemployment = self.long_term_unemployment_share()
         record.idle_companies = sum(
@@ -1412,7 +1457,18 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
         self._record_institutions(f)
         if self._power_enabled():
             # lot K : relevé mensuel de l'influence, de l'opinion et des aides (mesures seules)
-            self._power_record()
+            # Les fortunes viennent d'être relevées ; les écritures
+            # institutionnelles intermédiaires ne changent ni actifs ni dettes.
+            self._power_record(household_wealth=household_wealth)
+        if live.media_sector:
+            # lot M : relevé mensuel des médias (mesures seules)
+            self._media_record()
+        if live.bank_relationships:
+            # lot S : relevé mensuel des relations bancaires (mesures seules)
+            self._bankrel_record()
+        if live.adaptive_agents:
+            # lot R : apprentissage des entreprises et des ménages sur les comptes du mois
+            self._learning_step()
         return record
 
     def _apply_event_effects(self) -> None:
@@ -1446,7 +1502,8 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
             self.population_growth_progress >= 1.0
             and len(self.people) < population_cap
         ):
-            person_number = len(self.people) + 1
+            # (ménages partis vers une autre région : leurs identifiants ne sont pas réutilisés)
+            person_number = len(self.people) + 1 + getattr(self, "_departed", 0)
             newcomer = Person(
                 f"p{person_number - 1:04d}",
                 f"Nouveau ménage {person_number}",

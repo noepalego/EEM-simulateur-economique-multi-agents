@@ -1,13 +1,19 @@
 from __future__ import annotations
 
+import pyarrow as pa
 import streamlit as st
 from altair.utils.schemapi import disable_debug_mode
 from inspect import signature
+from time import perf_counter
 from uuid import uuid4
 
 from economy.models import SimulationConfig
 from economy.simulation import EconomySimulation, SECTORS
-from economy.warmup_cache import warmed_simulation
+from economy.sectors import sector_label
+from economy.warmup_cache import warm_many, warmed_simulation
+from economy.advance_cache import AdvanceCache
+from economy import world_views
+from economy.world import World, WorldConfig, REGION_PROFILES, region_configs
 from economy.institutions import (
     FLOW_LABELS,
     INDICATOR_LABELS,
@@ -142,40 +148,45 @@ def compact(value: float, unit: str = "") -> str:
     return f"{sign}{magnitude:,.0f}".replace(",", " ") + unit
 
 
-def _vega_chart(mark: str, data, x: str, y=None) -> None:
+def _vega_chart(mark: str, data, x: str, y=None, title: str | None = None) -> None:
     """Graphique Vega-Lite direct (optimisation du 6 novembre 2026). ``st.line_chart`` construisait
     un graphique Altair puis le validait contre le schéma Vega-Lite à chaque rendu (environ 1,5 s
     sur six affichages au profil) ; ici, la spécification est écrite directement, les données
     passées au format long (une ligne par période et par série), sans validation. Mêmes
     arguments que les appels existants : ``x`` (colonne des abscisses) et ``y`` (une colonne, une
-    liste, ou toutes les autres colonnes)."""
-    rows = list(data)
+    liste, ou toutes les autres colonnes). ``title`` : titre de l'axe vertical ; à donner quand
+    un sélecteur change la mesure tracée sans changer les séries : le navigateur ne redessine pas
+    un graphique dont la spécification et la forme des données sont restées les mêmes."""
+    rows = data if isinstance(data, list) else list(data)
     if y is None:
         names = [key for key in dict.fromkeys(k for row in rows for k in row) if key != x]
     else:
         names = [y] if isinstance(y, str) else list(y)
-    long = [
-        {"x": row.get(x), "Série": name, "Valeur": row.get(name)}
-        for row in rows for name in names
-    ]
+    # Streamlit peut sérialiser la table Arrow directement, sans dictionnaire par point
+    # ni conversion intermédiaire en DataFrame Pandas.
+    points = pa.table({
+        "x": [row.get(x) for row in rows for _ in names],
+        "Série": names * len(rows),
+        "Valeur": [row.get(name) for row in rows for name in names],
+    })
     nominal = mark == "bar"
     encoding = {
         "x": {"field": "x", "type": "nominal" if nominal else "quantitative", "title": x,
               **({"sort": None, "axis": {"labelAngle": 0}} if nominal else {})},
         "y": {"field": "Valeur", "type": "quantitative",
-              "title": names[0] if len(names) == 1 else None,
+              "title": title if title is not None else names[0] if len(names) == 1 else None,
               **({"stack": "zero"} if mark == "area" else {"stack": None} if mark == "line" else {})},
         "tooltip": [{"field": "x", "title": x}, {"field": "Série"}, {"field": "Valeur", "format": ",.4~f"}],
     }
     if len(names) > 1:
         encoding["color"] = {"field": "Série", "type": "nominal", "sort": names, "title": None,
                              "legend": {"orient": "bottom"}}
-    st.vega_lite_chart(long, {"mark": {"type": mark, "tooltip": True}, "encoding": encoding},
+    st.vega_lite_chart(points, {"mark": {"type": mark, "tooltip": True}, "encoding": encoding},
                        use_container_width=True)
 
 
-def line_chart(data, x: str, y=None) -> None:
-    _vega_chart("line", data, x, y)
+def line_chart(data, x: str, y=None, title: str | None = None) -> None:
+    _vega_chart("line", data, x, y, title)
 
 
 def area_chart(data, x: str, y=None) -> None:
@@ -207,8 +218,10 @@ def new_simulation() -> EconomySimulation:
     """Simulation après la chauffe pour les réglages de la barre latérale. L'état après chauffe est
     mémorisé (``economy.warmup_cache`` : mêmes réglages et même code, même état, bit pour bit) :
     une réinitialisation déjà calculée ne refait pas les 120 mois de chauffe."""
-    return warmed_simulation(
-        SimulationConfig(
+    cache = st.session_state.get("_advance_cache")
+    if cache is not None:
+        cache.invalidate()
+    config = SimulationConfig(
             population_size=st.session_state.population_size,
             companies_per_sector=st.session_state.companies_per_sector,
             warmup_months=12 * st.session_state.warmup_years,
@@ -381,15 +394,90 @@ def new_simulation() -> EconomySimulation:
             corporate_lobbying=bool(st.session_state.corporate_lobbying),
             revolving_door=bool(st.session_state.revolving_door),
             political_dynasties=bool(st.session_state.political_dynasties),
+            media_sector=bool(st.session_state.media_sector),
+            media_outlets=int(st.session_state.media_outlets),
+            media_subscription_share=st.session_state.media_subscription_percent / 100,
+            media_ad_share=st.session_state.media_ad_percent / 100,
+            media_ad_reach=st.session_state.media_ad_reach_percent / 100,
+            media_vote_weight=st.session_state.media_vote_percent / 100,
+            bank_relationships=bool(st.session_state.bank_relationships),
+            bank_review_share=st.session_state.bank_review_percent / 100,
+            bank_run_threshold=float(st.session_state.bank_run_threshold),
+            bank_specialization=float(st.session_state.bank_specialization),
+            adaptive_agents=bool(st.session_state.adaptive_agents),
+            learning_period_months=int(st.session_state.learning_period_months),
+            learning_step=st.session_state.learning_step_percent / 100,
+            imitation_rate=st.session_state.imitation_percent / 100,
         )
-    )
+    st.session_state.pop("active_region", None)
+    if st.session_state.world_enabled:
+        world_config = WorldConfig(
+            base=config, regions=int(st.session_state.world_regions),
+            profiles=None if st.session_state.world_profiles else (),
+            integration_month=int(st.session_state.integration_month),
+            interregional_trade=bool(st.session_state.interregional_trade),
+            transport_cost=st.session_state.transport_percent / 100,
+            migration=bool(st.session_state.migration),
+            migration_monthly_share=st.session_state.migration_monthly_percent / 100,
+            migration_gain=st.session_state.migration_gain_percent / 100,
+            commuting=bool(st.session_state.commuting),
+            commuting_monthly_share=st.session_state.commuting_monthly_percent / 100,
+            commuting_gain=st.session_state.commuting_gain_percent / 100,
+            cross_border_takeovers=bool(st.session_state.cross_border_takeovers),
+            investment_screening=bool(st.session_state.investment_screening),
+            yardstick_voting=bool(st.session_state.yardstick_voting),
+            yardstick_weight=float(st.session_state.yardstick_weight),
+            tax_competition=bool(st.session_state.tax_competition),
+            tax_competition_weight=float(st.session_state.tax_competition_weight),
+            clearing_holding_share=st.session_state.clearing_holding_percent / 100,
+        )
+        # chauffes des régions en parallèle (un processus par région manquante), puis lues ici
+        warm_many(region_configs(world_config))
+        world = World(world_config, factory=warmed_simulation)
+        st.session_state.world = world
+        return world.regions[0]
+    st.session_state.world = None
+    return warmed_simulation(config)
 
 
 def advance_simulation(months: int | None = None) -> None:
     """Avance avant le rendu : une seule exécution affiche le nouvel état."""
     count = int(st.session_state.run_months) if months is None else months
-    for _ in range(count):
-        st.session_state.simulation.step()
+    world = st.session_state.get("world")
+    engine = world or st.session_state.simulation
+    cache = st.session_state.get("_advance_cache")
+    prepared = (cache.take_progress(engine, st.session_state.get("_advance_revision"), count)
+                if cache is not None and st.session_state.get("prepare_advance", True) else None)
+    done = 0
+    if prepared is not None:
+        # avance préparée pendant la lecture : adoptée entière, ou reprise au mois déjà atteint
+        engine, done = prepared
+        if world is not None:
+            st.session_state.world = engine
+            st.session_state.simulation = engine.regions[st.session_state.get("active_region", 0)]
+        else:
+            st.session_state.simulation = engine
+        if done >= count:
+            return
+    progress = st.progress(done / count, text=f"Avance : {done} / {count} mois")
+    last_update = perf_counter()
+    for index in range(done, count):
+        engine.step()
+        now = perf_counter()
+        if now - last_update >= 0.15 or index + 1 == count:
+            progress.progress((index + 1) / count, text=f"Avance : {index + 1} / {count} mois")
+            last_update = now
+    progress.empty()
+
+
+def select_region() -> None:
+    """Change la région inspectée ; les commandes d'avance font tourner le monde entier."""
+    world = st.session_state.world
+    st.session_state.simulation = world.regions[st.session_state.active_region]
+    for key in ("company_selector", "household_selector", "stock_chart_companies",
+                "_intervention_message", "_rate_message"):
+        st.session_state.pop(key, None)
+    st.session_state._view_id = uuid4().hex
 
 
 # -- mode intervention (economy/interventions.py) ------------------------------------------
@@ -399,6 +487,9 @@ def _after_intervention(message: str, slot: str = "_intervention_message") -> No
     """``slot`` : panneau qui affiche le message (taux : ``_rate_message``, lot B)."""
     st.session_state[slot] = message
     st.session_state._view_id = uuid4().hex
+    cache = st.session_state.get("_advance_cache")
+    if cache is not None:
+        cache.invalidate()
 
 
 def _cash_intervention(kind: str, target_id: str, sign: float, key: str) -> None:
@@ -503,7 +594,7 @@ def render_state_interventions(simulation: EconomySimulation) -> None:
     if imposed or forced or (operator and operator.pending_orientation is not None):
         title += " · intervention en cours"
     with st.expander("🛠 Intervenir sur l'État (jusqu'à la prochaine élection)",
-                     **({"key": "state_intervention_panel"} if lazy_expanders else {})):
+                     **({"key": "state_intervention_panel"} if LAZY_EXPANDERS else {})):
         if title.endswith("en cours"):
             st.caption("Intervention en cours.")
         show_intervention_message()
@@ -572,7 +663,7 @@ def render_rate_interventions(simulation: EconomySimulation) -> None:
     forced_rate = getattr(operator, "forced_policy_rate", None) if operator else None
     monetary = dict(getattr(operator, "monetary", {}) or {}) if operator else {}
     title = "🛠 Intervenir sur les taux d'intérêt (banque centrale et banques)"
-    with st.expander(title, **({"key": "rate_intervention_panel"} if lazy_expanders else {})):
+    with st.expander(title, **({"key": "rate_intervention_panel"} if LAZY_EXPANDERS else {})):
         show_intervention_message("_rate_message")
         st.markdown("**Taux directeur de la banque centrale**")
         st.caption(
@@ -633,14 +724,20 @@ LAW_LINE_FLOWS = {
 }
 
 
-def render_institutional_state(simulation: EconomySimulation, observed_history: list) -> None:
-    """Onglet « État » (État institutionnel) : gouvernement, budget,
-    fonction publique, salaire minimum, industrie et journal des décisions.
+LAZY_TABS = "on_change" in signature(st.tabs).parameters
+LAZY_EXPANDERS = "on_change" in signature(st.expander).parameters
 
-    Les blocs sans widget sont mémorisés par simulation et mois (``_view_id`` + mois interne,
-    comme la vue d'ensemble) ; les deux sélecteurs (service, auteur) restent hors cache et
-    entrent dans la clé des blocs qu'ils filtrent (A4, novembre 2026 : 0,29 à 0,37 s par
-    interaction avant)."""
+
+def result_tabs(labels: list[str], key: str):
+    """Onglets suivis par Streamlit, avec rendu classique sur les anciennes versions."""
+    return st.tabs(labels, **({"on_change": "rerun", "key": key} if LAZY_TABS else {}))
+
+
+def tab_is_open(tab) -> bool:
+    return not LAZY_TABS or tab.open
+
+
+def render_institutional_state(simulation: EconomySimulation) -> None:
     inst = getattr(simulation, "institutions", None)
     if inst is None:
         st.info("Le nouvel État est créé au premier mois simulé.")
@@ -649,35 +746,42 @@ def render_institutional_state(simulation: EconomySimulation, observed_history: 
     render_state_head(*view, simulation)
     render_state_interventions(simulation)
     render_rate_interventions(simulation)
-    sections = st.tabs(["Gouvernement", "Budget", "Fonction publique", "Salaire minimum", "Industrie",
-                        "Journal", "Pouvoir & influence"])
-    with sections[6]:
-        # lot K : classement d'influence, popularité, lois de pouvoir, aides, réseaux
-        power_tabs = st.tabs(["Influence", "Popularité & élections", "Lois de pouvoir",
-                              "Aides & favoritisme", "Réseaux"])
-        for power_tab, renderer in zip(power_tabs, (
-            render_power_influence, render_power_popularity, render_power_laws,
-            render_power_aid, render_power_networks,
-        )):
-            with power_tab:
+    government, budget, services, wages, industry, journal, power = result_tabs(
+        ["Gouvernement", "Budget", "Fonction publique", "Salaire minimum", "Industrie",
+         "Journal", "Pouvoir & influence"],
+        "state_section",
+    )
+    for tab, renderer in (
+        (government, render_state_government), (budget, render_state_budget),
+        (wages, render_state_minimum_wage), (industry, render_state_industry),
+    ):
+        if tab_is_open(tab):
+            with tab:
                 renderer(*view, simulation)
-    with sections[0]:
-        render_state_government(*view, simulation)
-    with sections[1]:
-        render_state_budget(*view, simulation)
-    with sections[2]:
-        render_state_services(*view, simulation)
-        choice = st.selectbox("Service", ["Tous", *SERVICE_LABELS], key="public_service_filter",
-                              format_func=lambda key: key if key == "Tous" else SERVICE_LABELS[key])
-        render_state_agents(*view, choice, simulation)
-    with sections[3]:
-        render_state_minimum_wage(*view, simulation)
-    with sections[4]:
-        render_state_industry(*view, simulation)
-    with sections[5]:
-        authors = ["Tous", *dict.fromkeys(d.author for d in inst.journal)]
-        author = st.selectbox("Auteur", authors, key="state_journal_author")
-        render_state_journal(*view, author, simulation)
+    if tab_is_open(services):
+        with services:
+            render_state_services(*view, simulation)
+            choice = st.selectbox("Service", ["Tous", *SERVICE_LABELS], key="public_service_filter",
+                                  format_func=lambda key: key if key == "Tous" else SERVICE_LABELS[key])
+            render_state_agents(*view, choice, simulation)
+    if tab_is_open(journal):
+        with journal:
+            authors = ["Tous", *dict.fromkeys(d.author for d in inst.journal)]
+            author = st.selectbox("Auteur", authors, key="state_journal_author")
+            render_state_journal(*view, author, simulation)
+    if tab_is_open(power):
+        with power:
+            power_tabs = result_tabs(
+                ["Influence", "Popularité & élections", "Lois de pouvoir", "Aides & favoritisme", "Réseaux"],
+                "power_section",
+            )
+            for tab, renderer in zip(power_tabs, (
+                render_power_influence, render_power_popularity, render_power_laws,
+                render_power_aid, render_power_networks,
+            )):
+                if tab_is_open(tab):
+                    with tab:
+                        renderer(*view, simulation)
 
 
 def _state_context(simulation: EconomySimulation):
@@ -1450,7 +1554,7 @@ def render_power_networks(view_id: str, month: int, _simulation: EconomySimulati
 
 
 @st.cache_data(show_spinner=False, max_entries=4)
-def render_overview(view_id: str, month: int, _simulation: EconomySimulation) -> None:
+def render_overview_markets(view_id: str, month: int, _simulation: EconomySimulation) -> None:
     """Mémorise le rendu sans widgets, par simulation et mois, sans hacher le moteur.
 
     L'identifiant est renouvelé à chaque réinitialisation et propre à la session.
@@ -1459,7 +1563,7 @@ def render_overview(view_id: str, month: int, _simulation: EconomySimulation) ->
     simulation = _simulation
     observed_history = simulation.observed_history
     latest = observed_history[-1] if observed_history else None
-    population = simulation.population_summary()
+    employed = sum(person.employer_id is not None for person in simulation.people)
     left, right = st.columns([1.55, 1], gap="large")
     with left:
         st.subheader("Les marchés dans le temps")
@@ -1538,52 +1642,6 @@ def render_overview(view_id: str, month: int, _simulation: EconomySimulation) ->
                     x="Période",
                     y=["Inflation mensuelle (%)", "Taux directeur (%)"],
                 )
-            employment_history = [
-                {
-                    "Période": record.month,
-                    "Avec emploi": record.employed_count,
-                    "Sans emploi": max(
-                        0, record.population_count - record.employed_count
-                    ),
-                    "Population": record.population_count,
-                }
-                for record in observed_history
-            ]
-            activity_history = [
-                {
-                    "Période": record.month,
-                    "Ventes nourriture": record.food_sold,
-                    "Ventes biens": record.goods_sold,
-                    "Demande non satisfaite — nourriture": record.unmet_food_demand,
-                    "Demande non satisfaite — biens": record.unmet_goods_demand,
-                }
-                for record in observed_history
-            ]
-            st.caption("Emploi et chômage")
-            area_chart(
-                employment_history,
-                x="Période",
-                y=["Avec emploi", "Sans emploi"],
-            )
-            st.caption("Croissance de la population")
-            line_chart(
-                employment_history,
-                x="Période",
-                y="Population",
-            )
-            st.caption("Ventes réalisées et demande non satisfaite")
-            line_chart(activity_history, x="Période")
-            inventory_history = [
-                {
-                    "Période": record.month,
-                    "Stock alimentaire restant": record.food_inventory,
-                    "Stock de biens restant": record.goods_inventory,
-                    "Stock technologique restant": record.technology_inventory,
-                }
-                for record in observed_history
-            ]
-            st.caption("Stocks invendus en fin de période")
-            line_chart(inventory_history, x="Période")
         elif observed_history:
             st.caption("Les courbes se dessinent à partir de la deuxième période.")
         else:
@@ -1622,7 +1680,7 @@ def render_overview(view_id: str, month: int, _simulation: EconomySimulation) ->
 
     st.subheader("Le circuit économique")
     flow = st.columns(4)
-    flow[0].metric("Emplois", f"{population['employed']:.0f}", help="Ménages employés par les entreprises.")
+    flow[0].metric("Emplois", str(employed), help="Ménages employés par les entreprises.")
     flow[1].metric("Ventes alimentaires", f"{latest.food_sold:.1f}" if latest else "—", help="Unités achetées par les ménages.")
     flow[2].metric("Ventes de biens", f"{latest.goods_sold:.1f}" if latest else "—", help="Biens courants écoulés.")
     flow[3].metric("Dividendes versés", compact(latest.dividends_paid, " €") if latest else "—")
@@ -1633,7 +1691,13 @@ def render_overview(view_id: str, month: int, _simulation: EconomySimulation) ->
             f"{latest.sector_market_share.get('goods', 0.0):.0%}."
         )
 
-    st.divider()
+
+
+@st.cache_data(show_spinner=False, max_entries=4)
+def render_overview_wealth(view_id: str, month: int, _simulation: EconomySimulation) -> None:
+    simulation = _simulation
+    observed_history = simulation.observed_history
+    latest = observed_history[-1] if observed_history else None
     st.subheader("Fortunes & concentration")
     st.markdown(
         '<p class="section-note">Fortune nette = liquidités + actions + immobilier - dettes.</p>',
@@ -1730,6 +1794,7 @@ def render_overview(view_id: str, month: int, _simulation: EconomySimulation) ->
     # les deux palmarès en un seul calcul (auparavant deux fois tous les patrimoines)
     top_households, top_companies = wealth_leaderboards(simulation.people, simulation.companies,
                                                         simulation.live, 5)
+    company_labels = simulation.company_labels()
     with richest_households:
         st.markdown("#### Ménages les plus fortunés")
         for row in top_households:
@@ -1744,12 +1809,65 @@ def render_overview(view_id: str, month: int, _simulation: EconomySimulation) ->
         for row in top_companies:
             with st.container(border=True):
                 st.markdown(
-                    f"**{simulation.company_label(row['id'])}** · **{row['Fortune nette']:,.0f} €**  \n"
-                    f"{dict(SECTORS)[row['Secteur']]} · Trésorerie {row['Trésorerie']:,.0f} € · "
+                    f"**{simulation.company_label(row['id'], company_labels)}** · **{row['Fortune nette']:,.0f} €**  \n"
+                    f"{sector_label(row['Secteur'])} · Trésorerie {row['Trésorerie']:,.0f} € · "
                     f"Dette {row['Dettes']:,.0f} € · Bénéfice {row['Profit']:,.0f} €"
                 )
 
+
+
+@st.cache_data(show_spinner=False, max_entries=4)
+def render_overview_sectors(view_id: str, month: int, _simulation: EconomySimulation) -> None:
+    simulation = _simulation
+    observed_history = simulation.observed_history
     if len(observed_history) > 1:
+        st.subheader("Activité et emploi")
+        employment_history = [
+            {
+                "Période": record.month,
+                "Avec emploi": record.employed_count,
+                "Sans emploi": max(
+                    0, record.population_count - record.employed_count
+                ),
+                "Population": record.population_count,
+            }
+            for record in observed_history
+        ]
+        activity_history = [
+            {
+                "Période": record.month,
+                "Ventes nourriture": record.food_sold,
+                "Ventes biens": record.goods_sold,
+                "Demande non satisfaite — nourriture": record.unmet_food_demand,
+                "Demande non satisfaite — biens": record.unmet_goods_demand,
+            }
+            for record in observed_history
+        ]
+        st.caption("Emploi et chômage")
+        area_chart(
+            employment_history,
+            x="Période",
+            y=["Avec emploi", "Sans emploi"],
+        )
+        st.caption("Croissance de la population")
+        line_chart(
+            employment_history,
+            x="Période",
+            y="Population",
+        )
+        st.caption("Ventes réalisées et demande non satisfaite")
+        line_chart(activity_history, x="Période")
+        inventory_history = [
+            {
+                "Période": record.month,
+                "Stock alimentaire restant": record.food_inventory,
+                "Stock de biens restant": record.goods_inventory,
+                "Stock technologique restant": record.technology_inventory,
+            }
+            for record in observed_history
+        ]
+        st.caption("Stocks invendus en fin de période")
+        line_chart(inventory_history, x="Période")
         st.subheader("Évolution de l'emploi par secteur")
         sector_chart_data = [
             {
@@ -1884,6 +2002,8 @@ OPTIONAL_MECHANISMS = {
     "influence_ranking": True, "personal_popularity": True, "candidate_elections": True,
     "executive_power_laws": True, "business_subsidies": True, "political_favoritism": True,
     "corporate_lobbying": True, "revolving_door": True, "political_dynasties": True,
+    "media_sector": True, "bank_relationships": True, "adaptive_agents": True,
+    "enriched_objectives": True, "ownership_regime": True,
 }
 
 
@@ -1891,6 +2011,7 @@ def _set_optional_mechanisms(enabled: bool) -> None:
     """Coche ou décoche d'un coup les mécanismes optionnels (appliqués à la réinitialisation)."""
     for key, value in OPTIONAL_MECHANISMS.items():
         st.session_state[key] = value if enabled else type(value)()
+    st.session_state.world_enabled = enabled
 
 
 @st.fragment
@@ -1907,7 +2028,8 @@ def render_sidebar() -> None:
             "**Mécanismes optionnels** : groupes, magasins, fonds, expérience, conseil d'actionnaires, "
             "fermeture des entreprises sans salarié (6 mois), exigence de fonds propres contracyclique "
             "et recapitalisation de dernier recours des banques, obligations d'entreprise, commerce "
-            "extérieur, négociation collective."
+            "extérieur, négociation collective, médias, apprentissage et relations bancaires. "
+            "« Tout activer » ouvre aussi le monde à plusieurs régions."
         )
         preset = st.columns(2)
         preset[0].button("Tout activer", key="optional_all_on", use_container_width=True,
@@ -1918,6 +2040,62 @@ def render_sidebar() -> None:
                          help="Revient à la configuration de base ; réinitialisez ensuite la simulation.")
         active = sum(bool(st.session_state.get(key)) for key in OPTIONAL_MECHANISMS)
         st.caption(f"{active} mécanisme(s) optionnel(s) coché(s) sur {len(OPTIONAL_MECHANISMS)}.")
+        with st.expander("Monde & régions", expanded=False):
+            st.checkbox("Monde à plusieurs régions", key="world_enabled",
+                        help="Chaque région a son gouvernement, sa banque centrale, sa monnaie et ses entreprises. "
+                             "Les commandes d'avance font progresser toutes les régions ensemble.")
+            st.slider("Nombre de régions", 1, 4, 3, key="world_regions")
+            st.checkbox("Profils régionaux distincts", value=True, key="world_profiles")
+            st.caption(" · ".join(f"{p['nom']} : {p['description']}" for p in REGION_PROFILES))
+            st.number_input("Mois d'isolement avant intégration", 0, 1200, 0, key="integration_month")
+            st.checkbox("Commerce entre régions", value=True, key="interregional_trade")
+            st.slider("Coût de transport", 0, 100, 10, format="%d %%", key="transport_percent")
+            st.checkbox("Déménagements entre régions", value=True, key="migration")
+            st.slider("Départs maximaux par mois", 0.0, 5.0, 0.5, 0.1,
+                      format="%.1f %%", key="migration_monthly_percent")
+            st.slider("Gain de revenu requis pour partir", 0, 100, 15,
+                      format="%d %%", key="migration_gain_percent")
+            st.checkbox("Travailleurs frontaliers", value=True, key="commuting")
+            st.slider("Nouveaux contrats frontaliers par mois", 0.0, 5.0, 0.5, 0.1,
+                      format="%.1f %%", key="commuting_monthly_percent")
+            st.slider("Gain net requis pour travailler ailleurs", 0, 100, 15,
+                      format="%d %%", key="commuting_gain_percent")
+            st.checkbox("Rachats entre régions", value=True, key="cross_border_takeovers")
+            st.checkbox("Filtrage des rachats de secteurs critiques", value=True, key="investment_screening")
+            st.checkbox("Vote par comparaison avec les voisins", value=True, key="yardstick_voting")
+            st.slider("Poids de la comparaison régionale", 0.0, 1.0, 0.5, 0.05, key="yardstick_weight")
+            st.checkbox("Concurrence fiscale entre gouvernements", value=True, key="tax_competition")
+            st.slider("Poids de la concurrence fiscale", 0.0, 1.0, 0.25, 0.05, key="tax_competition_weight")
+            st.slider("Plafond de compensation (PIB annuel)", 0.0, 10.0, 2.0, 0.5,
+                      format="%.1f %%", key="clearing_holding_percent")
+            st.caption("La chauffe reste indépendante dans chaque région. L'isolement commence ensuite, "
+                       "à la période 0. Quatre régions demandent environ quatre fois plus de calcul.")
+        with st.expander("Médias, banques & apprentissage", expanded=False):
+            st.checkbox("Entreprises de médias", key="media_sector")
+            st.slider("Médias à fonder", 1, 8, 3, key="media_outlets")
+            st.slider("Abonnement (budget de services)", 0.0, 20.0, 4.0, 0.5,
+                      format="%.1f %%", key="media_subscription_percent")
+            st.slider("Publicité (chiffre d'affaires)", 0.0, 10.0, 1.0, 0.1,
+                      format="%.1f %%", key="media_ad_percent")
+            st.slider("Portée maximale de la publicité", 0, 100, 30,
+                      format="%d %%", key="media_ad_reach_percent")
+            st.slider("Biais maximal du revenu perçu", 0, 30, 10,
+                      format="%d %%", key="media_vote_percent")
+            st.checkbox("Relations bancaires individuelles", key="bank_relationships")
+            st.slider("Clients comparant les banques chaque mois", 0, 100, 8,
+                      format="%d %%", key="bank_review_percent")
+            st.slider("Seuil de fuite (solidité de la banque)", 0.0, 1.0, 0.5, 0.05,
+                      key="bank_run_threshold")
+            st.slider("Avantage de spécialisation bancaire", 0.0, 2.0, 0.5, 0.1,
+                      key="bank_specialization")
+            st.checkbox("Agents apprenants", key="adaptive_agents")
+            st.slider("Durée des essais (mois)", 2, 60, 12, key="learning_period_months")
+            st.slider("Pas d'apprentissage", 0.0, 20.0, 5.0, 0.5,
+                      format="%.1f %%", key="learning_step_percent")
+            st.slider("Part d'imitation des pairs", 0, 100, 25,
+                      format="%d %%", key="imitation_percent")
+            st.caption("Les agents apprennent à partir de leurs propres résultats ; une même graine "
+                       "et les mêmes réglages reproduisent la même trajectoire.")
         with st.expander("Population & entreprises", expanded=True):
             st.number_input("Ménages", min_value=10, max_value=500, value=240, step=10, key="population_size")
             st.number_input("Entreprises par secteur", min_value=1, max_value=10, value=3, key="companies_per_sector")
@@ -2523,7 +2701,8 @@ def render_sidebar() -> None:
                 "Détection par l'audit (par mois et par affaire)", min_value=0, max_value=50, value=3,
                 format="%d %%", key="audit_detection_percent",
                 disabled=not st.session_state.get("political_favoritism", False),
-                help="Divisée par quatre sous la loi « contrôle affaibli » ; la presse ajoute 1 % par mois.",
+                help="Divisée par quatre sous la loi « contrôle affaibli » ; avec les médias activés, "
+                     "les enquêtes dépendent des journalistes et de leur indépendance ; sinon la presse ajoute 1 %.",
             )
             st.checkbox(
                 "Lobbying et dons de campagne", key="corporate_lobbying",
@@ -3508,7 +3687,7 @@ def render_company_profile(
         st.subheader(labels[selected_company.id])
         founder_label, founder_share = simulation.founder_stake(selected_company)
         st.caption(
-            f"{dict(SECTORS)[selected_company.sector].split(' (')[0]} · "
+            f"{sector_label(selected_company.sector).split(' (')[0]} · "
             + (f"filiale de {labels[selected_company.parent_id]} · "
                if selected_company.parent_id in labels else "")
             + f"{'cotée en Bourse' if selected_company.listed else 'non cotée'} · "
@@ -3803,7 +3982,7 @@ def render_company_profile_end(
                 issued = max(company.shares_outstanding - company.treasury_shares, 1e-9)
                 st.markdown(
                     f"- Filiale : **{labels[company.id]}** · "
-                    f"{dict(SECTORS)[company.sector].split(' (')[0]} · "
+                    f"{sector_label(company.sector).split(' (')[0]} · "
                     f"{selected_company.shares.get(company.id, 0.0) / issued:.0%} du capital · "
                     f"{len(company.employees)} salariés · bénéfice du mois {company.profit:,.0f} €"
                 )
@@ -3891,173 +4070,247 @@ def render_stock_chart(
     line_chart(stock_history, x="Période")
 
 
-render_sidebar()
-
-if "simulation" not in st.session_state:
-    with st.spinner("Période de chauffe : construction de l'état initial…"):
-        st.session_state.simulation = new_simulation()
-simulation: EconomySimulation = st.session_state.simulation
-if st.session_state.get("_view_simulation") is not simulation:
-    st.session_state._view_simulation = simulation
-    st.session_state._view_id = uuid4().hex
-# mois affichés : depuis la période 0, sans la période de chauffe
-observed_history = simulation.observed_history
-
-header, controls = st.columns([1.5, 1], vertical_alignment="center")
-with header:
-    st.markdown('<div class="eyebrow">Simulation multi-agents · tableau de bord</div>', unsafe_allow_html=True)
-    st.title("Économie en mouvement")
-    st.caption("Suivez les décisions des entreprises, les arbitrages des ménages et l’évolution des marchés.")
-with controls:
-    st.markdown(f'<span class="month-pill">Période {simulation.period}</span>', unsafe_allow_html=True)
-    st.write("")
-    one_month, run_length = st.columns([1, 1.1])
-    with one_month:
-        st.button("▶  Un mois", type="primary", use_container_width=True,
-                  on_click=advance_simulation, args=(1,))
-    with run_length:
-        st.number_input("Période", min_value=1, max_value=120, value=12, step=1,
-                        label_visibility="collapsed", key="run_months")
-        st.button("Avancer", use_container_width=True, on_click=advance_simulation)
-
-if simulation.period:
-    st.info(f"**À retenir — période {simulation.period} :** {simulation.last_event}")
-elif simulation.warmup_offset:
-    st.info(
-        f"**Démarrage :** l'économie a déjà tourné {simulation.warmup_offset} mois de chauffe "
-        "avec les mêmes règles, pour construire un état initial cohérent (emplois, capital, "
-        "bilans, logements). L'observation commence maintenant."
+def render_overview(simulation: EconomySimulation) -> None:
+    tabs = result_tabs(
+        ["Marchés", "Fortunes & concentration", "Secteurs & ressources"], "overview_section",
     )
-else:
-    st.info("**Démarrage :** avancez d’un mois pour observer les marchés s’ajuster aux décisions des agents.")
+    for tab, renderer in zip(tabs, (render_overview_markets, render_overview_wealth, render_overview_sectors)):
+        if tab_is_open(tab):
+            with tab:
+                renderer(st.session_state._view_id, simulation.month, simulation)
 
-population = simulation.population_summary()
-employment_rate = population["employed"] / max(1, len(simulation.people))
-latest = observed_history[-1] if observed_history else None
-metrics = [*st.columns(4), *st.columns(4)]
-metrics[0].metric(
-    "Ménages employés",
-    f"{int(population['employed'])} / {len(simulation.people)}" if latest else "—",
-    f"{employment_rate:.0%} du total" if latest else None,
-    help="Nombre de ménages employés et part de la population.",
-)
-metrics[1].metric("Prix alimentaire", f"{simulation.food_price:.2f} €")
-metrics[2].metric("Prix des biens", f"{simulation.goods_price:.2f} €")
-metrics[3].metric("Loyer mensuel", f"{simulation.rent:.2f} €")
-metrics[4].metric(
-    "Prix des matières premières",
-    f"{simulation.resources.raw_material_price:.2f} €",
-)
-metrics[5].metric(
-    "Réserve vierge",
-    compact(simulation.resources.raw_materials),
-    help=(
-        f"{simulation.resources.raw_materials:,.0f} unités, reconstituées par "
-        f"l'exploration. Matières recyclées disponibles : "
-        f"{simulation.resources.recycled_materials:,.1f}."
-    ),
-)
-metrics[6].metric(
-    "Indice des prix",
-    f"{latest.consumer_price_index:.1f}" if latest else "100,0",
-    f"{latest.inflation_rate:+.1%} ce mois-ci" if latest else None,
-    help="Indice des prix à la consommation, base 100 au démarrage.",
-)
-metrics[7].metric(
-    "Salaire réel moyen",
-    f"{latest.real_average_wage:,.0f} €" if latest else "—",
-    help="Salaire moyen corrigé de l'évolution des prix, en euros de la période de départ.",
-)
-credit_metrics = [*st.columns(3), *st.columns(3)]
-credit_metrics[0].metric(
-    "PIB réel mensuel",
-    compact(latest.real_gdp, " €") if latest else "—",
-    help=(
-        f"{latest.real_gdp:,.0f} € — ventes finales, loyers, achats publics et "
-        "investissement valorisés aux prix de départ."
-        if latest
-        else "Valorisé aux prix de départ."
-    ),
-)
-credit_metrics[1].metric(
-    "PIB nominal mensuel",
-    compact(latest.nominal_gdp, " €") if latest else "—",
-    f"dont récurrent {compact(latest.recurrent_gdp, ' €')}" if latest else None,
-    help=(
-        f"{latest.nominal_gdp:,.0f} € (récurrent {latest.recurrent_gdp:,.0f} € + "
-        f"construction {latest.construction_value_added:,.0f} €)."
-        if latest
-        else "PIB récurrent + construction à sa valeur ajoutée."
-    ),
-)
-credit_metrics[2].metric(
-    "Taux directeur simulé",
-    f"{latest.policy_rate:.2%}" if latest else f"{simulation.policy_rate:.2%}",
-    help="Ajusté progressivement selon l'inflation et le chômage observés.",
-)
-credit_metrics[3].metric(
-    "Crédits immobiliers",
-    compact(latest.mortgage_debt, " €") if latest else "—",
-    help=f"{latest.mortgage_debt:,.0f} €" if latest else None,
-)
-credit_metrics[4].metric(
-    "Emplois publics",
-    f"{latest.public_employment}" if latest else "—",
-    help="Agents employés par l'État (fonction publique), payés sur le budget public.",
-)
-banks = [
-    company
-    for company in simulation.companies
-    if company.sector == "bank" and company.active
-]
-credit_metrics[5].metric(
-    "Banques actives",
-    f"{len(banks)}",
-    f"{compact(sum(bank.bank_equity for bank in banks), ' €')} de fonds propres",
-    help=(
-        f"Fonds propres : {sum(bank.bank_equity for bank in banks):,.0f} €. "
-        f"Prêts en cours : {latest.bank_loan_portfolio:,.0f} €. "
-        if latest
-        else "Les banques sont des entreprises cotées."
-    ),
-)
 
-# Les sélections survivent au nettoyage des widgets des onglets non rendus.
-for selection_key in ("company_selector", "household_selector", "stock_chart_companies"):
-    if selection_key in st.session_state:
-        st.session_state[selection_key] = st.session_state[selection_key]
+def render_media_panel(simulation: EconomySimulation) -> None:
+    if not simulation.live.media_sector:
+        st.info("Activez « Entreprises de médias », puis réinitialisez la simulation.")
+        return
+    st.caption("Les abonnements et la publicité financent les journalistes. La ligne suit les propriétaires ; "
+               "les enquêtes dépendent de l'indépendance vis-à-vis des propriétaires et annonceurs.")
+    rows = simulation.media_table()
+    if rows:
+        labels = {p.id: p.name for p in simulation.people}
+        labels.update(simulation.company_labels())
+        st.dataframe([{
+            "Média": r["nom"], "Propriétaire": labels.get(r["proprietaire"], r["proprietaire"] or "—"),
+            "Ligne (0 droite, 100 gauche)": r["ligne"], "Lecteurs": r["lecteurs"],
+            "Journalistes": r["journalistes"], "Crédibilité": r["credibilite"],
+            "Abonnements (€)": r["abonnements"], "Publicité (€)": r["publicite"],
+            "Trésorerie (€)": r["tresorerie"], "Révélations": r["revelations"],
+        } for r in rows], hide_index=True, width="stretch")
+    else:
+        st.info("Aucun média en activité : une fondation exige un ménage ayant assez de capital.")
+    history = simulation.media_history()
+    if history:
+        line_chart([{"Période": r["periode"], "Lecteurs": r["lecteurs"],
+                     "Journalistes": r["journalistes"]} for r in history], "Période")
+        line_chart([{"Période": r["periode"], "Pluralisme": r["pluralisme"]} for r in history], "Période")
+    events = simulation.media_events()
+    if events:
+        st.dataframe(events[:100], hide_index=True, width="stretch")
 
-# Les conteneurs dynamiques existent depuis Streamlit 1.55 ; conserver le
-# rendu complet sur les versions antérieures autorisées par requirements.txt.
-lazy_tabs = "on_change" in signature(st.tabs).parameters
-lazy_expanders = "on_change" in signature(st.expander).parameters
-overview, state_tab, firms_tab, households_tab, model_tab = st.tabs(
-    ["Vue d’ensemble", "État", "Entreprises & bourse", "Ménages", "Modèle & réglages"],
-    **({"on_change": "rerun", "key": "results_tab"} if lazy_tabs else {}),
-)
 
-if not lazy_tabs or overview.open:
-    with overview:
-        render_overview(st.session_state._view_id, simulation.month, simulation)
+def render_bank_relations_panel(simulation: EconomySimulation) -> None:
+    if not simulation.live.bank_relationships:
+        st.info("Activez « Relations bancaires individuelles », puis réinitialisez la simulation.")
+        return
+    rows = simulation.bank_relations_table()
+    if rows:
+        st.dataframe([{
+            "Banque": r["nom"], "Ménages clients": r["menages"], "Autres clients": r["autres_clients"],
+            "Dépôts (€)": r["depots"], "Prêts (€)": r["prets"],
+            "Écart de financement (€)": r["ecart_financement"],
+            "Taux annuel des dépôts": r["taux_depots_annuel"], "Solidité": r["solidite"],
+            "Spécialité": r["specialite"], "Part de la spécialité": r["part_specialite"],
+        } for r in rows], hide_index=True, width="stretch", column_config={
+            "Taux annuel des dépôts": st.column_config.NumberColumn(format="percent"),
+            "Part de la spécialité": st.column_config.NumberColumn(format="percent"),
+        })
+    else:
+        st.info("Avancez d'un mois pour établir les relations bancaires.")
+    history = simulation.bank_relations_history()
+    if history:
+        line_chart([{"Période": r["periode"], "Changements": r["changements"],
+                     "Fuites": r["fuites"]} for r in history], "Période")
+        line_chart([{"Période": r["periode"], "Concentration des dépôts": r["concentration_depots"],
+                     "Part des prêts à la banque principale": r["part_banque_principale"]}
+                    for r in history], "Période")
+    state = getattr(simulation, "bankrel", None)
+    if state:
+        labels = simulation.company_labels()
+        with st.expander("Comptes des clients"):
+            clients = simulation._bank_clients()
+            st.dataframe([{"Client": getattr(agent, "name", agent_id), "Identifiant": agent_id,
+                           "Banque": labels.get(state.home.get(agent_id), "—"),
+                           "Trésorerie (€)": agent.cash}
+                          for agent_id, agent in clients], hide_index=True, width="stretch")
 
-if not lazy_tabs or state_tab.open:
-    with state_tab:
-        render_institutional_state(simulation, observed_history)
 
-if not lazy_tabs or firms_tab.open:
-    with firms_tab:
-        active_companies = [company for company in simulation.companies if company.active]
+def render_learning_panel(simulation: EconomySimulation) -> None:
+    if not simulation.live.adaptive_agents:
+        st.info("Activez « Agents apprenants », puis réinitialisez la simulation.")
+        return
+    st.caption("Les entreprises essaient des prix et des taux de réinvestissement, annulent les essais "
+               "décevants et imitent les plus rentables de leur secteur. Les ménages adaptent leur "
+               "précaution et leur goût du risque ; les dirigeants emportent leur style.")
+    history = simulation.learning_history()
+    if not history:
+        st.info("Avancez d'un mois pour observer les premières décisions.")
+        return
+    line_chart([{"Période": r["periode"], "Agressivité des prix": r["agressivite_prix"],
+                 "Part réinvestie": r["part_reinvestie"], "Goût du risque": r["gout_du_risque"],
+                 "Propension à consommer": r["propension_a_consommer"]} for r in history], "Période")
+    st.dataframe([{"Période": r["periode"], "Essais gardés": r["essais_gardes"],
+                   "Essais annulés": r["essais_annules"], "Imitations": r["imitations"],
+                   "Styles apportés": r["styles_apportes"], "Révisions du risque": r["revisions_risque"]}
+                  | {"Essais des banques": r.get("essais_banques", 0),
+                     "Essais des ministres": r.get("essais_ministres", 0)}
+                  for r in history[-60:]], hide_index=True, width="stretch")
+
+
+def render_world(simulation: EconomySimulation) -> None:
+    world = st.session_state.get("world")
+    if world is None:
+        st.info("Activez « Monde à plusieurs régions » dans les réglages, puis réinitialisez.")
+        return
+    remaining = max(0, world.config.integration_month - world.month)
+    st.caption(f"{len(world.regions)} régions · période {world.month} · "
+               + (f"ouverture des échanges dans {remaining} mois" if remaining else "échanges ouverts")
+               + ". Les montants sont exprimés dans la monnaie de chaque région ; les taux de change "
+                 "donnent sa valeur en unité commune.")
+    rows = world.region_table()
+    if not rows:
+        st.info("Avancez d'un mois pour comparer les régions.")
+        return
+    labels = {
+        "region": "Région", "population": "Ménages", "pib_reel_par_menage": "PIB réel par ménage",
+        "chomage": "Chômage", "salaire_reel": "Salaire réel", "orientation": "Orientation",
+        "taux_de_change": "Change", "entreprises": "Entreprises", "importations": "Importations",
+        "exportations": "Exportations", "arrivees": "Arrivées", "departs": "Départs",
+        "controlees_de_l_etranger": "Filiales étrangères",
+        "frontaliers_sortants": "Résidents frontaliers", "frontaliers_entrants": "Salariés non résidents",
+        "taux_impot_societes": "Impôt sur les sociétés",
+    }
+    regions_tab, firms_tab, groups_tab, households_tab = result_tabs(
+        ["Régions", "Entreprises du monde", "Groupes & filiales", "Fortunes"], "world_section",
+    )
+    percent = st.column_config.NumberColumn(format="percent")
+    amount = st.column_config.NumberColumn(format="%.0f")
+    common = ("Montants en unité commune (monnaie de la région × son taux de change), pour comparer "
+              "des régions qui n'ont pas la même monnaie.")
+    if tab_is_open(regions_tab):
+        with regions_tab:
+            totals = world_views.world_totals(world)
+            cols = st.columns(6)
+            cols[0].metric("Ménages du monde", f"{totals['menages']:,}".replace(",", " "))
+            cols[1].metric("Entreprises", f"{totals['entreprises']}",
+                           help=f"{totals['salaries']} salariés au total.")
+            cols[2].metric("PIB mensuel du monde", compact(totals["pib_nominal"]),
+                           help="PIB nominal du dernier mois, somme des régions. " + common)
+            cols[3].metric("Capitalisation du monde", compact(totals["capitalisation"]), help=common)
+            cols[4].metric("Chômage du monde", f"{totals['chomage']:.1%}",
+                           help="Moyenne des régions pondérée par leur nombre de ménages.")
+            cols[5].metric("Entreprises contrôlées d'ailleurs", f"{totals['controlees']}",
+                           help=f"Par {totals['groupes_multiregionaux']} groupe(s) d'une autre région. "
+                                f"{totals['frontaliers']} ménage(s) travaillent hors de leur région.")
+            st.caption("Poids de chaque région dans le monde")
+            st.dataframe(totals["regions"], hide_index=True, width="stretch",
+                         column_config={key: percent for key in totals["regions"][0] if key != "Région"})
+            st.dataframe([{label: row[key] for key, label in labels.items()} for row in rows],
+                         hide_index=True, width="stretch", column_config={"Chômage": percent})
+            indicator = st.selectbox("Comparer les régions", (
+                "pib_reel_par_menage", "chomage", "salaire_reel", "taux_de_change", "population",
+                "entreprises", "importations", "exportations", "orientation",
+                "frontaliers_sortants", "controlees_de_l_etranger",
+                "taux_impot_societes",
+            ), format_func=lambda key: labels[key], key="world_indicator")
+            # le titre de l'axe change avec l'indicateur : sans lui, le navigateur gardait la
+            # courbe précédente (même spécification, même nombre de points)
+            line_chart([{"Période": h["mois"], **{r["region"]: r[indicator] for r in h["regions"]}}
+                        for h in world.history], "Période", title=labels[indicator])
+            with st.expander("Compensation et contrôle monétaire"):
+                residuals = world.money_residuals()
+                st.dataframe([{"Région": world.names[i], "Avoirs de la chambre": r["avoirs_chambre"],
+                               "Écart de l'identité monétaire": residuals[i]}
+                              for i, r in enumerate(rows)], hide_index=True, width="stretch")
+            if world.log:
+                with st.expander("Journal des échanges et des décisions"):
+                    st.dataframe(list(reversed(world.log[-200:])), hide_index=True, width="stretch")
+    if tab_is_open(firms_tab):
+        with firms_tab:
+            st.markdown("#### Classement mondial des entreprises")
+            left, right = st.columns([2, 1])
+            sort = left.selectbox("Classer par", list(world_views.RANKING_KEYS), key="world_ranking_sort")
+            st.session_state.setdefault("world_ranking_limit", 20)
+            limit = right.selectbox("Nombre d'entreprises", (10, 20, 50), key="world_ranking_limit")
+            ranking = world_views.company_ranking(world, limit, sort)
+            if ranking:
+                first = ranking[0]
+                st.caption(f"Première entreprise du monde par {sort.lower()} : **{first['Entreprise']}** "
+                           f"({first['Région']}, {first['Secteur'].split(' (')[0]}). " + common)
+            st.dataframe(ranking, hide_index=True, width="stretch", column_config={
+                "Capitalisation": amount, "Chiffre d'affaires": amount, "Bénéfice": amount})
+            st.markdown("#### Leaders par secteur")
+            st.caption("Première entreprise de chaque secteur par chiffre d'affaires du mois, et part de "
+                       "chaque région dans le chiffre d'affaires mondial du secteur.")
+            leaders = world_views.sector_leaders(world)
+            st.dataframe(leaders, hide_index=True, width="stretch", column_config={
+                key: percent for key in (leaders[0] if leaders else {}) if key.startswith("Part")})
+    if tab_is_open(groups_tab):
+        with groups_tab:
+            st.markdown("#### Groupes et filiales par région")
+            groups, subsidiaries = world_views.group_rows(world)
+            if groups:
+                st.caption("Une ligne par tête de groupe : filiales créées ou rachetées dans sa région, et "
+                           "entreprises contrôlées dans une autre région. " + common)
+                st.dataframe(groups, hide_index=True, width="stretch", column_config={
+                    "Chiffre d'affaires du groupe": amount, "Capitalisation de la tête": amount})
+                st.caption("Qui possède quoi, et où")
+                st.dataframe(subsidiaries, hide_index=True, width="stretch", column_config={
+                    "Part détenue": percent, "Chiffre d'affaires": amount})
+            else:
+                st.caption("Aucun groupe pour l'instant : aucune entreprise n'a de filiale, dans sa région ou "
+                           "ailleurs. Les filiales locales demandent les mécanismes de groupes (« Tout "
+                           "activer ») ; les prises de contrôle entre régions arrivent après l'ouverture "
+                           "des échanges.")
+            st.markdown("#### Prises de contrôle entre régions")
+            bids = world.foreign_groups()
+            if bids:
+                st.dataframe(bids, hide_index=True, width="stretch")
+            else:
+                st.caption("Aucune prise de contrôle ni offre en cours.")
+            st.markdown("#### Titres détenus d'une région à l'autre")
+            st.caption("Valeur des titres d'entreprises d'une région (lignes) détenus par des entreprises ou "
+                       "des ménages qui résident ailleurs (colonnes). " + common)
+            matrix = world_views.ownership_matrix(world)
+            st.dataframe(matrix, hide_index=True, width="stretch", column_config={
+                **{key: amount for key in matrix[0] if key.startswith("Porteurs")},
+                "Part de la capitalisation": percent})
+    if tab_is_open(households_tab):
+        with households_tab:
+            st.markdown("#### Plus grandes fortunes du monde")
+            st.caption(common + " Les titres gardés dans une autre région après un déménagement sont comptés.")
+            st.dataframe(world_views.household_ranking(world), hide_index=True, width="stretch",
+                         column_config={key: amount for key in (
+                             "Fortune nette", "Trésorerie", "Immobilier", "Actions",
+                             "dont titres d'une autre région", "Dette immobilière")})
+
+
+def render_firms(simulation: EconomySimulation) -> None:
+    (firms_list, firm_sheet, groups_tab, funds_tab, market_tab, bonds_tab, trade_tab,
+     unions_tab, media_tab, banks_tab, learning_tab) = result_tabs(
+        ["Toutes les entreprises", "Fiche d'une entreprise", "Groupes & filiales",
+         "Fonds d'investissement", "Bourse", "Obligations", "Commerce extérieur", "Syndicats",
+         "Médias", "Relations bancaires", "Apprentissage"],
+        "firms_section",
+    )
+    if tab_is_open(firm_sheet) or tab_is_open(market_tab):
         companies_by_id = {company.id: company for company in simulation.companies}
         company_labels = simulation.company_labels()
         company_options = sorted(
-            (company.id for company in active_companies),
-            key=lambda company_id: (companies_by_id[company_id].sector, company_labels[company_id]),
+            (company.id for company in simulation.companies if company.active),
+            key=lambda cid: (companies_by_id[cid].sector, company_labels[cid]),
         )
-        (firms_list, firm_sheet, groups_tab, funds_tab, market_tab, bonds_tab, trade_tab,
-         unions_tab) = st.tabs(
-            ["Toutes les entreprises", "Fiche d'une entreprise", "Groupes & filiales",
-             "Fonds d'investissement", "Bourse", "Obligations", "Commerce extérieur", "Syndicats"]
-        )
+    if tab_is_open(firms_list):
         with firms_list:
             st.markdown(
                 '<p class="section-note">Entreprises en activité, par secteur. Les entreprises fermées ou '
@@ -4066,6 +4319,7 @@ if not lazy_tabs or firms_tab.open:
             )
             render_firm_tables(st.session_state._view_id, simulation.month, simulation)
 
+    if tab_is_open(firm_sheet):
         with firm_sheet:
             selected_company_id = None
             if company_options:
@@ -4086,48 +4340,61 @@ if not lazy_tabs or firms_tab.open:
                     ),
                     key="company_selector",
                 )
-            selected_company = simulation.company_profile(selected_company_id) if selected_company_id else None
+            selected_company = companies_by_id.get(selected_company_id)
             if selected_company:
                 view = (st.session_state._view_id, simulation.month, selected_company_id, simulation)
                 render_company_profile(*view)
-                company = companies_by_id[selected_company_id]
+                company = selected_company
                 if company.sector != "bank":
                     with st.expander(f"🛠 Intervenir sur la trésorerie de l'entreprise ({company.cash:,.0f} €)".replace(",", " "),
-                                     **({"key": "company_intervention_panel"} if lazy_expanders else {})):
+                                     **({"key": "company_intervention_panel"} if LAZY_EXPANDERS else {})):
                         show_intervention_message()
                         render_cash_intervention("company", company.id, company.cash)
                 if selected_company.financial_history:
-                    # volet fermé par défaut : les huit courbes ne sont calculées qu'à l'ouverture
+                    # volet fermé par défaut : les courbes ne sont calculées qu'à l'ouverture
                     # (versions de Streamlit sans volet paresseux : toujours calculées)
                     history_panel = st.expander(
                         "Historiques de l'entreprise (trésorerie, activité, dividendes, effectifs, dette, cours)",
-                        **({"key": "company_history_panel", "on_change": "rerun"} if lazy_expanders else {}),
+                        **({"key": "company_history_panel", "on_change": "rerun"} if LAZY_EXPANDERS else {}),
                     )
-                    if not lazy_expanders or history_panel.open:
+                    if not LAZY_EXPANDERS or history_panel.open:
                         with history_panel:
                             render_company_history(*view)
                 render_company_profile_end(*view)
             else:
                 st.info("Aucune entreprise active à afficher.")
 
+    if tab_is_open(groups_tab):
         with groups_tab:
             render_groups_panel(st.session_state._view_id, simulation.month, simulation)
 
+    if tab_is_open(funds_tab):
         with funds_tab:
             render_funds_panel(st.session_state._view_id, simulation.month, simulation)
 
+    if tab_is_open(bonds_tab):
         with bonds_tab:
             render_bonds_panel(st.session_state._view_id, simulation.month, simulation)
 
+    if tab_is_open(trade_tab):
         with trade_tab:
             render_trade_panel(st.session_state._view_id, simulation.month, simulation)
 
+    if tab_is_open(unions_tab):
         with unions_tab:
             render_unions_panel(st.session_state._view_id, simulation.month, simulation)
 
+    for tab, renderer in ((media_tab, render_media_panel), (banks_tab, render_bank_relations_panel),
+                          (learning_tab, render_learning_panel)):
+        if tab_is_open(tab):
+            with tab:
+                renderer(simulation)
+
+    if tab_is_open(market_tab):
         with market_tab:
             st.markdown("#### Cours boursiers")
             listed_options = [cid for cid in company_options if companies_by_id[cid].listed]
+            history_ready = len(simulation.observed_history) > 1
             if listed_options:
                 if "stock_chart_companies" in st.session_state:
                     st.session_state["stock_chart_companies"] = [
@@ -4144,11 +4411,11 @@ if not lazy_tabs or firms_tab.open:
                     format_func=lambda company_id: company_labels[company_id],
                     key="stock_chart_companies",
                 )
-                if len(observed_history) > 1 and stock_selection:
+                if history_ready and stock_selection:
                     render_stock_chart(
                         st.session_state._view_id, simulation.month, tuple(stock_selection), simulation
                     )
-                elif len(observed_history) <= 1:
+                elif not history_ready:
                     st.caption("La courbe se dessine après deux mois de simulation.")
                 else:
                     st.info("Sélectionnez au moins une entreprise pour afficher son cours.")
@@ -4159,18 +4426,36 @@ if not lazy_tabs or firms_tab.open:
                 "entreprise ; les cours réagissent aux bénéfices et aux événements."
             )
 
-if not lazy_tabs or households_tab.open:
-    with households_tab:
-        st.subheader("Ménages : revenus, besoins et logement")
-        st.markdown(
-            '<p class="section-note">Les dépenses dépendent du revenu disponible ; les ressources les plus faibles sont prioritaires à suivre.</p>',
-            unsafe_allow_html=True,
-        )
-        people_by_wealth = sorted(simulation.people, key=simulation.household_wealth, reverse=True)
-        households_overview, household_sheet, households_list = st.tabs(
-            ["Vue d'ensemble", "Fiche d'un ménage", "Tous les ménages"]
-        )
+
+@st.cache_data(show_spinner=False, max_entries=8)
+def household_fortunes(view_id: str, month: int, _simulation: EconomySimulation) -> dict[str, float]:
+    simulation = _simulation
+    prices = share_prices(simulation.companies)
+    return {
+        person.id: household_net_worth(person, simulation.companies, simulation.live, prices)
+        for person in simulation.people
+    }
+
+
+def render_households(simulation: EconomySimulation) -> None:
+    st.subheader("Ménages : revenus, besoins et logement")
+    st.markdown(
+        '<p class="section-note">Les dépenses dépendent du revenu disponible ; les ressources les plus faibles sont prioritaires à suivre.</p>',
+        unsafe_allow_html=True,
+    )
+    households_overview, household_sheet, households_list = result_tabs(
+        ["Vue d'ensemble", "Fiche d'un ménage", "Tous les ménages"],
+        "households_section",
+    )
+    view = (st.session_state._view_id, simulation.month)
+    if tab_is_open(household_sheet) or tab_is_open(households_list):
+        fortunes = household_fortunes(*view, simulation)
+        people_by_wealth = sorted(simulation.people, key=lambda person: fortunes[person.id], reverse=True)
+        company_labels = simulation.company_labels()
+    if tab_is_open(households_overview):
         with households_overview:
+            population = simulation.population_summary()
+            observed_history = simulation.observed_history
             household_metrics = st.columns(4)
             household_metrics[0].metric("Trésorerie moyenne", compact(population["average_cash"], " €"), help=f"{population['average_cash']:,.1f} €")
             household_metrics[1].metric("Nourriture achetée", f"{population['food']:.1f} unités")
@@ -4181,20 +4466,17 @@ if not lazy_tabs or households_tab.open:
                       f"{observed_history[-1].poverty_rate:.0%}" if observed_history else None),
             )
             if len(observed_history) > 1:
-                # fortunes calculées une fois (auparavant une fois par tranche et par ménage)
-                prices = share_prices(simulation.companies)
-                fortunes = [household_net_worth(p, simulation.companies, simulation.live, prices)
-                            for p in simulation.people]
+                values = list(household_fortunes(*view, simulation).values())
                 # classes adaptatives (lot A2, novembre 2026) : les six tranches fixes de 0 à
                 # 250 k€ regroupaient presque tous les ménages dans une ou deux barres
-                distribution = wealth_distribution(fortunes)
+                distribution = wealth_distribution(values)
                 st.subheader("Répartition des fortunes")
-                ordered = sorted(fortunes)
+                ordered = sorted(values)
                 st.caption(
                     f"Classes recalculées chaque mois sur 90 % des ménages (quantiles 5 %–95 %), "
                     f"queues dans les classes ouvertes · médiane {compact(ordered[len(ordered) // 2], ' €')} · "
                     f"de {compact(ordered[0], ' €')} à {compact(ordered[-1], ' €')} · "
-                    f"{sum(v < -0.5 for v in fortunes)} ménage(s) en patrimoine négatif"
+                    f"{sum(v < -0.5 for v in values)} ménage(s) en patrimoine négatif"
                 )
                 # barres horizontales : jusqu'à douze libellés de classe sans chevauchement
                 st.vega_lite_chart(
@@ -4210,6 +4492,7 @@ if not lazy_tabs or households_tab.open:
                     },
                     use_container_width=True,
                 )
+    if tab_is_open(household_sheet):
         with household_sheet:
             person_options = [person.id for person in people_by_wealth]
             people_by_id = {person.id: person for person in simulation.people}
@@ -4221,8 +4504,8 @@ if not lazy_tabs or households_tab.open:
                 person_options,
                 format_func=lambda person_id: (
                     f"{people_by_id[person_id].name} · "
-                    f"Fortune {simulation.household_wealth(people_by_id[person_id]):,.0f} € · "
-                    f"{simulation.company_label(people_by_id[person_id].employer_id)}"
+                    f"Fortune {fortunes[person_id]:,.0f} € · "
+                    f"{simulation.company_label(people_by_id[person_id].employer_id, company_labels)}"
                 ),
                 key="household_selector",
             )
@@ -4234,7 +4517,7 @@ if not lazy_tabs or households_tab.open:
                 person = selected_person["person"]
                 st.subheader(person.name)
                 st.caption(
-                    f"Employeur : {simulation.company_label(person.employer_id)} · "
+                    f"Employeur : {simulation.company_label(person.employer_id, company_labels)} · "
                     f"Rôle : {person.employment_role} · "
                     f"Logement : {'propriétaire' if person.owns_home else 'locataire' if person.rental_owner_id else 'aucun'} · "
                     f"Compétence : {person.skill:.2f} · ancienneté : {person.employer_tenure} mois"
@@ -4266,7 +4549,7 @@ if not lazy_tabs or households_tab.open:
                 person_metrics[4].metric("Dette immobilière", f"{person.mortgage_debt:,.0f} €")
                 person_metrics[5].metric("Mensualité du prêt", f"{person.mortgage_payment:,.0f} €")
                 with st.expander("🛠 Intervenir sur ce ménage : trésorerie et compétence",
-                                 **({"key": "household_intervention_panel"} if lazy_expanders else {})):
+                                 **({"key": "household_intervention_panel"} if LAZY_EXPANDERS else {})):
                     show_intervention_message()
                     st.markdown("**Trésorerie**")
                     render_cash_intervention("household", person.id, person.cash)
@@ -4338,6 +4621,7 @@ if not lazy_tabs or households_tab.open:
                         x="Période",
                         y=["Revenus", "Dividendes", "Dépenses"],
                     )
+    if tab_is_open(households_list):
         with households_list:
             st.caption(
                 "Un ménage par ligne, trié par fortune nette ; cliquez sur un en-tête de colonne pour "
@@ -4349,7 +4633,7 @@ if not lazy_tabs or households_tab.open:
                     {
                         "Ménage": p.name,
                         "Âge": p.age_months // 12,
-                        "Employeur": simulation.company_label(p.employer_id) if p.employer_id else "sans emploi",
+                        "Employeur": simulation.company_label(p.employer_id, company_labels) if p.employer_id else "sans emploi",
                         "Métier": p.trade,
                         "Logement": "propriétaire" if p.owns_home else "locataire" if p.rental_owner_id else "aucun",
                         "Revenu du mois (€)": p.income_this_turn,
@@ -4357,7 +4641,7 @@ if not lazy_tabs or households_tab.open:
                         "Actions (€)": sum(q * list_prices.get(cid, 0.0) for cid, q in p.shares.items()),
                         "Parts de fonds (€)": p.fund_value,
                         "Logements loués": p.investment_homes,
-                        "Fortune nette (€)": household_net_worth(p, simulation.companies, simulation.live, list_prices),
+                        "Fortune nette (€)": fortunes[p.id],
                     }
                     for p in people_by_wealth
                 ],
@@ -4369,96 +4653,280 @@ if not lazy_tabs or households_tab.open:
                 },
             )
 
-if not lazy_tabs or model_tab.open:
-    with model_tab:
-        st.subheader("Mécanismes qui font émerger la concentration")
-        improvements = [
-            ("Agents et patrimoines", "Ménages et entreprises ont des profils, des historiques et des patrimoines nets. Les palmarès, les Gini du patrimoine et du revenu disponible, les parts du décile et du 1 % supérieurs, la pauvreté et les ménages sans logement suivent leur évolution."),
-            ("Logement", "Un ménage sans logement dépose une demande de location ; chaque promoteur compte les demandes qu'il n'a pas pu servir dans sa prévision et construit sur du foncier qui s'étend avec la ville. Pénurie et loyers se lisent sur tout le parc locatif. Un ménage n'achète un logement à louer que si son rendement locatif dépasse celui de son épargne, et revend un logement resté vide."),
-            ("Prix et anticipations", "Les entreprises prévoient leur demande et ajustent leurs prix selon leurs coûts, stocks, ventes et concurrents. Les anticipations utilisent aussi la crédibilité apprise de la banque centrale."),
-            ("Travail et salaires", "Les entreprises proposent des salaires selon leurs signaux locaux et limitent leurs effectifs à un travail jugé rentable. La référence salariale suit les offres du marché ; le minimum légal borne la rémunération due. Une entreprise sans poste vacant modère son offre quand le chômage de longue durée (12 mois et plus) est répandu ; une entreprise dont les recettes ne couvrent pas la paie baisse aussi ses salaires au lieu de seulement licencier, et ne compte pas comme vacants les postes qu'elle vient de supprimer."),
-            ("Démographie et successions", "Chaque chef de ménage vieillit ; la mortalité croît avec l'âge (espérance de vie d'environ 74 ans). À son décès, un héritier lui succède : il garde patrimoine, dettes, logement et emploi du ménage, mais repart de sa propre compétence et de ses propres traits, sans l'expérience du défunt. L'État prélève des droits de succession au-delà d'un abattement, à un taux fixé par sa doctrine (nul à l'extrême droite, doublé à l'extrême gauche) ; un patrimoine illiquide paie le reste au fil des mois."),
-            ("Éducation publique", "Un service de l'Éducation scolarise la génération suivante des ménages. Sa couverture, lissée sur une quinzaine d'années, relève la compétence de départ des héritiers et des nouveaux ménages : un effet modeste, une fois par génération."),
-            ("Élections", "Chaque ménage vote : sa proximité politique, déplacée par ses intérêts selon son rang de fortune, l'évolution de son revenu réel pendant le mandat et ses propres mois sans emploi décident de son soutien au sortant. L'opposition défend la position médiane de son camp ; le résultat figure au journal de l'État."),
-            ("Investissement", "Les entreprises évaluent les ventes supplémentaires et les salaires économisés, puis financent les projets par trésorerie et crédit. Les logements sont livrés après un délai et payés au fil du chantier."),
-            ("Création et disparition", "Les ménages éligibles peuvent fonder une entreprise, qui porte leur nom. Pendant douze mois, ses titres offerts servent la demande avant les vendeurs. Le fondateur revend ensuite ses titres sur le marché, au cours, pour se diversifier ou reconstituer sa trésorerie. Insolvabilité et cessation de paiements peuvent fermer même le dernier producteur d'un secteur ; il n'existe plus de faillite aléatoire des jeunes entreprises. Une entreprise sans salarié réembauche quand un poste rapporte ce qu'il coûte dans son secteur (toujours si le secteur n'a plus aucun employeur) ; sans perspective pendant deux ans, sans dette ni actif physique, ses actionnaires la liquident à l'amiable et récupèrent sa trésorerie."),
-            ("Banques et monnaie", "Un prêt crée un dépôt ; son remboursement détruit de la monnaie. Les banques évaluent le risque, la liquidité et leurs fonds propres. L'aide publique à leur résolution est plafonnée. Le taux directeur suit une règle de Taylor, sauf s'il est forcé en intervention ; une marge supplémentaire réglable s'ajoute à tous les crédits."),
-            ("État institutionnel", "Présidence et ministres ont des doctrines et objectifs. Une loi de finances organise impôts et dépenses sans ratio de dette visé. L'impôt sur le revenu a un barème progressif indexé (taux de base, puis surtaxe) et inclut dividendes et loyers : au barème à gauche, au forfait réduit à droite. Les transferts sont d'autant plus ciblés sur les bas revenus que le gouvernement est à gauche ; le minimum légal peut atteindre 80 % du médian à l'extrême gauche. Aucun Gini n'est visé. Services publics, minimum légal et politique industrielle figurent dans l'onglet État."),
-            ("Bourse et concurrence", "Les ordres d'achat et de vente font évoluer les cours avec les estimations fondamentales. Les rachats reposent sur une offre de valeur et l'acceptation des actionnaires. Les dividendes transfèrent la trésorerie aux détenteurs des titres."),
-        ]
-        for title, description in improvements:
-            st.markdown(f"**{title}**  \n{description}")
-        st.markdown(
-            "**Bilan et valorisation**  \n"
-            "Les fiches distinguent actifs, dettes, capitaux propres et capitalisation. "
-            "Le cours converge graduellement vers une estimation mêlant actifs nets, "
-            "bénéfices anticipés et croissance récente des ventes ; les principaux ratios "
-            "sont affichés lorsqu'ils sont définis."
+
+def render_model(simulation: EconomySimulation) -> None:
+    st.subheader("Mécanismes qui font émerger la concentration")
+    improvements = [
+        ("Agents et patrimoines", "Ménages et entreprises ont des profils, des historiques et des patrimoines nets. Les palmarès, les Gini du patrimoine et du revenu disponible, les parts du décile et du 1 % supérieurs, la pauvreté et les ménages sans logement suivent leur évolution."),
+        ("Logement", "Un ménage sans logement dépose une demande de location ; chaque promoteur compte les demandes qu'il n'a pas pu servir dans sa prévision et construit sur du foncier qui s'étend avec la ville. Pénurie et loyers se lisent sur tout le parc locatif. Un ménage n'achète un logement à louer que si son rendement locatif dépasse celui de son épargne, et revend un logement resté vide."),
+        ("Prix et anticipations", "Les entreprises prévoient leur demande et ajustent leurs prix selon leurs coûts, stocks, ventes et concurrents. Les anticipations utilisent aussi la crédibilité apprise de la banque centrale."),
+        ("Travail et salaires", "Les entreprises proposent des salaires selon leurs signaux locaux et limitent leurs effectifs à un travail jugé rentable. La référence salariale suit les offres du marché ; le minimum légal borne la rémunération due. Une entreprise sans poste vacant modère son offre quand le chômage de longue durée (12 mois et plus) est répandu ; une entreprise dont les recettes ne couvrent pas la paie baisse aussi ses salaires au lieu de seulement licencier, et ne compte pas comme vacants les postes qu'elle vient de supprimer."),
+        ("Démographie et successions", "Chaque chef de ménage vieillit ; la mortalité croît avec l'âge (espérance de vie d'environ 74 ans). À son décès, un héritier lui succède : il garde patrimoine, dettes, logement et emploi du ménage, mais repart de sa propre compétence et de ses propres traits, sans l'expérience du défunt. L'État prélève des droits de succession au-delà d'un abattement, à un taux fixé par sa doctrine (nul à l'extrême droite, doublé à l'extrême gauche) ; un patrimoine illiquide paie le reste au fil des mois."),
+        ("Éducation publique", "Un service de l'Éducation scolarise la génération suivante des ménages. Sa couverture, lissée sur une quinzaine d'années, relève la compétence de départ des héritiers et des nouveaux ménages : un effet modeste, une fois par génération."),
+        ("Élections", "Chaque ménage vote : sa proximité politique, déplacée par ses intérêts selon son rang de fortune, l'évolution de son revenu réel pendant le mandat et ses propres mois sans emploi décident de son soutien au sortant. L'opposition défend la position médiane de son camp ; le résultat figure au journal de l'État."),
+        ("Investissement", "Les entreprises évaluent les ventes supplémentaires et les salaires économisés, puis financent les projets par trésorerie et crédit. Les logements sont livrés après un délai et payés au fil du chantier."),
+        ("Création et disparition", "Les ménages éligibles peuvent fonder une entreprise, qui porte leur nom. Pendant douze mois, ses titres offerts servent la demande avant les vendeurs. Le fondateur revend ensuite ses titres sur le marché, au cours, pour se diversifier ou reconstituer sa trésorerie. Insolvabilité et cessation de paiements peuvent fermer même le dernier producteur d'un secteur ; il n'existe plus de faillite aléatoire des jeunes entreprises. Une entreprise sans salarié réembauche quand un poste rapporte ce qu'il coûte dans son secteur (toujours si le secteur n'a plus aucun employeur) ; sans perspective pendant deux ans, sans dette ni actif physique, ses actionnaires la liquident à l'amiable et récupèrent sa trésorerie."),
+        ("Banques et monnaie", "Un prêt crée un dépôt ; son remboursement détruit de la monnaie. Les banques évaluent le risque, la liquidité et leurs fonds propres. L'aide publique à leur résolution est plafonnée. Le taux directeur suit une règle de Taylor, sauf s'il est forcé en intervention ; une marge supplémentaire réglable s'ajoute à tous les crédits."),
+        ("État institutionnel", "Présidence et ministres ont des doctrines et objectifs. Une loi de finances organise impôts et dépenses sans ratio de dette visé. L'impôt sur le revenu a un barème progressif indexé (taux de base, puis surtaxe) et inclut dividendes et loyers : au barème à gauche, au forfait réduit à droite. Les transferts sont d'autant plus ciblés sur les bas revenus que le gouvernement est à gauche ; le minimum légal peut atteindre 80 % du médian à l'extrême gauche. Aucun Gini n'est visé. Services publics, minimum légal et politique industrielle figurent dans l'onglet État."),
+        ("Bourse et concurrence", "Les ordres d'achat et de vente font évoluer les cours avec les estimations fondamentales. Les rachats reposent sur une offre de valeur et l'acceptation des actionnaires. Les dividendes transfèrent la trésorerie aux détenteurs des titres."),
+    ]
+    for title, description in improvements:
+        st.markdown(f"**{title}**  \n{description}")
+    st.markdown(
+        "**Bilan et valorisation**  \n"
+        "Les fiches distinguent actifs, dettes, capitaux propres et capitalisation. "
+        "Le cours converge graduellement vers une estimation mêlant actifs nets, "
+        "bénéfices anticipés et croissance récente des ventes ; les principaux ratios "
+        "sont affichés lorsqu'ils sont définis."
+    )
+    st.markdown(
+        "**Flux entre agents**  \n"
+        "Les extracteurs vendent des ressources finies aux entreprises alimentaires et "
+        "industrielles ; les entreprises technologiques vendent leurs solutions à d'autres "
+        "firmes. Une fraction configurable des matières incorporées aux biens vendus est "
+        "récupérée le mois suivant et rejoint un stock recyclé distinct des réserves vierges. "
+        "Les achats de services et de matériaux ne rémunèrent que des fournisseurs employeurs. "
+        "Sans fournisseur capable de servir la commande, l'acheteur conserve son argent ; "
+        "aucun fonds amont orphelin n'est alimenté."
+    )
+    st.markdown(
+        "**État, salaires et monnaie**  \n"
+        "Le budget suit la loi votée, les recettes, les engagements et les possibilités de "
+        "financement. Les besoins non financés restent visibles. Les entreprises arbitrent "
+        "entre investissements, remboursement, placements et distributions. Le PIB récurrent "
+        "exclut la construction, comptée séparément à sa valeur ajoutée au fil des chantiers."
+    )
+    # lot B : valeurs de base des taux (config) et valeurs du mois (live, forçages compris)
+    st.subheader("Taux d'intérêt : valeurs de base et en vigueur")
+    base, live = simulation.config, simulation.live
+    operator = getattr(simulation, "interventions", None)
+    forced_rate = getattr(operator, "forced_policy_rate", None) if operator else None
+    monetary = getattr(operator, "monetary", {}) if operator else {}
+    rate_rows = [
+        ("Taux directeur", "règle de Taylor", f"{12.0 * simulation.policy_rate:.2%}"
+         + (" (forcé)" if forced_rate is not None else "")),
+        ("Taux réel neutre (Taylor)", f"{base.taylor_neutral_real_rate:.2%}", f"{live.taylor_neutral_real_rate:.2%}"),
+        ("Inflation visée (annuelle)", f"{(1 + base.inflation_target) ** 12 - 1:.2%}",
+         f"{(1 + live.inflation_target) ** 12 - 1:.2%}"),
+        ("Plafond du taux directeur", f"{base.policy_rate_cap:.2%}", f"{live.policy_rate_cap:.2%}"),
+        ("Lissage mensuel du taux directeur", f"{base.policy_rate_smoothing:.2f}", f"{live.policy_rate_smoothing:.2f}"),
+        ("Écart du crédit immobilier", f"{12 * base.mortgage_spread:.2%}", f"{12 * live.mortgage_spread:.2%}"),
+        ("Écart du crédit à la consommation", f"{12 * base.consumer_credit_spread:.2%}",
+         f"{12 * live.consumer_credit_spread:.2%}"),
+        ("Écart des dépôts sous le directeur", f"{12 * base.deposit_spread:.2%}", f"{12 * live.deposit_spread:.2%}"
+         + (" (forcé)" if "deposit_spread" in monetary else "")),
+        ("Marge supplémentaire des banques", f"{12 * base.bank_margin_offset:.2%}",
+         f"{12 * live.bank_margin_offset:.2%}" + (" (forcée)" if "bank_margin_offset" in monetary else "")),
+        ("Taux servi sur les dépôts", "—", f"{12.0 * simulation.deposit_rate:.2%}"),
+    ]
+    st.dataframe(
+        [{"Taux (annuel)": name, "Base (réglages)": value, "En vigueur ce mois": current}
+         for name, value, current in rate_rows],
+        hide_index=True, use_container_width=True,
+    )
+    st.caption("Base : valeurs de la barre latérale, appliquées à la réinitialisation. En vigueur : "
+               "valeurs du mois, forçages du mode intervention compris (onglet État).")
+    st.divider()
+    st.subheader("Hypothèses et limites")
+    st.markdown(
+        """
+        - Les montants sont des euros nominaux simulés et les périodes des mois. Un ménage représente un consommateur.
+        - Les décisions sont des règles heuristiques ; une identité comptable ne prouve ni le réalisme économique ni la stabilité.
+        - Le logement est homogène. La capacité physique des fournisseurs n'est pas modélisée uniformément dans tous les secteurs.
+        - Les comptes utilisent des flottants. Les prototypes de dépôts bancaires en centimes ne sont pas intégrés au moteur courant.
+        - Limite connue : l'État peut conserver des actions d'une banque fermée après résolution. Ce défaut est documenté et n'a pas été corrigé ; son apparition dépend de la trajectoire.
+        - Un ménage est une lignée : l'héritier succède sous le même identifiant et garde l'emploi du ménage. Il n'y a ni retraite, ni enfants mineurs, ni partage d'une succession entre plusieurs héritiers.
+        - Le calendrier historique de clôture laisse certaines recettes tardives hors du bénéfice mensuel ; il reste inchangé.
+        - Les ratios boursiers annualisent le dernier mois. Le Gini borne à zéro les patrimoines nets négatifs.
+        - Le recyclage ralentit l'épuisement des matières sans garantir l'absence de pénuries. Le commerce extérieur n'est pas simulé.
+        - Aucun résultat de croissance, d'emploi ou de répartition des richesses n'est garanti.
+        """
+    )
+    st.subheader("Ressources disponibles")
+    resource_columns = st.columns(3)
+    for index, (name, value) in enumerate(simulation.resource_summary().items()):
+        resource_columns[index % len(resource_columns)].metric(name, f"{value:,.1f}")
+
+
+@st.fragment
+def render_dashboard() -> None:
+    # Chaque nouveau rendu peut consulter des vues qui mémorisent des mesures. La préparation
+    # en cours continue, mais elle n'est réutilisable qu'une fois confirmée après ce rendu
+    # (``prepare`` compare l'état du moteur à celui dont elle est partie).
+    cache = st.session_state.get("_advance_cache")
+    if cache is None:
+        cache = st.session_state._advance_cache = AdvanceCache()
+    cache.hold()
+    st.session_state._advance_revision = uuid4().hex
+    world = st.session_state.get("world")
+    if world is not None:
+        st.selectbox("Région observée", range(len(world.regions)),
+                     format_func=lambda i: world.names[i], key="active_region", on_change=select_region)
+        st.caption("Les commandes d'avance font progresser toutes les régions. "
+                   "Les fiches et interventions ci-dessous concernent la région sélectionnée.")
+    simulation: EconomySimulation = st.session_state.simulation
+    if st.session_state.get("_view_simulation") is not simulation:
+        st.session_state._view_simulation = simulation
+        st.session_state._view_id = uuid4().hex
+
+    header, controls = st.columns([1.5, 1], vertical_alignment="center")
+    with header:
+        st.markdown('<div class="eyebrow">Simulation multi-agents · tableau de bord</div>', unsafe_allow_html=True)
+        st.title("Économie en mouvement")
+        st.caption("Suivez les décisions des entreprises, les arbitrages des ménages et l’évolution des marchés.")
+    with controls:
+        st.markdown(f'<span class="month-pill">Période {simulation.period}</span>', unsafe_allow_html=True)
+        st.write("")
+        one_month, run_length = st.columns([1, 1.1])
+        with one_month:
+            st.button("▶  Un mois", type="primary", use_container_width=True,
+                      on_click=advance_simulation, args=(1,))
+        with run_length:
+            st.number_input("Période", min_value=1, max_value=120, value=12, step=1,
+                            label_visibility="collapsed", key="run_months")
+            st.button("Avancer", use_container_width=True, on_click=advance_simulation)
+        st.checkbox(
+            "Préparer l’avance pendant la lecture", value=True, key="prepare_advance",
+            help="Prépare l’avance choisie pendant que vous consultez les résultats : au clic, "
+                 "les mois déjà prêts sont repris et seuls les mois restants sont calculés. "
+                 "Utilise davantage de processeur et de mémoire. Une intervention annule cette "
+                 "préparation ; un changement d’onglet la laisse continuer.",
         )
-        st.markdown(
-            "**Flux entre agents**  \n"
-            "Les extracteurs vendent des ressources finies aux entreprises alimentaires et "
-            "industrielles ; les entreprises technologiques vendent leurs solutions à d'autres "
-            "firmes. Une fraction configurable des matières incorporées aux biens vendus est "
-            "récupérée le mois suivant et rejoint un stock recyclé distinct des réserves vierges. "
-            "Les achats de services et de matériaux ne rémunèrent que des fournisseurs employeurs. "
-            "Sans fournisseur capable de servir la commande, l'acheteur conserve son argent ; "
-            "aucun fonds amont orphelin n'est alimenté."
+
+    if simulation.period:
+        st.info(f"**À retenir — période {simulation.period} :** {simulation.last_event}")
+    elif simulation.warmup_offset:
+        st.info(
+            f"**Démarrage :** l'économie a déjà tourné {simulation.warmup_offset} mois de chauffe "
+            "avec les mêmes règles, pour construire un état initial cohérent (emplois, capital, "
+            "bilans, logements). L'observation commence maintenant."
         )
-        st.markdown(
-            "**État, salaires et monnaie**  \n"
-            "Le budget suit la loi votée, les recettes, les engagements et les possibilités de "
-            "financement. Les besoins non financés restent visibles. Les entreprises arbitrent "
-            "entre investissements, remboursement, placements et distributions. Le PIB récurrent "
-            "exclut la construction, comptée séparément à sa valeur ajoutée au fil des chantiers."
-        )
-        # lot B : valeurs de base des taux (config) et valeurs du mois (live, forçages compris)
-        st.subheader("Taux d'intérêt : valeurs de base et en vigueur")
-        base, live = simulation.config, simulation.live
-        operator = getattr(simulation, "interventions", None)
-        forced_rate = getattr(operator, "forced_policy_rate", None) if operator else None
-        monetary = getattr(operator, "monetary", {}) if operator else {}
-        rate_rows = [
-            ("Taux directeur", "règle de Taylor", f"{12.0 * simulation.policy_rate:.2%}"
-             + (" (forcé)" if forced_rate is not None else "")),
-            ("Taux réel neutre (Taylor)", f"{base.taylor_neutral_real_rate:.2%}", f"{live.taylor_neutral_real_rate:.2%}"),
-            ("Inflation visée (annuelle)", f"{(1 + base.inflation_target) ** 12 - 1:.2%}",
-             f"{(1 + live.inflation_target) ** 12 - 1:.2%}"),
-            ("Plafond du taux directeur", f"{base.policy_rate_cap:.2%}", f"{live.policy_rate_cap:.2%}"),
-            ("Lissage mensuel du taux directeur", f"{base.policy_rate_smoothing:.2f}", f"{live.policy_rate_smoothing:.2f}"),
-            ("Écart du crédit immobilier", f"{12 * base.mortgage_spread:.2%}", f"{12 * live.mortgage_spread:.2%}"),
-            ("Écart du crédit à la consommation", f"{12 * base.consumer_credit_spread:.2%}",
-             f"{12 * live.consumer_credit_spread:.2%}"),
-            ("Écart des dépôts sous le directeur", f"{12 * base.deposit_spread:.2%}", f"{12 * live.deposit_spread:.2%}"
-             + (" (forcé)" if "deposit_spread" in monetary else "")),
-            ("Marge supplémentaire des banques", f"{12 * base.bank_margin_offset:.2%}",
-             f"{12 * live.bank_margin_offset:.2%}" + (" (forcée)" if "bank_margin_offset" in monetary else "")),
-            ("Taux servi sur les dépôts", "—", f"{12.0 * simulation.deposit_rate:.2%}"),
-        ]
-        st.dataframe(
-            [{"Taux (annuel)": name, "Base (réglages)": value, "En vigueur ce mois": current}
-             for name, value, current in rate_rows],
-            hide_index=True, use_container_width=True,
-        )
-        st.caption("Base : valeurs de la barre latérale, appliquées à la réinitialisation. En vigueur : "
-                   "valeurs du mois, forçages du mode intervention compris (onglet État).")
-        st.divider()
-        st.subheader("Hypothèses et limites")
-        st.markdown(
-            """
-            - Les montants sont des euros nominaux simulés et les périodes des mois. Un ménage représente un consommateur.
-            - Les décisions sont des règles heuristiques ; une identité comptable ne prouve ni le réalisme économique ni la stabilité.
-            - Le logement est homogène. La capacité physique des fournisseurs n'est pas modélisée uniformément dans tous les secteurs.
-            - Les comptes utilisent des flottants. Les prototypes de dépôts bancaires en centimes ne sont pas intégrés au moteur courant.
-            - Limite connue : l'État peut conserver des actions d'une banque fermée après résolution. Ce défaut est documenté et n'a pas été corrigé ; son apparition dépend de la trajectoire.
-            - Un ménage est une lignée : l'héritier succède sous le même identifiant et garde l'emploi du ménage. Il n'y a ni retraite, ni enfants mineurs, ni partage d'une succession entre plusieurs héritiers.
-            - Le calendrier historique de clôture laisse certaines recettes tardives hors du bénéfice mensuel ; il reste inchangé.
-            - Les ratios boursiers annualisent le dernier mois. Le Gini borne à zéro les patrimoines nets négatifs.
-            - Le recyclage ralentit l'épuisement des matières sans garantir l'absence de pénuries. Le commerce extérieur n'est pas simulé.
-            - Aucun résultat de croissance, d'emploi ou de répartition des richesses n'est garanti.
-            """
-        )
-        st.subheader("Ressources disponibles")
-        resource_columns = st.columns(3)
-        for index, (name, value) in enumerate(simulation.resource_summary().items()):
-            resource_columns[index % len(resource_columns)].metric(name, f"{value:,.1f}")
+    else:
+        st.info("**Démarrage :** avancez d’un mois pour observer les marchés s’ajuster aux décisions des agents.")
+
+    employed = sum(person.employer_id is not None for person in simulation.people)
+    employment_rate = employed / max(1, len(simulation.people))
+    latest = simulation.history[-1] if simulation.history else None
+    metrics = [*st.columns(4), *st.columns(4)]
+    metrics[0].metric(
+        "Ménages employés",
+        f"{employed} / {len(simulation.people)}" if latest else "—",
+        f"{employment_rate:.0%} du total" if latest else None,
+        help="Nombre de ménages employés et part de la population.",
+    )
+    metrics[1].metric("Prix alimentaire", f"{simulation.food_price:.2f} €")
+    metrics[2].metric("Prix des biens", f"{simulation.goods_price:.2f} €")
+    metrics[3].metric("Loyer mensuel", f"{simulation.rent:.2f} €")
+    metrics[4].metric(
+        "Prix des matières premières",
+        f"{simulation.resources.raw_material_price:.2f} €",
+    )
+    metrics[5].metric(
+        "Réserve vierge",
+        compact(simulation.resources.raw_materials),
+        help=(
+            f"{simulation.resources.raw_materials:,.0f} unités, reconstituées par "
+            f"l'exploration. Matières recyclées disponibles : "
+            f"{simulation.resources.recycled_materials:,.1f}."
+        ),
+    )
+    metrics[6].metric(
+        "Indice des prix",
+        f"{latest.consumer_price_index:.1f}" if latest else "100,0",
+        f"{latest.inflation_rate:+.1%} ce mois-ci" if latest else None,
+        help="Indice des prix à la consommation, base 100 au démarrage.",
+    )
+    metrics[7].metric(
+        "Salaire réel moyen",
+        f"{latest.real_average_wage:,.0f} €" if latest else "—",
+        help="Salaire moyen corrigé de l'évolution des prix, en euros de la période de départ.",
+    )
+    credit_metrics = [*st.columns(3), *st.columns(3)]
+    credit_metrics[0].metric(
+        "PIB réel mensuel",
+        compact(latest.real_gdp, " €") if latest else "—",
+        help=(
+            f"{latest.real_gdp:,.0f} € — ventes finales, loyers, achats publics et "
+            "investissement valorisés aux prix de départ."
+            if latest
+            else "Valorisé aux prix de départ."
+        ),
+    )
+    credit_metrics[1].metric(
+        "PIB nominal mensuel",
+        compact(latest.nominal_gdp, " €") if latest else "—",
+        f"dont récurrent {compact(latest.recurrent_gdp, ' €')}" if latest else None,
+        help=(
+            f"{latest.nominal_gdp:,.0f} € (récurrent {latest.recurrent_gdp:,.0f} € + "
+            f"construction {latest.construction_value_added:,.0f} €)."
+            if latest
+            else "PIB récurrent + construction à sa valeur ajoutée."
+        ),
+    )
+    credit_metrics[2].metric(
+        "Taux directeur simulé",
+        f"{latest.policy_rate:.2%}" if latest else f"{simulation.policy_rate:.2%}",
+        help="Ajusté progressivement selon l'inflation et le chômage observés.",
+    )
+    credit_metrics[3].metric(
+        "Crédits immobiliers",
+        compact(latest.mortgage_debt, " €") if latest else "—",
+        help=f"{latest.mortgage_debt:,.0f} €" if latest else None,
+    )
+    credit_metrics[4].metric(
+        "Emplois publics",
+        f"{latest.public_employment}" if latest else "—",
+        help="Agents employés par l'État (fonction publique), payés sur le budget public.",
+    )
+    banks = [
+        company
+        for company in simulation.companies
+        if company.sector == "bank" and company.active
+    ]
+    bank_equity = sum(bank.bank_equity for bank in banks)
+    credit_metrics[5].metric(
+        "Banques actives",
+        f"{len(banks)}",
+        f"{compact(bank_equity, ' €')} de fonds propres",
+        help=(
+            f"Fonds propres : {bank_equity:,.0f} €. "
+            f"Prêts en cours : {latest.bank_loan_portfolio:,.0f} €. "
+            if latest
+            else "Les banques sont des entreprises cotées."
+        ),
+    )
+
+    # Streamlit nettoie les widgets masqués. Conserver le dernier panneau et ses filtres.
+    for key in (
+        "overview_section", "state_section", "power_section", "firms_section", "households_section",
+        "public_service_filter", "state_journal_author", "company_selector", "household_selector",
+        "stock_chart_companies", "world_indicator", "world_section", "world_ranking_sort",
+        "world_ranking_limit",
+    ):
+        if key in st.session_state:
+            st.session_state[key] = st.session_state[key]
+
+    tabs = result_tabs(
+        ["Vue d’ensemble", "Monde", "État", "Entreprises & bourse", "Ménages", "Modèle & réglages"],
+        "results_tab",
+    )
+    for tab, renderer in zip(tabs, (
+        render_overview, render_world, render_institutional_state, render_firms, render_households, render_model,
+    )):
+        if tab_is_open(tab):
+            with tab:
+                renderer(simulation)
+
+    if st.session_state.prepare_advance:
+        cache.prepare(world or simulation, st.session_state._advance_revision,
+                      int(st.session_state.run_months))
+    else:
+        cache.invalidate()
+
+
+render_sidebar()
+
+if "simulation" not in st.session_state:
+    with st.spinner("Période de chauffe : construction de l'état initial…"):
+        st.session_state.simulation = new_simulation()
+render_dashboard()

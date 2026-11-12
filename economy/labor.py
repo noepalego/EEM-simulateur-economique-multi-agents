@@ -5,6 +5,7 @@ from economy.payments import transfer_cash
 
 import math
 import random
+from collections import deque
 from collections.abc import Mapping
 
 from economy.trades import pick_hire
@@ -208,18 +209,14 @@ def allocate_and_pay_labor(
     # Mobilité : un poste vacant ailleurs n'attire qu'UN travailleur. Chaque
     # offre concurrente est consommée par le travailleur qui la saisit (les
     # plus qualifiés d'abord, comme dans l'embauche) ; les autres restent.
-    unclaimed_offers: dict[str, list[float]] = {
-        company_id: sorted(wages, reverse=True)
-        for company_id, wages in offers_by_employer.items()
-    }
     # Les offres sont déjà classées par salaire décroissant puis identifiant.
     # La décote de mobilité dépend du secteur : seule sa première offre encore
     # libre (hors employeur actuel) peut gagner. Garder le rang global pour les
     # égalités entre secteurs, exactement comme le parcours antérieur.
-    offers_by_sector: dict[str, list[tuple[int, str, list[float]]]] = {}
-    for rank, (company_id, wages) in enumerate(unclaimed_offers.items()):
-        offers_by_sector.setdefault(companies_by_id[company_id].sector, []).append(
-            (rank, company_id, wages)
+    offers_by_sector: dict[str, deque[tuple[int, str, deque[float]]]] = {}
+    for rank, (company_id, wages) in enumerate(offers_by_employer.items()):
+        offers_by_sector.setdefault(companies_by_id[company_id].sector, deque()).append(
+            (rank, company_id, deque(wages))
         )
     claims: dict[str, list[Person]] = {}
     for person in ranked_people:
@@ -235,13 +232,19 @@ def allocate_and_pay_labor(
         threshold = reservation_wage * (1.0 + config.labor_mobility_premium)
         best_other: str | None = None
         best_wage = 0.0
-        best_rank = len(unclaimed_offers)
+        best_rank = len(offers_by_employer)
+        best_sector = ""
+        best_index = 0
         for other_sector, offers in offers_by_sector.items():
-            for rank, other_id, wages in offers:
-                if other_id != employer.id and wages:
-                    break
-            else:
-                continue
+            # Les offres épuisées sont retirées. Si la première appartient à
+            # l'employeur actuel, seule la seconde peut être retenue.
+            index = 0
+            rank, other_id, wages = offers[0]
+            if other_id == employer.id:
+                if len(offers) == 1:
+                    continue
+                index = 1
+                rank, other_id, wages = offers[1]
             # Changer de domaine coûte une reconversion : l'offre d'un secteur
             # où le salarié n'a aucune compétence est décotée.
             effective = wages[0] * person.trade_wage_factor / (
@@ -255,8 +258,15 @@ def allocate_and_pay_labor(
             ):
                 best_other, best_wage = other_id, effective
                 best_rank = rank
+                best_sector, best_index = other_sector, index
         if best_other is not None and best_wage >= threshold:
-            unclaimed_offers[best_other].pop(0)
+            offers = offers_by_sector[best_sector]
+            wages = offers[best_index][2]
+            wages.popleft()
+            if not wages:
+                del offers[best_index]
+                if not offers:
+                    del offers_by_sector[best_sector]
             claims.setdefault(best_other, []).append(person)
             continue
         if len(employer.employees) >= min(

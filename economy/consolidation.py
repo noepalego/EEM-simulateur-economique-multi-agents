@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from economy.intersector import business_suppliers
 from economy.models import Company, Person, SimulationConfig
 from economy.payments import transfer_cash
 from economy.stock_market import _fundamental_price
@@ -56,6 +57,7 @@ def takeover_by_value(
     """
     annual_rate = 12.0 * (config.loan_interest_rate if policy_rate is None else max(0.0, policy_rate))
     holders = [*people, *companies, *extra_holders]
+    firms_by_sector = business_suppliers(companies)
     fundamentals: dict[str, float] = {}
 
     def fundamental(company: Company) -> float:
@@ -74,7 +76,7 @@ def takeover_by_value(
         if month - buyer.last_acquisition_month < integration:
             continue
         free_cash = buyer.cash - working_capital(buyer, config)
-        sector_firms = [c for c in companies if c.active and c.sector == buyer.sector]
+        sector_firms = firms_by_sector[buyer.sector]
         if len(sector_firms) <= max(1, config.min_firms_per_sector):
             continue
         best = None
@@ -131,6 +133,8 @@ def takeover_by_value(
             count = float(buyer.acquisition_count)
             skill = count / (count + max(config.experience_half_count, 1e-9))
         _merge_into(buyer, target, people, companies, extra_holders, skill)
+        # Une entreprise absorbée disparaît des cibles des acquéreurs suivants.
+        sector_firms[:] = [company for company in sector_firms if company is not target]
         target.exit_month = month
         buyer.last_acquisition_month = month
         buyer.acquisition_count += 1

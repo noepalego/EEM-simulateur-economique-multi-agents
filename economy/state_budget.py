@@ -170,7 +170,10 @@ class StateBudgetMixin:
         # 1. impôts et allocation : rapprochés de ceux du programme du gouvernement
         for lever in TAX_LEVERS:
             current = inst.tax_factors.get(lever, doctrine.tax_factors[lever])
-            inst.tax_factors[lever] = _step(current, doctrine.tax_factors[lever], live.budget_tax_speed)
+            target = doctrine.tax_factors[lever]
+            if lever == "corporate_tax" and hasattr(self, "world_corporate_tax_factor"):
+                target *= self.world_corporate_tax_factor
+            inst.tax_factors[lever] = _step(current, target, live.budget_tax_speed)
         inst.benefit_factor = _step(inst.benefit_factor, doctrine.benefit_factor, live.budget_tax_speed)
         desired = {"transferts": doctrine.transfer_share, "achats": doctrine.purchases_share,
                    "investissement": doctrine.investment_share}

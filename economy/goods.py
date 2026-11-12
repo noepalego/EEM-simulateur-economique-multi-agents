@@ -64,11 +64,13 @@ def produce_food(
 ) -> float:
     config = config or SimulationConfig()
     suppliers_by_sector = business_suppliers(companies)
+    material_suppliers = suppliers_by_sector.get("materials", [])
+    extraction_order = sorted(material_suppliers, key=lambda supplier: supplier.id)
     material_capacities = {
         c.id: _effective_workers(c, worker_skills) * config.raw_material_extraction_productivity
-        for c in companies if c.active and c.sector == "materials"
+        for c in material_suppliers
     }
-    food_firms = [company for company in companies if company.active and company.sector == "food"]
+    food_firms = suppliers_by_sector.get("food", [])
     capacities = {
         company.id: (
             _effective_workers(company, worker_skills)
@@ -84,7 +86,7 @@ def produce_food(
         # prévision propre de l'entreprise (economy.expectations), pas la demande agrégée
         wanted = min(capacities[company.id], planned_production(company, config))
         available_materials = _available_raw_materials(
-            companies, resources, config, worker_skills, material_capacities
+            material_suppliers, resources, material_capacities
         )
         maximum_production = min(wanted, available_materials)
         base_cost = config.food_input_cost
@@ -107,7 +109,7 @@ def produce_food(
             companies,
             resources,
             config,
-            worker_skills,
+            extraction_order,
             material_capacities,
             suppliers_by_sector,
         )
@@ -206,11 +208,13 @@ def produce_consumer_goods(
 ) -> float:
     config = config or SimulationConfig()
     suppliers_by_sector = business_suppliers(companies)
+    material_suppliers = suppliers_by_sector.get("materials", [])
+    extraction_order = sorted(material_suppliers, key=lambda supplier: supplier.id)
     material_capacities = {
         c.id: _effective_workers(c, worker_skills) * config.raw_material_extraction_productivity
-        for c in companies if c.active and c.sector == "materials"
+        for c in material_suppliers
     }
-    producers = [company for company in companies if company.active and company.sector == "goods"]
+    producers = suppliers_by_sector.get("goods", [])
     capacities = {
         company.id: (
             _effective_workers(company, worker_skills)
@@ -227,7 +231,7 @@ def produce_consumer_goods(
         capacity = min(capacities[company.id], planned_production(company, config))
         material_per_unit = config.goods_material_per_unit
         raw_materials_available = _available_raw_materials(
-            companies, resources, config, worker_skills, material_capacities
+            material_suppliers, resources, material_capacities
         )
         maximum_production = min(
             capacity,
@@ -253,7 +257,7 @@ def produce_consumer_goods(
             companies,
             resources,
             config,
-            worker_skills,
+            extraction_order,
             material_capacities,
             suppliers_by_sector,
         )
@@ -346,28 +350,16 @@ def _affordable_production(
 
 
 def _available_raw_materials(
-    companies: list[Company],
+    suppliers: list[Company],
     resources: Resources,
-    config: SimulationConfig,
-    worker_skills: Mapping[str, float | tuple[float, float]] | None = None,
-    material_capacities: dict[str, float] | None = None,
+    material_capacities: dict[str, float],
 ) -> float:
-    suppliers = [
-        company
-        for company in companies
-        if company.active and company.sector == "materials"
-    ]
     if not suppliers:
         return max(0.0, resources.raw_materials) + max(
             0.0, resources.recycled_materials
         )
     remaining_capacity = sum(
-        max(
-            0.0,
-            (material_capacities[company.id] if material_capacities is not None else
-             _effective_workers(company, worker_skills) * config.raw_material_extraction_productivity)
-            - company.materials_supplied_this_turn,
-        )
+        max(0.0, material_capacities[company.id] - company.materials_supplied_this_turn)
         for company in suppliers
     )
     extractable_virgin = min(max(0.0, resources.raw_materials), remaining_capacity)
@@ -381,9 +373,9 @@ def _purchase_raw_materials(
     companies: list[Company],
     resources: Resources,
     config: SimulationConfig,
-    worker_skills: Mapping[str, float | tuple[float, float]] | None = None,
-    material_capacities: dict[str, float] | None = None,
-    suppliers_by_sector: dict[str, list[Company]] | None = None,
+    suppliers: list[Company],
+    material_capacities: dict[str, float],
+    suppliers_by_sector: dict[str, list[Company]],
 ) -> float:
     """Paie matières et intrants ; retourne la part payée aux secteurs fournisseurs selon
     ``input_cost_split`` (à prix de base, avant leurs facteurs de prix)."""
@@ -399,35 +391,28 @@ def _purchase_raw_materials(
     )
     resources.raw_materials -= virgin_used
 
-    suppliers = sorted(
-        (
-            company
-            for company in companies
-            if company.active and company.sector == "materials"
-        ),
-        key=lambda company: company.id,
-    )
     raw_material_payment = min(
         total_input_cost,
         virgin_used * resources.raw_material_price,
     )
     if not suppliers or virgin_used <= 0.0:
         pay_business_suppliers(
-            buyer, total_input_cost, config.input_cost_split, companies, resources, deduct=False, suppliers_by_sector=suppliers_by_sector
+            buyer, total_input_cost, config.input_cost_split, companies, resources, deduct=False,
+            suppliers_by_sector=suppliers_by_sector,
         )
         return total_input_cost
 
     supplier_capacities = {
-        supplier.id: max(
-            0.0,
-            (material_capacities[supplier.id] if material_capacities is not None else
-             _effective_workers(supplier, worker_skills) * config.raw_material_extraction_productivity)
-            - supplier.materials_supplied_this_turn,
-        )
+        supplier.id: max(0.0, material_capacities[supplier.id] - supplier.materials_supplied_this_turn)
         for supplier in suppliers
     }
     total_capacity = sum(supplier_capacities.values())
     allocated_quantity = min(virgin_used, total_capacity)
+    extraction_cost_per_unit = min(
+        config.raw_material_extraction_cost,
+        resources.raw_material_price,
+        raw_material_payment / virgin_used,
+    )
     for supplier in suppliers:
         capacity = supplier_capacities[supplier.id]
         supplied = (
@@ -447,11 +432,6 @@ def _purchase_raw_materials(
         )
         buyer.supplier_spending[supplier.id] = (
             buyer.supplier_spending.get(supplier.id, 0.0) + payment
-        )
-        extraction_cost_per_unit = min(
-            config.raw_material_extraction_cost,
-            resources.raw_material_price,
-            raw_material_payment / virgin_used,
         )
         # Exploration : les extracteurs financent la découverte de nouveaux
         # gisements à hauteur de ``reserve_replacement_rate`` des volumes

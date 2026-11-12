@@ -20,6 +20,8 @@ ménage est alors créé par la banque, comme un prêt).
 
 from __future__ import annotations
 
+from collections import defaultdict
+
 from economy import diagnostics
 from economy.models import Company, Person, SimulationConfig, positive_loan_book
 from economy.wealth import _net_worth, company_balance_sheet, share_prices
@@ -135,12 +137,18 @@ def update_prices_and_trade(
     household_buys: list[tuple[Person, float]] = []
     sells: dict[str, list[tuple[Person, float]]] = {cid: [] for cid in opening}
     bond_orders: list[tuple[Person, float]] = []
-    # Seuls les fondateurs peuvent émettre un ordre de vente de fondateur.
-    # Éviter un second parcours du portefeuille de tous les autres ménages.
-    founder_ids = set(founders.values()) if founders else set()
+    # Un ordre de fondateur ne concerne que ses propres sociétés cotées.
+    founder_assets: dict[str, list[str]] = defaultdict(list)
+    for cid, founder in (founders or {}).items():
+        if cid in opening:
+            founder_assets[founder].append(cid)
     for person in people:
-        held = [(cid, q) for cid, q in person.shares.items() if cid in opening and q > 0.0]
-        stock_value = sum([q * opening[cid] for cid, q in held])
+        portfolio = person.shares
+        stock_value = sum([
+            quantity * price
+            for cid, quantity in portfolio.items()
+            if quantity > 0.0 and (price := opening.get(cid)) is not None
+        ])
         buffer = config.savings_cash_buffer_months * max(0.0, person.income_this_turn)
         investable = max(0.0, person.cash + stock_value + person.bond_holdings - buffer)
         wanted_stocks = min(1.0, stock_share * (0.5 + person.risk_tolerance))
@@ -156,17 +164,18 @@ def update_prices_and_trade(
         elif stock_order < 0.0 and stock_value > 0.0:
             fraction = min(1.0, -stock_order / stock_value)
             locked = person.coop_shares  # lot E : parts salariées, jamais vendues (vide sans réglage)
-            for cid, q in held:
-                if locked:
-                    q = max(0.0, q - locked.get(cid, 0.0))
-                sells[cid].append((person, q * fraction))
-        if person.id in founder_ids:
-            for cid, q in held:
-                if founders.get(cid) == person.id:
-                    extra = _founder_sale(person, q, q * fraction, opening[cid], stock_value,
-                                          buffer, config, speed)
-                    if extra > 1e-9:
-                        sells[cid].append((person, extra))
+            for cid, q in portfolio.items():
+                if q > 0.0 and cid in opening:
+                    if locked:
+                        q = max(0.0, q - locked.get(cid, 0.0))
+                    sells[cid].append((person, q * fraction))
+        for cid in founder_assets.get(person.id, ()):
+            quantity = portfolio.get(cid, 0.0)
+            if quantity > 0.0:
+                extra = _founder_sale(person, quantity, quantity * fraction, opening[cid], stock_value,
+                                      buffer, config, speed)
+                if extra > 1e-9:
+                    sells[cid].append((person, extra))
         if bond_rate is not None:
             bond_order = speed * (wanted_bonds * investable - person.bond_holdings)
             if bond_order > 0.0:
@@ -181,12 +190,7 @@ def update_prices_and_trade(
             budget = min(budget, max(0.0, holder.cash))
             if budget > 1.0:
                 household_buys.append((holder, budget))
-    # Construire chaque carnet en une fois évite une recherche et un append par
-    # couple ménage/titre. Même ordre des ménages et même multiplication/division.
-    buys = {
-        cid: [(person, budget * weight / total_weight) for person, budget in household_buys]
-        for cid, weight in weights.items()
-    }
+    corporate_buys: dict[str, list[tuple[Company, float]]] = defaultdict(list)
     # ordres des entreprises (economy.treasury) : jamais leurs propres titres, pas de banques
     by_id = {c.id: c for c in companies}
     for company_id, order in (corporate_orders or {}).items():
@@ -199,7 +203,7 @@ def update_prices_and_trade(
             if budget > 1.0 and basket > 0.0:
                 for cid, weight in weights.items():
                     if cid != investor.id:
-                        buys[cid].append((investor, budget * weight / basket))
+                        corporate_buys[cid].append((investor, budget * weight / basket))
         elif order < 0.0:
             held = [
                 (cid, q) for cid, q in investor.shares.items()
@@ -222,9 +226,20 @@ def update_prices_and_trade(
         company.previous_stock_price = company.stock_price
         if not company.active:
             company.stock_price = 0.0
+    household_buyers = [person for person, _ in household_buys]
     for c in active:
-        _clear_stock_market(c, opening[c.id], fundamentals[c.id], buys[c.id], sells[c.id], config,
-                            issue=c.id not in no_issue, primary_first=c.id in primary_first)
+        cid = c.id
+        weight = weights[cid]
+        # Les budgets sont déjà arrêtés. Construire un carnet à la fois évite de
+        # garder en mémoire tous les ordres ménage × titre. Les entreprises restent en dernier.
+        values = [budget * weight / total_weight for _, budget in household_buys]
+        buyers = household_buyers
+        orders = corporate_buys.get(cid)
+        if orders:
+            buyers = household_buyers + [investor for investor, _ in orders]
+            values.extend(value for _, value in orders)
+        _clear_stock_orders(c, opening[cid], fundamentals[cid], buyers, values, sells[cid], config,
+                            issue=cid not in no_issue, primary_first=cid in primary_first)
     if bond_orders:
         trade_bonds_with_banks(
             bond_orders, [c for c in companies if c.active and c.sector == "bank"]
@@ -278,7 +293,18 @@ def _clear_stock_market(
 
     ``primary_first`` (introduction en Bourse) : les titres offerts par l'entreprise servent la
     demande avant les vendeurs ; l'argent va d'abord à l'entreprise, puis aux vendeurs."""
-    demand_value = sum([value for _, value in buys])
+    _clear_stock_orders(company, opening, fundamental, [p for p, _ in buys],
+                        [value for _, value in buys], sells, config, issue, primary_first)
+
+
+def _clear_stock_orders(company, opening, fundamental, buyers, values, sells, config,
+                        issue=True, primary_first=False) -> None:
+    """Carnet en colonnes : les acheteurs du panier sont partagés entre les titres.
+
+    Les montants, l'ordre des additions et les deux tours de règlement sont
+    inchangés ; aucun tuple d'ordre ménage × titre n'est conservé.
+    """
+    demand_value = sum(values)
     supply = sum([quantity for _, quantity in sells])
     capitalisation = opening * company.shares_outstanding
     imbalance = (demand_value - supply * opening) / max(capitalisation, 1.0)
@@ -293,7 +319,7 @@ def _clear_stock_market(
         return
     demand = demand_value / price
     if primary_first and issue and company.treasury_shares > 1e-9:
-        _clear_primary_first(company, price, demand, demand_value, buys, sells, supply)
+        _clear_primary_orders(company, price, demand, demand_value, buyers, values, sells, supply)
         return
     matched = min(demand, supply)
     cid = company.id
@@ -308,7 +334,7 @@ def _clear_stock_market(
             else:
                 shares.pop(cid, None)
             person.cash += sold * price
-        for person, value in buys:
+        for person, value in zip(buyers, values):
             bought = value / price * buy_fill
             shares = person.shares
             shares[cid] = shares.get(cid, 0.0) + bought
@@ -317,7 +343,7 @@ def _clear_stock_market(
     # demande non servie : émission d'actions nouvelles (levée de fonds)
     issued = min(demand - matched, company.treasury_shares)
     if issued > 1e-9 and issue:
-        for person, value in buys:
+        for person, value in zip(buyers, values):
             bought = issued * value / demand_value
             shares = person.shares
             shares[cid] = shares.get(cid, 0.0) + bought
@@ -339,6 +365,12 @@ def _clear_primary_first(
 ) -> None:
     """Séance d'une entreprise en introduction : émission d'abord, vendeurs ensuite, au même
     cours ; chaque acheteur reçoit sa part de l'ensemble au prorata de son ordre."""
+    _clear_primary_orders(company, price, demand, demand_value, [p for p, _ in buys],
+                          [value for _, value in buys], sells, supply)
+
+
+def _clear_primary_orders(company, price, demand, demand_value, buyers, values, sells, supply) -> None:
+    """Règlement d'une introduction avec le même carnet en colonnes."""
     issued = min(demand, company.treasury_shares)
     matched = min(demand - issued, supply)
     if matched > 0.0:
@@ -353,7 +385,7 @@ def _clear_primary_first(
             person.cash += sold * price
         company.stock_trade_volume += matched * price
     served = issued + matched
-    for person, value in buys:
+    for person, value in zip(buyers, values):
         bought = served * value / demand_value
         person.shares[company.id] = person.shares.get(company.id, 0.0) + bought
         person.cash -= bought * price
@@ -502,17 +534,20 @@ def distribute_dividends(
     """
     planned_payouts = planned_payouts or {}
     total_paid = 0.0
-    investors: list[Person | Company] = [*people, *companies, *extra_holders]
     # Les portefeuilles ne changent pas pendant les versements. Relever les
     # porteurs seulement lorsqu'un dividende peut effectivement être payé,
     # dans le même ordre que les sommes et versements historiques.
-    investor_types = [(holder, isinstance(holder, Person)) for holder in investors]
+    portfolios = [
+        (holder, holder.id, isinstance(holder, Person), holder.shares.get)
+        for holders in (people, companies, extra_holders) for holder in holders
+        if holder.shares
+    ]
 
     def holders_for(cid):
         return [
             (investor, quantity, is_person)
-            for investor, is_person in investor_types
-            if investor.id != cid and (quantity := investor.shares.get(cid)) is not None
+            for investor, holder_id, is_person, get_shares in portfolios
+            if holder_id != cid and (quantity := get_shares(cid)) is not None
         ]
 
     for company in companies:

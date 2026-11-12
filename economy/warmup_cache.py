@@ -105,6 +105,69 @@ def warmed_simulation(config: SimulationConfig, use_disk: bool = True):
     return simulation
 
 
+def _warm_in_subprocess(config: SimulationConfig) -> bytes | None:
+    """État après la chauffe calculé par un autre processus (``economy.warmup_worker``), ou
+    ``None`` si le lancement échoue : l'appelant refait alors le calcul sur place."""
+    import subprocess
+
+    root = Path(__file__).resolve().parent.parent
+    try:
+        done = subprocess.run(
+            [sys.executable, "-m", "economy.warmup_worker"],
+            input=pickle.dumps(config, protocol=pickle.HIGHEST_PROTOCOL),
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, cwd=str(root),
+            env={**os.environ, "PYTHONPATH": os.pathsep.join(
+                [str(root), *filter(None, [os.environ.get("PYTHONPATH")])])},
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except OSError:
+        return None
+    if done.returncode != 0 or not done.stdout:
+        return None
+    return done.stdout
+
+
+def warm_many(configs: list[SimulationConfig], use_disk: bool = True) -> int:
+    """Prépare la chauffe de plusieurs configurations **en parallèle** (optimisation du
+    11 novembre 2026) : les régions d'un monde sont indépendantes pendant la chauffe, mais
+    ``World`` les crée l'une après l'autre. Chaque état manquant est calculé par un processus
+    séparé (un cœur chacun), puis mémorisé comme le ferait ``warmed_simulation`` ; l'appel
+    suivant de ``warmed_simulation`` le relit sans recalcul. Rend le nombre d'états calculés.
+
+    Sans effet (0) s'il manque moins de deux états, sans chauffe, ou sur une machine à un seul
+    cœur. Un processus qui échoue est simplement ignoré : ``warmed_simulation`` refera ce calcul
+    sur place. Les états sont ceux du même code et des mêmes réglages : résultats inchangés."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    missing: dict[str, SimulationConfig] = {}
+    for config in configs:
+        key = cache_key(config)
+        with _lock:
+            known = key in _memory
+        if known or key in missing or int(config.warmup_months) <= 0:
+            continue
+        if use_disk:
+            payload = _load_disk(key)
+            if payload is not None:
+                _remember(key, payload)
+                continue
+        missing[key] = config
+    workers = min(len(missing), os.cpu_count() or 1)
+    if len(missing) < 2 or workers < 2:
+        return 0
+    computed = 0
+    # un fil par processus auxiliaire : il ne fait qu'attendre sa sortie
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for key, payload in zip(missing, pool.map(_warm_in_subprocess, missing.values())):
+            if payload is None:
+                continue
+            _remember(key, payload)
+            if use_disk:
+                _store_disk(key, payload)
+            computed += 1
+    return computed
+
+
 def _remember(key: str, payload: bytes) -> None:
     with _lock:
         _memory[key] = payload

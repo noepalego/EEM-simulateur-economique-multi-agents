@@ -71,6 +71,10 @@ class Ledger:
         if enterprise is not None and enterprise.foreign is not None:
             # lot J : monnaie intérieure détenue par le reste du monde (produit de ses ventes)
             total += enterprise.foreign.cash
+        abroad = getattr(sim, "world_accounts", None)
+        if abroad:
+            # monde à plusieurs régions : chambre de compensation et compte des non-résidents
+            total += sum(account.cash for account in abroad)
         return total
 
     @staticmethod
@@ -118,13 +122,18 @@ class Ledger:
         live = sim.live
         b = self.banking(sim)
         firms = [c for c in sim.companies if c.active and c.sector != "bank"]
+        # Une consultation du bilan peut valoriser des milliers de positions.
+        # Même premier émetteur que _price, relevé une seule fois par consultation.
+        prices = {}
+        for company in sim.companies:
+            prices.setdefault(company.id, company.stock_price if company.active else 0.0)
         deposits = max(0.0, self.deposits(sim))
         household = SectorBalance(
             "Ménages",
             assets={
                 "Dépôts et monnaie": sum(p.cash for p in sim.people),
                 "Actions": sum(
-                    q * _price(sim, cid) for p in sim.people for cid, q in p.shares.items()
+                    q * prices.get(cid, 0.0) for p in sim.people for cid, q in p.shares.items()
                 ),
                 "Obligations d'État": sum(p.bond_holdings for p in sim.people),
                 "Logements": sum(
@@ -153,7 +162,7 @@ class Ledger:
                 "Chantiers en cours": sum(c.construction_in_progress for c in firms),
                 "Obligations d'État": sum(c.bond_holdings for c in firms),
                 "Actions détenues": sum(
-                    q * _price(sim, cid) for c in firms for cid, q in c.shares.items()
+                    q * prices.get(cid, 0.0) for c in firms for cid, q in c.shares.items()
                 ),
             },
             liabilities={"Prêts bancaires": sum(c.debt for c in firms)},

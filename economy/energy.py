@@ -16,7 +16,7 @@ vrais transferts entre agents : aucune création de monnaie.
 
 from __future__ import annotations
 
-from economy.intersector import pay_business_suppliers
+from economy.intersector import business_suppliers, pay_business_suppliers
 from economy.models import Company, Resources, SimulationConfig
 
 INFRASTRUCTURE_BUYER_SECTORS = ("food", "goods", "materials")
@@ -87,16 +87,20 @@ def pay_infrastructure(
     companies: list[Company],
     resources: Resources,
     config: SimulationConfig,
+    suppliers_by_sector: dict[str, list[Company]] | None = None,
 ) -> float:
     """Le prix va aux entreprises d'énergie, qui achètent elles-mêmes des matériaux (machines
     fabriquées sans limite de travail)."""
     amount = min(amount, max(0.0, buyer.cash))
     if amount <= 0.0:
         return 0.0
-    providers = [c for c in companies if c.active and c.sector == "energy"]
+    if suppliers_by_sector is None:
+        suppliers_by_sector = business_suppliers(companies)
+    providers = suppliers_by_sector.get("energy", ())
     before = {p.id: p.customer_revenue.get(buyer.id, 0.0) for p in providers}
     paid = pay_business_suppliers(
-        buyer, amount, {"energy": 1.0}, companies, resources, priced=False
+        buyer, amount, {"energy": 1.0}, companies, resources, priced=False,
+        suppliers_by_sector=suppliers_by_sector,
     )
     buyer.expenses -= amount  # achat capitalisé (amorti ensuite), pas une charge
     for provider in providers:
@@ -109,6 +113,7 @@ def pay_infrastructure(
                 {"materials": 1.0},
                 companies,
                 resources,
+                suppliers_by_sector=suppliers_by_sector,
             )
             provider.infrastructure_sold_value += share
     return paid
@@ -120,7 +125,8 @@ def trade_infrastructure(
     config: SimulationConfig,
 ) -> float:
     """Ventes de réseau et de stockage aux producteurs (la capacité est traitée à part)."""
-    providers = [c for c in companies if c.active and c.sector == "energy"]
+    suppliers_by_sector = business_suppliers(companies)
+    providers = suppliers_by_sector.get("energy", ())
     total = 0.0
     if not providers:
         return 0.0
@@ -151,7 +157,7 @@ def trade_infrastructure(
                 continue
             payment = units * price
             before = buyer.cash
-            pay_infrastructure(buyer, payment, companies, resources, config)
+            pay_infrastructure(buyer, payment, companies, resources, config, suppliers_by_sector)
             spent = before - buyer.cash
             if spent <= 0.0:
                 continue

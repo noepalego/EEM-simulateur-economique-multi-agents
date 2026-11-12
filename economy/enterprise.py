@@ -34,10 +34,12 @@ intérêt. Les charges du mois (magasins, données, frais) sont payées avant la
 from __future__ import annotations
 
 import random
+from bisect import bisect_left
 from dataclasses import dataclass, field
 
 from economy.business import incremental_capacity_project
 import math
+from heapq import nsmallest
 
 from economy.consolidation import INTEGRATION_MONTHS, _employee_stake, _holder_valuation, _merge_into
 from economy.energy import infrastructure_unit_price
@@ -45,7 +47,6 @@ from economy.finance import _entrant_wage_offer, sector_entry_signals
 from economy.intersector import (
     household_suppliers,
     pay_business_suppliers,
-    pay_suppliers_from_household,
 )
 from economy.labor import experience_skill, workforce_targets
 from economy.models import Company
@@ -145,6 +146,50 @@ def taste_fit(taste: float, style: float) -> float:
     return max(0.0, 1.0 - 2.0 * distance)
 
 
+class _StyleIndex:
+    """Recherche du style le plus proche sur le cercle, pendant un lot immuable.
+
+    Les deux voisins de l'insertion encadrent le goût. Les voisins suivants
+    ne sont consultés qu'en cas d'égalité du score flottant : même départage
+    par identifiant que le maximum exhaustif, y compris les styles identiques.
+    """
+
+    def __init__(self, firms):
+        # Pour quelques producteurs, le maximum direct coûte moins que la
+        # recherche indexée et ses vérifications d'égalité flottante.
+        self.firms = firms if len(firms) <= 6 else sorted(firms, key=lambda c: c.product_style)
+        self.styles = [c.product_style for c in self.firms]
+        self.on_circle = all(0.0 <= style <= 1.0 for style in self.styles)
+
+    def closest(self, taste):
+        firms, styles = self.firms, self.styles
+        if len(firms) == 1:
+            return firms[0]
+        if len(firms) <= 6 or not self.on_circle or not 0.0 <= taste <= 1.0:
+            return max(firms, key=lambda c: (taste_fit(taste, c.product_style), c.id))
+        count = len(firms)
+        right = bisect_left(styles, taste) % count
+        left = (right - 1) % count
+        best = firms[left]
+        score = taste_fit(taste, best.product_style)
+        other = firms[right]
+        other_score = taste_fit(taste, other.product_style)
+        if (other_score, other.id) > (score, best.id):
+            best, score = other, other_score
+        seen = {left, right}
+        for index, direction in (((left - 1) % count, -1), ((right + 1) % count, 1)):
+            while index not in seen:
+                seen.add(index)
+                company = firms[index]
+                fit = taste_fit(taste, company.product_style)
+                if fit < score:
+                    break
+                if fit > score or company.id > best.id:
+                    best, score = company, fit
+                index = (index + direction) % count
+        return best
+
+
 def store_factor(stores: float, config) -> float:
     """Poids dans les achats des ménages d'un producteur qui dispose de ``stores`` magasins :
     1 + ``store_reach`` × n / (n + ``store_half_count``) (rendements décroissants)."""
@@ -158,6 +203,11 @@ def fund_assets(fund: InvestmentFund, prices: dict[str, float]) -> float:
     if fund.corporate_bonds:
         assets += sum(fund.corporate_bonds.values())  # lot J : obligations d'entreprise au pair
     return assets
+
+
+def _board_rank(item: tuple) -> tuple:
+    """Classement d'un porteur au conseil : le plus de titres d'abord, puis l'identifiant."""
+    return -item[1], item[0].id
 
 
 class EnterpriseMixin:
@@ -187,6 +237,11 @@ class EnterpriseMixin:
     def _outside_shareholders(self) -> tuple:
         """Porteurs de titres hors ménages et entreprises : l'État, puis les fonds (G8)."""
         state = getattr(self, "enterprise", None)
+        nonresident = getattr(self, "nonresident", None)
+        if nonresident is not None:
+            # monde à plusieurs régions : titres détenus hors de la région (``economy/world.py``)
+            funds = state.funds if state is not None else ()
+            return (self.public.account, *funds, nonresident)
         if state is None or not state.funds:
             return (self.public.account,)
         return (self.public.account, *state.funds)
@@ -378,7 +433,7 @@ class EnterpriseMixin:
                 spent += paid
             homes_total += homes
             condition_total += homes * company.property_condition
-        suppliers = household_suppliers(self.companies, tuple(REPAIR_SPLIT))
+        suppliers = household_suppliers(self.companies, tuple(REPAIR_SPLIT), REPAIR_SPLIT)
         for person in self.people:
             homes = int(person.owns_home) + person.investment_homes
             person.home_condition = self._worn_condition(person.id, homes, person.home_condition, wear)
@@ -388,9 +443,7 @@ class EnterpriseMixin:
             cost = deficit * homes * unit_cost
             budget = min(cost, max(0.0, person.cash - max(0.0, person.expected_income)))
             if budget > 1.0:
-                paid = pay_suppliers_from_household(
-                    person, budget, REPAIR_SPLIT, self.companies, self.resources, suppliers
-                )
+                paid = suppliers.pay(person, budget, self.resources)
                 person.home_condition += deficit * paid / cost
                 spent += paid
             homes_total += homes
@@ -528,10 +581,11 @@ class EnterpriseMixin:
             if len(firms) < 1 or not any(c.market_insight > 0.0 for c in firms):
                 continue
             sums = {c.id: [0.0, 0.0] for c in firms}
+            styles = _StyleIndex(firms)
             for person in self.people:
                 if person.taste < 0.0:
                     continue
-                closest = max(firms, key=lambda c: (taste_fit(person.taste, c.product_style), c.id))
+                closest = styles.closest(person.taste)
                 angle = 2.0 * math.pi * person.taste
                 sums[closest.id][0] += math.cos(angle)
                 sums[closest.id][1] += math.sin(angle)
@@ -1377,8 +1431,8 @@ class EnterpriseMixin:
             if holder is not company and holder.shares.get(company.id, 0.0) > 0.0
         ]
         total = sum(quantity for _, quantity in held)
-        held.sort(key=lambda item: (-item[1], item[0].id))
-        return [(holder, quantity, quantity / total) for holder, quantity in held[:max(1, seats)]]
+        board = nsmallest(max(1, seats), held, key=lambda item: (-item[1], item[0].id))
+        return [(holder, quantity, quantity / total) for holder, quantity in board]
 
     def _shareholder_governance(self) -> None:
         """Conseil d'actionnaires de chaque entreprise active (avant ``elect_executives``).
@@ -1403,18 +1457,33 @@ class EnterpriseMixin:
         boards = self._enterprise_state().boards
         boards.clear()
         retention = self._enterprise_state().retention
-        holdings: dict[str, list] = {}
+        # porteurs et titres de chaque entreprise, en colonnes, dans l'ordre des porteurs
+        holdings: dict[str, tuple[list, list]] = {}
         for holder in (*self.people, *self.companies, *self._outside_shareholders()):
+            holder_id = holder.id
             for company_id, quantity in holder.shares.items():
-                if quantity > 0.0 and company_id != holder.id:
-                    holdings.setdefault(company_id, []).append((holder, quantity))
+                if quantity > 0.0 and company_id != holder_id:
+                    columns = holdings.get(company_id)
+                    if columns is None:
+                        holdings[company_id] = columns = ([], [])
+                    columns[0].append(holder)
+                    columns[1].append(quantity)
         seats = max(1, live.board_seats)
         for company in self.companies:
-            held = holdings.get(company.id)
-            if not company.active or not held:
+            columns = holdings.get(company.id)
+            if not company.active or not columns:
                 continue
-            held.sort(key=lambda item: (-item[1], item[0].id))
-            board = held[:seats]
+            # Seuls les quelques sièges du conseil sont lus. Le plus petit nombre de titres
+            # qui donne un siège écarte d'abord presque tous les porteurs ; les candidats
+            # restants (égalités comprises, dans leur ordre d'origine) sont classés par la même
+            # clé : exactement les premiers du classement complet.
+            holders, quantities = columns
+            if len(quantities) > seats:
+                floor = sorted(quantities)[-seats]
+                held = [item for item in zip(holders, quantities) if item[1] >= floor]
+            else:
+                held = list(zip(holders, quantities))
+            board = sorted(held, key=_board_rank)[:seats]
             weight = sum(quantity for _, quantity in board)
             boards[company.id] = [(holder.id, quantity) for holder, quantity in board]
             current = people.get(company.executive_id or "")

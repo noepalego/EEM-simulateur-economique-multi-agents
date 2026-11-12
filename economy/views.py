@@ -3,7 +3,7 @@
 from __future__ import annotations
 from economy.models import Company, Person
 from economy.wealth import wealth_leaderboards
-from economy.sectors import SECTORS
+from economy.sectors import SECTORS, sector_label
 
 
 SHORT_SECTORS = {
@@ -59,15 +59,16 @@ class ViewsMixin:
             labels[company.id] = label
         return labels
 
-    def company_label(self, company_id: str | None) -> str:
+    def company_label(self, company_id: str | None, labels: dict[str, str] | None = None) -> str:
         """Nom court d'une entreprise (voir ``company_labels``)."""
         if company_id is None:
             return "—"
         if company_id == "state":
             return "Fonction publique"
         if company_id.startswith("fonds_"):
-            return self.fund_label(company_id)
-        return self.company_labels().get(company_id, company_id)
+            return self.fund_label(company_id, labels)
+        labels = labels if labels is not None else self.company_labels()
+        return labels.get(company_id, company_id)
 
     def fund_label(self, fund_id: str, labels: dict[str, str] | None = None) -> str:
         """Nom court d'un fonds : « Fonds » suivi du nom court de la banque qui l'a créé."""
@@ -80,7 +81,7 @@ class ViewsMixin:
         labels = self.company_labels()
         offset = self.warmup_offset
         return [
-            {"Entreprise": labels[c.id], "Secteur": dict(SECTORS)[c.sector],
+            {"Entreprise": labels[c.id], "Secteur": sector_label(c.sector),
              "Période du rachat": c.exit_month - offset}
             for c in self.companies if c.acquired_by == company_id
         ]
@@ -133,7 +134,7 @@ class ViewsMixin:
                 {
                     "_id": company.id,
                     "Entreprise": company.name,
-                    "Secteur": dict(SECTORS)[company.sector],
+                    "Secteur": sector_label(company.sector),
                     "Statut": "Active" if company.active else "Absorbée / fermée",
                     "CEO": self.person_name(company.executive_id),
                     "Fondateur": founder,
