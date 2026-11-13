@@ -370,3 +370,152 @@ ne fasse pas sortir un taux de son intervalle.
 | `tax_competition` | vrai | À la prochaine loi de finances, un gouvernement non social peut rapprocher son objectif d'impôt sur les sociétés du taux moyen observé chez les voisins moins imposés. La contrainte budgétaire peut annuler cette baisse ; les gouvernements sociaux conservent l'objectif de leur doctrine. |
 | `tax_competition_weight` | 0,25 | Part maximale de l'écart relatif de taux comblée dans l'objectif fiscal, multipliée par le libéralisme du gouvernement (1 − orientation / 65, jamais négatif). La vitesse annuelle de vote reste celle de budget_tax_speed et aucun taux réalisé n'est fixé. |
 | `clearing_holding_share` | 0,02 | Avoirs maximaux de la chambre de compensation d'une région, en part de son PIB annuel, au-delà de ce qu'elle doit reverser : le reste du monde n'accumule pas sa monnaie, une région ne paie durablement à l'extérieur que ce qu'elle en reçoit. Même valeur que le plafond du reste du monde du lot J. |
+
+## Réglages du lot T : offres publiques, croissance des effectifs et sauvegarde (novembre 2026)
+
+Trois mécanismes (`economy/consolidation.py`, `economy/labor.py`, `economy/safeguard.py`), désactivés par défaut : tant
+qu'ils sont décochés, la simulation est identique au bit près. `TakeoverRegistryTests`
+(`tests/test_rachats.py`) vérifie la liste ci-dessous. Aucun réglage ne vise un nombre de rachats,
+une concentration ou une taille d'entreprise. Constantes reprises du lot G, non réglables : un
+quart de l'écart de productivité transmis à la cible (`MANAGEMENT_TRANSFER`), écart pris en compte
+borné à 50 %. Constantes de la procédure de sauvegarde (`economy/safeguard.py`), non réglables : au
+moins 10 salariés, 3 mois de pertes consécutifs, trésorerie sous 3 mois de masse salariale, un noyau
+viable d'au moins un quart de l'effectif, prêt de sauvegarde de 3 mois de la paie réduite, 24 mois
+entre deux plans d'une même entreprise.
+
+| Réglage | Défaut | Justification |
+|---|---|---|
+| `synergy_takeovers` | faux (T1) | Offres publiques réalistes dans un même secteur : l'acquéreur offre au moins la valeur fondamentale de la cible (sinon ses actionnaires informés refuseraient), compte ce qu'il apporte (méthodes, magasins, frais de structure évités) dans la valeur qu'il lui donne, peut payer une part du prix en actions nouvelles, et la productivité fusionnée est pondérée par les effectifs au lieu d'une moyenne simple. Les règles de contrôle, de concurrence et d'acceptation restent celles du moteur. |
+| `takeover_share_payment` | 0,5 (T1) | Part maximale du prix payée en actions nouvelles de l'acquéreur coté, au cours du jour (offre mixte) : la trésorerie libre ne finance que le reste. Ordre de grandeur des offres mixtes ; dilue les actionnaires de l'acquéreur, sans création de monnaie. |
+| `proportional_hiring` | faux (T2) | Embauches et licenciements mensuels bornés en proportion de l'effectif d'une entreprise, jamais moins que les bornes fixes `max_monthly_hiring` et `max_monthly_layoffs` : une grande entreprise ajuste ses effectifs à son échelle. Le marché du travail, la trésorerie et la couverture de la masse salariale restent les vraies contraintes. |
+| `staff_change_share` | 0,10 (T2) | Part de l'effectif qu'une entreprise peut ajouter ou retirer en un mois avec la croissance proportionnelle : un doublement prend au moins sept mois. Ordre de grandeur d'une croissance rapide d'entreprise, non calibré. |
+| `safeguard_procedure` | faux (T3) | Procédure de sauvegarde : une entreprise d'au moins dix salariés, en pertes, presque sans trésorerie, à qui les banques refusent par leur propre test le crédit de sa paie, mais dont les recettes paient un noyau viable, ramène en un mois son effectif à ce noyau, voit sa dette bancaire en partie abandonnée (perte des banques) et reçoit un prêt de sauvegarde remboursé en priorité. Remplace l'effondrement en bloc puis la survie en coquille mesurés au lot T ; ne vise aucun nombre d'entreprises ni d'emplois. |
+| `safeguard_debt_share` | 0,5 (T3) | Part de la dette que les recettes permettent de servir (intérêts sous `maximum_debt_service_ratio` de la recette lissée, au taux de l'entreprise) conservée après le plan : la moitié laisse de la place au crédit d'exploitation ordinaire. Ordre de grandeur des remises de dettes d'un plan de sauvegarde, non calibré. |
+
+## Réglages du lot U : impôt, crédit, embauche et prix (12 novembre 2026)
+
+Quatre mécanismes (`economy/state_budget.py`, `economy/banking.py`, `economy/labor.py`,
+`economy/business.py`, `economy/simulation.py`), neutres à leur valeur par défaut : la simulation
+est alors identique au bit près. `StabilisationRegistryTests` (`tests/test_stabilisation.py`)
+vérifie la liste ci-dessous. Diagnostic, mesures avant/après et réserves :
+`results/chantiers_20261112/RAPPORT.md`. Aucun réglage ne vise un taux de chômage, un prix, un
+volume de crédit ou un nombre d'entreprises.
+
+| Réglage | Défaut | Justification |
+|---|---|---|
+| `tax_capped_by_cash` | faux | L'impôt sur le revenu recouvré, arriérés compris, ne dépasse pas la trésorerie du ménage ; le solde reste dû et sera recouvré plus tard. Sans le réglage (règle historique conservée pour l'identité), un rappel d'impôt rend la trésorerie négative, puis la demande d'alimentation et de biens du ménage négative : mesuré dans 14 régions sur 36 d'un monde « Tout activer ». |
+| `tax_backlog_months` | 0 | Recouvrement échelonné : l'arriéré d'impôt d'un ménage est appelé par mensualités d'un N-ième au lieu d'être exigé en une fois ; 0 garde la règle historique. Mesuré : un service des Finances de nouveau pourvu recouvrait des années d'arriéré en un mois (35,6 M pour un PIB mensuel de 22 M), et 8 crises sur 15 suivaient un tel prélèvement. Aucun montant n'est effacé. |
+| `sovereign_risk_weight` | 1,0 | Poids des titres publics dans l'exposition qui consomme les fonds propres d'une banque, pour sa capacité de crédit et sa solidité perçue par les déposants. 1 : comme un prêt (règle historique). 0 : aucun fonds propre exigé, ordre de grandeur de la pondération nulle des titres souverains en monnaie nationale. Mesuré : quand le crédit est gelé, les titres publics font 64 % de l'exposition des banques. |
+| `demand_led_hiring` | faux | Embauche tirée par la demande non servie, pour l'alimentation et les biens seulement : plafond mensuel relevé, perte du mois non bloquante si chaque unité vendue couvre ses intrants, offre salariale alignée sur les employeurs les mieux-disants dans la limite de ce qu'un salarié fait vendre et de ce que la trésorerie paie. Le marché du travail, la trésorerie et la valeur marginale restent les contraintes. |
+| `demand_hiring_share` | 0,25 | Part de l'écart entre le besoin en personnel et l'effectif qu'un producteur peut combler en un mois avec le réglage précédent, jamais moins que `max_monthly_hiring` : un écart se résorbe aux trois quarts en cinq mois. Ordre de grandeur d'une montée en charge, non calibré. |
+| `shortage_price_release` | faux | L'encadrement des prix d'un gouvernement social ne s'applique pas à un produit en pénurie : un prix bloqué y entretient la demande non servie (mesuré : 75 % de biens non servis sous encadrement contre 52 % à prix libres). Le levier politique reste entier hors pénurie. |
+| `price_control_shortage_limit` | 0,20 | Part de la demande non servie le mois précédent au-delà de laquelle l'encadrement est levé pour ce produit. Un cinquième : une pénurie nette, au-dessus des à-coups mensuels ordinaires ; non calibré. |
+
+## Rareté des matières premières et efficacité de la recherche (12 novembre 2026)
+
+Diagnostic et mesures : `results/analyse_pib_par_menage_20261112/RESUME.md`. L'option est désactivée par
+défaut ; « Tout activer » la coche et porte `knowledge_growth_per_intensity` à 0,5 (« Tout désactiver »
+remet 0,25). Aucun prix, volume ou stock n'est visé : la rente et l'exploration réagissent à la seule
+part du stock de départ consommée.
+
+| Réglage | Défaut | Justification |
+|---|---|---|
+| `knowledge_growth_per_intensity` | 0,25 | Croissance mensuelle du stock de connaissances par point de PIB de recherche, avant 0,2 % d'obsolescence : il faut 0,8 % du PIB en recherche pour compenser l'obsolescence. Désormais réglable dans l'interface (« Efficacité de la recherche »). À 0,5, la productivité croît assez pour que le PIB réel par ménage progresse ; sans la rareté des matières, cette croissance épuise le stock vierge du scénario complet. |
+| `raw_material_scarcity` | faux | Rareté des matières premières : le stock vierge est fini et son prix suivait le seul coût d'extraction, sans signal de rareté, d'où une rupture brutale de la production à l'épuisement. Avec l'option, le prix plancher reçoit une rente de rareté et l'exploration remplace une part croissante des volumes extraits (production et chantiers). |
+| `scarcity_rent` | 0,5 | Rente de rareté : prix plancher × (1 + rente × rareté / (1 − rareté)), rareté = part du stock de départ consommée ; +50 % à mi-stock, bornée à × 11 à l'épuisement. Ordre de grandeur d'une rente de Hotelling simplifiée, non calibré. |
+| `scarcity_exploration_response` | 0,5 | Part remplacée par l'exploration = `reserve_replacement_rate` + réponse × rareté : à 0,95 de base, l'exploration compense l'extraction dès 10 % du stock consommé. Représente des gisements mieux payés donc plus explorés ; le coût unitaire d'exploration reste `exploration_cost_per_unit`, payé par les extracteurs aux services. |
+
+## Réglages du lot V : douze mécanismes de société (12 novembre 2026)
+
+Douze mécanismes (`economy/society.py` pour les ménages et l'État, `economy/ventures.py` pour les
+entreprises et la finance), chacun derrière son réglage, **désactivé par défaut** et neutre pour
+l'empreinte d'identité. `SocietyRegistryTests` (`tests/test_societe.py`) vérifie que la liste
+ci-dessous correspond aux réglages ajoutés. Aucun ne vise un résultat (nombre de dossiers, de
+manifestations, de faillites, niveau des prix) : ce sont des règles de décision et des chances
+d'événements, non calibrées sur des données. Tirages : un générateur propre au lot (traits des
+ménages, tirage de la loterie, cause d'un donateur, traits des entreprises fondées), créé à
+l'activation ; aucun autre générateur n'est déplacé. L'état vit dans `simulation.society`, créé au
+premier usage. Les comptes de la loterie, des fondations et des fonds spéculatifs entrent dans
+`Ledger.nonbank_cash` ; les titres adossés sont un passif des banques dans `Ledger.deposits`.
+
+Constantes des modules, non réglables. Surendettement : reste à vivre d'un mois de salaire minimum.
+Philanthropie : don d'au plus un quart de la trésorerie par mois ; une fondation dépense 1/24 de sa
+trésorerie par mois ; effet à moitié pour une dépense mensuelle de 1 % d'un salaire de référence par
+ménage ; au plus 0,3 de qualité de l'éducation et 15 % de mortalité en moins ; renommée complète
+pour dix années de salaire données, oubliée de 2 % par mois. Loterie : mise d'au plus un quart de la
+trésorerie ; le plus modeste joue trois fois plus que le plus riche. Addictions : une unité par mois
+à dépendance complète, 150 unités vendues par salarié, seuil de penchant de 0,3 (0,15 après six mois
+de chômage), 2 % de l'écart à l'équilibre comblé par mois, 5 % de sevrage par mois sans produit,
+1 % par doublement du prix, dégâts de 0,002 par mois à dépendance complète, soins à partir de 0,05,
+prix entre 0,5 et 2,5 fois la référence (+1 % si les volumes tiennent, −3 % s'ils reculent de plus
+de 5 %). Capital d'une entreprise de tabac ou d'une agence : 60 000, apport d'au plus la moitié de
+la trésorerie du fondateur. Manifestations : tension rejointe de 15 % par mois, pression de 1 pour
+10 points de chômage, 20 points de patrimoine des 10 % ou 10 % de salaire réel perdus ; manifestation
+à 1, émeute à 2 (2 % des stocks détruits), six mois entre deux, trois concessions par gouvernement,
+moitié de la tension retombée après une concession. Grands travaux : route (poids 1, 24 mois),
+réseau (0,75, 18 mois), port (1,5, 36 mois) ; entretien de 0,2 % du coût par mois ; un lancement par
+an ; ouvrage hors service sous 0,2 d'état ; un port relève l'ouverture commerciale d'au plus 50 %.
+Marques : 4 salaires de référence de campagnes par salarié d'agence et par mois ; moitié de l'effet
+à 20 salaires de référence de notoriété. Franchises : franchiseur d'au moins 24 mois, trois
+franchises au plus, une ouverture par semestre, apport d'au moins deux droits d'entrée, 95 % de la
+productivité du franchiseur. Coopératives : apport d'au plus la moitié de la trésorerie et trois
+mois de salaire, capital d'au moins deux mois de paie, 90 % de l'ancien salaire, moitié de la
+clientèle gardée, mémoire de douze mois des salariés licenciés. Fonds spéculatifs : souscripteurs
+au goût du risque d'au moins 0,7 et à la trésorerie d'au moins 20 salaires, 10 % confiés, capital
+minimal de 30 salaires ; cible en pertes depuis trois mois ; trois positions, un quart de la
+trésorerie par position, moitié des titres libres des ménages ; rachat à +25 %, après 24 mois ou au
+redressement ; distribution au-delà de 1,2 fois le capital, dissolution sous 0,25. Titrisation :
+émission minimale de 5 salaires de référence. Prêts participatifs : encours d'au plus les fonds
+propres, prêt minimal de 2 salaires de référence.
+
+| Réglage | Défaut | Justification |
+|---|---|---|
+| `personal_bankruptcy` | faux | Commission de surendettement : efface le crédit à la consommation d'un ménage en impayé dont la charge de dette est insoutenable, après saisie de sa trésorerie au-delà du reste à vivre ; la banque passe la perte, le ménage est interdit de crédit. Sans le réglage, un ménage en défaut peut réemprunter dès le mois suivant. |
+| `debt_relief_service_share` | 0,5 | Part du revenu du mois au-delà de laquelle la charge de dette (crédit à la consommation et prêt immobilier) rend un dossier recevable : la moitié du revenu, seuil d'usage des commissions de surendettement. Critère d'entrée, pas un objectif de nombre de dossiers. |
+| `credit_ban_months` | 60 | Durée de l'interdiction de crédit après un dossier ou un défaut : cinq ans, comme l'inscription à un fichier des incidents de paiement. Elle s'éteint à la succession du ménage. |
+| `philanthropy` | faux | Dons des ménages très riches à trois fondations (école, hôpital, presse) qui dépensent auprès des entreprises ; effets sur la compétence des nouveaux ménages, la mortalité et les médias ; renommée du donateur. Sans le réglage, la fortune ne sert qu'à l'épargne et à l'héritage. |
+| `philanthropy_wealth_multiple` | 10 | Fortune nette, en multiples de la fortune moyenne, à partir de laquelle un ménage donne : seuls les très riches (ordre du centième le plus fortuné) sont concernés. Seuil de comportement, sans cible de montant donné. |
+| `philanthropy_giving_rate` | 0,01 | Part mensuelle de la fortune au-delà du seuil qu'un donateur pleinement généreux donne (1 %, soit environ 11 % par an de l'excédent), multipliée par son trait de générosité tiré entre 0 et 1. |
+| `state_lottery` | faux | Loterie d'État : mises des ménages indépendantes du revenu, part de l'État, cagnotte emportée par un seul joueur. Recette publique volontaire qui pèse plus sur les revenus modestes (mesurée par l'effort des cinquièmes extrêmes). |
+| `lottery_stake_share` | 0,02 | Mise mensuelle du joueur le plus assidu et le plus modeste, en part du salaire de référence × 1,5 : de l'ordre de 2 à 3 % d'un salaire, ordre de grandeur des dépenses de jeu des joueurs réguliers. |
+| `lottery_payout_share` | 0,5 | Part des mises reversée aux joueurs par la cagnotte ; le reste est une recette de l'État. Une loterie publique redistribue de l'ordre de la moitié des mises. |
+| `lottery_draw_chance` | 0,25 | Chance mensuelle que la cagnotte soit gagnée : en moyenne un gagnant tous les quatre mois, ce qui laisse la cagnotte grossir et crée des fortunes soudaines. Tirage du générateur du lot. |
+| `addictive_goods` | faux | Entreprises de tabac et d'alcool (secteur « vice ») fondées par des ménages : demande qui ne dépend pas du prix, accise, dépendance qui évolue, soins et surmortalité plus tard. Sans le réglage, aucun bien n'a de demande rigide. |
+| `addiction_firms` | 2 | Nombre d'entreprises du secteur à fonder : deux, pour qu'une concurrence par les prix soit possible sans disperser un petit marché. |
+| `addiction_budget_share` | 0,08 | Dépense mensuelle d'un ménage pleinement dépendant au prix de référence, taxes comprises, en part du salaire de référence. Avec une dépendance moyenne proche d'un tiers, le secteur pèse quelques pour cent de la consommation. |
+| `addiction_excise_rate` | 0,5 | Accise en part du prix hors taxes, recette de l'État (la TVA s'applique en plus, accise comprise). Taxe de comportement : la moitié du prix hors taxes. |
+| `addiction_care_cost` | 0,10 | Coût mensuel des soins d'un ménage aux dégâts de santé complets, en part du salaire de référence ; proportionnel aux dégâts. Partagé entre l'État et le ménage selon l'orientation du gouvernement. |
+| `addiction_mortality_gain` | 1,0 | Hausse de la probabilité de décès à dégâts de santé complets : doublée. Les dégâts s'accumulent lentement (0,5 après vingt ans de dépendance complète). |
+| `franchising` | faux | Franchises : un producteur rentable et débordé loue sa marque et ses méthodes à un petit entrepreneur, qui ouvre une entreprise à part entière. Entrée de concurrents moins capitalisés, liés à un réseau. |
+| `franchise_entry_fee` | 10 000 | Droit d'entrée payé par le franchisé au franchiseur, en euros de départ indexés sur les salaires : un dixième du seuil de trésorerie d'un fondateur ordinaire (100 000). |
+| `franchise_royalty_rate` | 0,05 | Redevance mensuelle sur le chiffre d'affaires du franchisé (5 %), ordre de grandeur des contrats de franchise ; payée dans la limite de sa trésorerie. |
+| `brand_marketing` | faux | Agences de marketing (secteur « marketing ») fondées par des ménages : elles vendent des campagnes aux producteurs, dont la notoriété durable relève le poids dans les achats. Déplace des ventes entre producteurs sans créer de demande. |
+| `marketing_agencies` | 2 | Nombre d'agences à fonder : deux, pour que les annonceurs ne dépendent pas d'un seul prestataire. |
+| `marketing_budget_share` | 0,02 | Part du chiffre d'affaires du mois écoulé qu'un producteur bénéficiaire consacre aux campagnes (2 %), sans entamer son fonds de roulement ; servie dans la limite de ce que les agences produisent. |
+| `brand_decay_rate` | 0,03 | Part de la notoriété d'une marque oubliée chaque mois (3 %, demi-vie de près de deux ans) : un stock durable, à la différence de la publicité de presse du lot M (20 % par mois). |
+| `brand_reach` | 0,5 | Hausse maximale du poids d'un producteur dans les achats des ménages par sa marque (+50 % à notoriété infinie), à rendements décroissants ; même ordre que les magasins du lot G. |
+| `worker_buyouts` | faux | Coopératives de chômeurs : les salariés d'une entreprise liquidée la relancent avec leur épargne et leurs allocations versées d'avance ; parts égales et incessibles. Sans le réglage, une liquidation disperse toujours l'équipe. |
+| `buyout_min_workers` | 3 | Nombre minimal d'anciens salariés sans emploi pour une reprise : en dessous, ce n'est pas la reprise d'une équipe. |
+| `buyout_benefit_months` | 6 | Mois d'allocation chômage que l'État verse d'avance à chaque repreneur (capitalisation des droits), dans la limite de ses fonds ; consigné au journal des décisions. |
+| `short_selling` | faux | Fonds spéculatifs financés par des ménages : ils empruntent les titres d'une entreprise fragile, les vendent à la séance et gagnent si le cours baisse ou si elle fait faillite. La vente pèse sur le cours, donc sur la capacité de l'entreprise à lever des fonds. |
+| `hedge_funds` | 2 | Nombre de fonds spéculatifs à créer, si des ménages au goût du risque suffisant réunissent le capital minimal. |
+| `short_float_share` | 0,15 | Part maximale du flottant d'une cible empruntée et mise en vente en un mois ; les titres invendus retournent aux prêteurs. Borne technique d'un ordre, pas un objectif de baisse. |
+| `short_fee_rate` | 0,002 | Frais mensuels de prêt de titres payés aux ménages prêteurs, en part de la valeur empruntée (environ 2,4 % par an). |
+| `mortgage_securitization` | faux | Titrisation : une banque émet des titres adossés à ses prêts immobiliers ; intérêts, remboursements et pertes passent aux ménages porteurs, et ses fonds propres sont libérés. Sans le réglage, tout le risque immobilier reste au bilan des banques. |
+| `securitization_share` | 0,5 | Part maximale des prêts immobiliers d'une banque qu'elle peut adosser à des titres : la moitié, le reste demeurant à son risque. Borne réglementaire de l'émission. |
+| `securitization_savings_share` | 0,05 | Part de son épargne investissable qu'un ménage vise en titres adossés, × (1,5 − goût du risque) : les prudents en achètent davantage, comme pour les obligations d'entreprise. |
+| `securitization_fee_rate` | 0,10 | Part des intérêts que la banque garde pour gérer les prêts titrisés ; le reste est transmis aux porteurs. |
+| `crowdfunding` | faux | Financement participatif : les ménages prêtent directement aux jeunes entreprises de leur région, sans banque ni création de monnaie ; en faillite ils passent après les banques. Sans le réglage, une jeune entreprise ne dépend que de sa banque et de la Bourse. |
+| `crowdfunding_savings_share` | 0,02 | Part de son épargne investissable qu'un ménage vise en prêts participatifs, × 2 × son goût du risque : un placement risqué, que les audacieux portent. |
+| `crowdfunding_max_age_months` | 36 | Âge au-delà duquel une entreprise n'est plus une « jeune entreprise » éligible : trois ans ; ensuite elle peut émettre des obligations (lot J, à partir de deux ans). |
+| `crowdfunding_premium` | 0,004 | Prime mensuelle au-dessus du taux directeur payée par l'emprunteur (environ 4,8 points par an) : le prix du risque d'une jeune entreprise. |
+| `social_unrest` | faux | Tension sociale et manifestations : le chômage, les inégalités de patrimoine et la baisse du salaire réel font monter la tension ; une manifestation fait perdre du travail et le gouvernement concède des transferts. Sans le réglage, le mécontentement ne s'exprime qu'au vote. |
+| `unrest_unemployment` | 0,10 | Taux de chômage au-delà duquel la pression sociale monte : 10 %, le double du chômage de référence de la banque centrale. Seuil de déclenchement, pas un objectif. |
+| `unrest_inequality` | 0,60 | Part du patrimoine détenue par les 10 % les plus riches au-delà de laquelle la pression monte : 60 %, niveau observé dans les économies inégalitaires. |
+| `unrest_production_loss` | 0,30 | Part du travail du mois perdue pendant une manifestation à tension de 1 ou plus : moins qu'une grève de secteur (50 %), mais dans toute l'économie. |
+| `unrest_concession` | 0,10 | Hausse des transferts et de l'allocation chômage de la doctrine concédée après une manifestation (10 %, moitié moins pour un gouvernement libéral), trois fois au plus par gouvernement ; appliquée par la loi de finances suivante. |
+| `public_works` | faux | Grands travaux : route, réseau et port, chantiers pluriannuels payés aux entreprises ; un ouvrage achevé relève la productivité de tous selon son état, qui se dégrade sans entretien. Distinct du capital public courant de la loi de finances. |
+| `public_works_gdp_share` | 0,02 | Coût d'un ouvrage de poids 1 en part du PIB annuel (2 %), étalé sur la durée du chantier ; payé sur la trésorerie de l'État puis par emprunt. |
+| `public_works_gain` | 0,02 | Gain de productivité de toutes les entreprises par ouvrage en parfait état (2 %), multiplié par son état ; trois ouvrages donnent au plus 6 %. Hypothèse non calibrée. |
+| `public_works_wear_rate` | 0,005 | Perte d'état mensuelle d'un ouvrage laissé sans aucun entretien (0,5 %) ; nulle s'il est entièrement entretenu. Sans entretien, il est hors service en treize ans. |
+| `public_works_debt_limit` | 1,0 | Dette publique, en parts du PIB annuel, au-delà de laquelle aucun chantier n'est lancé : règle de prudence de l'État, pas une cible de dette. |

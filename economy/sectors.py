@@ -20,7 +20,7 @@ SECTORS = FIRM_SECTORS + (("public", "Fonction publique"),)
 # Libellés d'affichage seulement. Les médias (lot M) sont des entreprises créées par leur propre
 # module : ils ne sont pas dans ``SECTORS`` (dont l'ordre règle la création des entreprises et le
 # tirage des événements), mais l'interface doit savoir les nommer.
-SECTOR_LABELS = {**dict(SECTORS), "media": "Médias"}
+SECTOR_LABELS = {**dict(SECTORS), "media": "Médias", "vice": "Tabac & alcool", "marketing": "Marketing"}
 
 
 def sector_label(sector: str) -> str:

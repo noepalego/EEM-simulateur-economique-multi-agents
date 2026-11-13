@@ -454,9 +454,14 @@ class World:
         for intent, value in zip(intents, due):
             if value <= 0.0:
                 continue
-            if totals[intent.dst] > budget[intent.dst] + 1e-6:
-                raise RuntimeError("Compensation non financée : aucun paiement ne doit être perdu")
             paid = value
+            if totals[intent.dst] > budget[intent.dst] + 1e-6:
+                # tolérance relative : la part financée sort d'une division par des montants qui
+                # atteignent des milliards dans une région en forte inflation, et l'arrondi dépasse
+                # alors le millionième (mesuré le 12 novembre 2026 : 1,6e-6 sur 4,3 millions)
+                if totals[intent.dst] > budget[intent.dst] * (1.0 + 1e-9) + 1e-6:
+                    raise RuntimeError("Compensation non financée : aucun paiement ne doit être perdu")
+                paid = value * budget[intent.dst] / totals[intent.dst]
             intent.credit(paid)
             received[intent.dst] += paid
         speed = max(0.0, self.config.base.exchange_rate_speed)
@@ -958,6 +963,9 @@ class World:
             price = max(origin.price_index, 1.0) / 100.0
             average = max(last.average_wage, 1.0)
             protected = self._protected(origin)
+            if getattr(origin, "society", None) is not None:
+                # lot V : prêteurs de titres, porteurs de titres adossés et de parts de fonds
+                protected = set(protected) | origin._society_anchored()
             movers = []
             for person in origin.people:
                 if not self._mobile(person, protected):

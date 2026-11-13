@@ -333,6 +333,8 @@ def buy_homes(
                 and person.mortgage_debt <= 0.0
                 and person.income_this_turn > 0.0
             )
+            if person.credit_banned and person.cash < unit_price:
+                primary_purchase = False  # lot V1 : interdit de crédit, pas de prêt immobilier
             if primary_purchase and person.cash < unit_price:
                 payment_budget = (
                     person.income_this_turn

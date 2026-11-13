@@ -187,6 +187,14 @@ def adjust_profit_sharing_wages(
                 # aucun contrat : le devis d'embauche respecte la condition de
                 # réembauche (trésorerie ≥ 2 × offre)
                 offer = min(offer, company.cash / 2.0)
+        if (config.demand_led_hiring and vacant > 0 and company.sector in ("food", "goods")
+                and company.unit_input_cost > 0.0):
+            # lot U : un producteur qui manque de bras pour servir sa demande aligne son offre sur
+            # celle des employeurs les mieux-disants, tant que ce qu'un salarié fait vendre, net des
+            # intrants, la couvre et que sa trésorerie paie l'effectif visé ce mois
+            value = output_per_worker(company, config) * max(0.0, company.price - company.unit_input_cost)
+            payable = (company.cash - wage_reference * 0.25) / max(1, company.target_employees)
+            offer = max(offer, min(max(going.values()), value, payable))
         company.wage_offer = max(1.0, offer)
         if not company.employees:
             # sans salarié : jamais moins que le salaire que paient les employeurs du secteur

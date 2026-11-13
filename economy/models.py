@@ -222,6 +222,29 @@ class SimulationConfig:
     bank_capital_backstop: bool = field(default=False, metadata={"identity": "neutre"})
     bank_backstop_months: int = field(default=3, metadata={"identity": "neutre"})
     bank_backstop_capacity: float = field(default=0.05, metadata={"identity": "neutre"})
+    # Lot U (12 novembre 2026, results/chantiers_20261112/RAPPORT.md), neutres à leur valeur par
+    # défaut. Poids des titres publics dans l'exposition qui consomme les fonds propres d'une
+    # banque (1 : comme un prêt, règle historique ; 0 : aucun fonds propre exigé, comme la
+    # pondération nulle des titres souverains des règles de Bâle).
+    sovereign_risk_weight: float = field(default=1.0, metadata={"identity": "neutre"})
+    # L'impôt sur le revenu recouvré (arriérés compris) ne dépasse pas la trésorerie du ménage ;
+    # le solde reste dû. Sans le réglage, règle historique : le prélèvement peut rendre la
+    # trésorerie négative, puis la demande du ménage négative.
+    tax_capped_by_cash: bool = field(default=False, metadata={"identity": "neutre"})
+    # Recouvrement échelonné : l'arriéré d'impôt d'un ménage est appelé par mensualités de
+    # 1 / ``tax_backlog_months`` au lieu d'être exigé en une fois. 0 : règle historique (tout
+    # l'arriéré est dû dès que le service des Finances peut le traiter).
+    tax_backlog_months: int = field(default=0, metadata={"identity": "neutre"})
+    # Embauche tirée par la demande non servie (alimentation, biens) : plafond mensuel d'embauche
+    # relevé à ``demand_hiring_share`` de l'écart entre le besoin et l'effectif, une perte du mois
+    # ne bloque plus l'embauche d'un producteur dont la marge unitaire est positive, et son offre
+    # salariale rejoint celle du marché tant que la valeur d'un salarié la couvre.
+    demand_led_hiring: bool = field(default=False, metadata={"identity": "neutre"})
+    demand_hiring_share: float = field(default=0.25, metadata={"identity": "neutre"})
+    # L'encadrement des prix ne s'applique pas à un produit dont plus de
+    # ``price_control_shortage_limit`` de la demande n'a pas été servie le mois précédent.
+    shortage_price_release: bool = field(default=False, metadata={"identity": "neutre"})
+    price_control_shortage_limit: float = field(default=0.20, metadata={"identity": "neutre"})
     # Lot B (novembre 2026) : marge supplémentaire des banques commerciales, ajoutée (mensuelle)
     # à tout nouveau crédit — entreprises (marge de risque), immobilier, consommation — et au
     # coût du crédit que les entreprises anticipent. 0 : désactivée, aucun calcul modifié ;
@@ -769,6 +792,100 @@ class SimulationConfig:
     revolving_door: bool = field(default=False, metadata={"identity": "neutre"})
     # Dynasties : l'héritier d'une personne connue garde une part de sa notoriété.
     political_dynasties: bool = field(default=False, metadata={"identity": "neutre"})
+    # Lot V (12 novembre 2026, ``economy/society.py`` et ``economy/ventures.py``) : douze mécanismes
+    # de société, chacun derrière son réglage, désactivés par défaut et neutres pour l'identité.
+    # V1 surendettement : une commission efface le crédit à la consommation d'un ménage en impayé
+    # dont la charge de dette dépasse ``debt_relief_service_share`` de son revenu (la banque passe
+    # la perte) ; il est interdit de crédit pendant ``credit_ban_months`` mois.
+    personal_bankruptcy: bool = field(default=False, metadata={"identity": "neutre"})
+    debt_relief_service_share: float = field(default=0.5, metadata={"identity": "neutre"})
+    credit_ban_months: int = field(default=60, metadata={"identity": "neutre"})
+    # V2 philanthropie : un ménage dont la fortune nette dépasse ``philanthropy_wealth_multiple`` × la
+    # moyenne donne chaque mois ``philanthropy_giving_rate`` × sa générosité de l'excédent à une
+    # fondation (école, hôpital ou presse), qui le dépense ; le donateur y gagne de la renommée.
+    philanthropy: bool = field(default=False, metadata={"identity": "neutre"})
+    philanthropy_wealth_multiple: float = field(default=10.0, metadata={"identity": "neutre"})
+    philanthropy_giving_rate: float = field(default=0.01, metadata={"identity": "neutre"})
+    # V3 loterie d'État : mise mensuelle d'un joueur = ``lottery_stake_share`` × le salaire de
+    # référence × son goût du jeu (montant qui ne dépend pas de son revenu) ; ``lottery_payout_share``
+    # des mises va à la cagnotte, le reste à l'État ; la cagnotte est gagnée par un seul joueur
+    # avec la chance mensuelle ``lottery_draw_chance``, sinon elle grossit.
+    state_lottery: bool = field(default=False, metadata={"identity": "neutre"})
+    lottery_stake_share: float = field(default=0.02, metadata={"identity": "neutre"})
+    lottery_payout_share: float = field(default=0.5, metadata={"identity": "neutre"})
+    lottery_draw_chance: float = field(default=0.25, metadata={"identity": "neutre"})
+    # V4 addictions : ``addiction_firms`` entreprises de tabac et d'alcool (secteur « vice ») ; un
+    # ménage dépendant y consacre ``addiction_budget_share`` du salaire de référence × sa
+    # dépendance, quel que soit le prix ; accise de ``addiction_excise_rate`` du prix hors taxes ;
+    # l'exposition cumulée coûte des soins (``addiction_care_cost`` du salaire de référence par
+    # mois au maximum) et relève la mortalité (× 1 + ``addiction_mortality_gain`` au maximum).
+    addictive_goods: bool = field(default=False, metadata={"identity": "neutre"})
+    addiction_firms: int = field(default=2, metadata={"identity": "neutre"})
+    addiction_budget_share: float = field(default=0.08, metadata={"identity": "neutre"})
+    addiction_excise_rate: float = field(default=0.5, metadata={"identity": "neutre"})
+    addiction_care_cost: float = field(default=0.10, metadata={"identity": "neutre"})
+    addiction_mortality_gain: float = field(default=1.0, metadata={"identity": "neutre"})
+    # V5 franchises : un producteur rentable loue sa marque et ses méthodes à un petit entrepreneur
+    # contre un droit d'entrée (``franchise_entry_fee``, indexé sur les salaires) et une redevance
+    # mensuelle de ``franchise_royalty_rate`` du chiffre d'affaires.
+    franchising: bool = field(default=False, metadata={"identity": "neutre"})
+    franchise_entry_fee: float = field(default=10000.0, metadata={"identity": "neutre"})
+    franchise_royalty_rate: float = field(default=0.05, metadata={"identity": "neutre"})
+    # V6 marques : ``marketing_agencies`` agences (secteur « marketing ») vendent des campagnes ; un
+    # producteur y consacre ``marketing_budget_share`` de son chiffre d'affaires ; sa notoriété
+    # s'efface de ``brand_decay_rate`` par mois et relève jusqu'à ``brand_reach`` son poids dans
+    # les achats des ménages.
+    brand_marketing: bool = field(default=False, metadata={"identity": "neutre"})
+    marketing_agencies: int = field(default=2, metadata={"identity": "neutre"})
+    marketing_budget_share: float = field(default=0.02, metadata={"identity": "neutre"})
+    brand_decay_rate: float = field(default=0.03, metadata={"identity": "neutre"})
+    brand_reach: float = field(default=0.5, metadata={"identity": "neutre"})
+    # V7 coopératives de chômeurs : les salariés d'une entreprise liquidée (au moins
+    # ``buyout_min_workers``) la reprennent en coopérative avec leur épargne et
+    # ``buyout_benefit_months`` mois d'allocation chômage versés d'avance par l'État.
+    worker_buyouts: bool = field(default=False, metadata={"identity": "neutre"})
+    buyout_min_workers: int = field(default=3, metadata={"identity": "neutre"})
+    buyout_benefit_months: int = field(default=6, metadata={"identity": "neutre"})
+    # V8 vente à découvert : ``hedge_funds`` fonds spéculatifs empruntent les titres d'une
+    # entreprise fragile (au plus ``short_float_share`` du flottant par mois) et les vendent ; ils
+    # paient ``short_fee_rate`` par mois aux prêteurs et rachètent plus tard.
+    short_selling: bool = field(default=False, metadata={"identity": "neutre"})
+    hedge_funds: int = field(default=2, metadata={"identity": "neutre"})
+    short_float_share: float = field(default=0.15, metadata={"identity": "neutre"})
+    short_fee_rate: float = field(default=0.002, metadata={"identity": "neutre"})
+    # V9 titrisation : une banque adosse des titres à ``securitization_share`` au plus de ses
+    # prêts immobiliers ; les ménages y placent ``securitization_savings_share`` de leur épargne ;
+    # intérêts (moins ``securitization_fee_rate`` gardé par la banque), remboursements et pertes
+    # passent aux porteurs, et les fonds propres correspondants sont libérés.
+    mortgage_securitization: bool = field(default=False, metadata={"identity": "neutre"})
+    securitization_share: float = field(default=0.5, metadata={"identity": "neutre"})
+    securitization_savings_share: float = field(default=0.05, metadata={"identity": "neutre"})
+    securitization_fee_rate: float = field(default=0.10, metadata={"identity": "neutre"})
+    # V10 financement participatif : les ménages prêtent ``crowdfunding_savings_share`` de leur
+    # épargne aux entreprises de moins de ``crowdfunding_max_age_months`` mois, au taux directeur
+    # plus ``crowdfunding_premium`` (mensuel), sans banque.
+    crowdfunding: bool = field(default=False, metadata={"identity": "neutre"})
+    crowdfunding_savings_share: float = field(default=0.02, metadata={"identity": "neutre"})
+    crowdfunding_max_age_months: int = field(default=36, metadata={"identity": "neutre"})
+    crowdfunding_premium: float = field(default=0.004, metadata={"identity": "neutre"})
+    # V11 manifestations : la tension monte quand le chômage dépasse ``unrest_unemployment`` ou que
+    # les 10 % les plus riches détiennent plus de ``unrest_inequality`` du patrimoine ; une
+    # manifestation fait perdre ``unrest_production_loss`` du travail du mois et le gouvernement
+    # concède ``unrest_concession`` de transferts et d'allocation en plus.
+    social_unrest: bool = field(default=False, metadata={"identity": "neutre"})
+    unrest_unemployment: float = field(default=0.10, metadata={"identity": "neutre"})
+    unrest_inequality: float = field(default=0.60, metadata={"identity": "neutre"})
+    unrest_production_loss: float = field(default=0.30, metadata={"identity": "neutre"})
+    unrest_concession: float = field(default=0.10, metadata={"identity": "neutre"})
+    # V12 grands travaux : route, réseau, port ; chacun coûte ``public_works_gdp_share`` du PIB
+    # annuel (× son poids), relève la productivité de ``public_works_gain`` × son état, et s'use
+    # de ``public_works_wear_rate`` par mois sans entretien ; aucun chantier n'est lancé quand la
+    # dette publique dépasse ``public_works_debt_limit`` × le PIB annuel.
+    public_works: bool = field(default=False, metadata={"identity": "neutre"})
+    public_works_gdp_share: float = field(default=0.02, metadata={"identity": "neutre"})
+    public_works_gain: float = field(default=0.02, metadata={"identity": "neutre"})
+    public_works_wear_rate: float = field(default=0.005, metadata={"identity": "neutre"})
+    public_works_debt_limit: float = field(default=1.0, metadata={"identity": "neutre"})
     # Lot M (novembre 2026, ``economy/media.py``) : entreprises de médias. Désactivé par défaut et
     # neutre pour l'empreinte d'identité. Vrai : des ménages aisés fondent ``media_outlets``
     # entreprises du secteur « media » (journalistes salariés, abonnements des ménages, publicité
@@ -805,6 +922,33 @@ class SimulationConfig:
     learning_period_months: int = field(default=12, metadata={"identity": "neutre"})
     learning_step: float = field(default=0.05, metadata={"identity": "neutre"})
     imitation_rate: float = field(default=0.25, metadata={"identity": "neutre"})
+    # Lot T (novembre 2026), désactivés par défaut. T1 (``economy/consolidation.py``) : offres
+    # publiques réalistes dans un même secteur. L'acquéreur offre au moins la valeur fondamentale
+    # de la cible (ses actionnaires informés refuseraient moins), compte ce qu'il lui apporte
+    # (méthodes, magasins, frais de structure évités) et paie jusqu'à ``takeover_share_payment`` du
+    # prix en actions nouvelles ; la productivité fusionnée est pondérée par les effectifs.
+    synergy_takeovers: bool = field(default=False, metadata={"identity": "neutre"})
+    takeover_share_payment: float = field(default=0.5, metadata={"identity": "neutre"})
+    # T2 (``economy/labor.py``) : embauches et licenciements mensuels bornés à
+    # ``staff_change_share`` de l'effectif, jamais moins que les bornes fixes.
+    proportional_hiring: bool = field(default=False, metadata={"identity": "neutre"})
+    staff_change_share: float = field(default=0.10, metadata={"identity": "neutre"})
+    # T3 (``economy/safeguard.py``) : procédure de sauvegarde. Une entreprise d'au moins dix
+    # salariés, en pertes, presque sans trésorerie, à qui les banques refusent le crédit de sa paie
+    # mais dont les recettes paient un noyau viable, obtient un plan : effectif ramené à ce noyau en
+    # un mois, dette abandonnée au-delà de ``safeguard_debt_share`` de ce que ses recettes servent
+    # (perte des banques), prêt de sauvegarde de trois mois de paie.
+    safeguard_procedure: bool = field(default=False, metadata={"identity": "neutre"})
+    safeguard_debt_share: float = field(default=0.5, metadata={"identity": "neutre"})
+    # Rareté des matières premières (12 novembre 2026, ``economy/goods.py`` et ``pricing.py``),
+    # désactivée par défaut. Rareté = part du stock de départ (``raw_materials``) consommée.
+    # Le prix plancher des matières reçoit une rente de rareté (× 1 + ``scarcity_rent`` ×
+    # rareté / (1 − rareté)) et l'exploration remplace ``reserve_replacement_rate`` +
+    # ``scarcity_exploration_response`` × rareté des volumes extraits, pour l'alimentation, les
+    # biens et les matériaux des chantiers (``deliveries.deliver_capital_work``).
+    raw_material_scarcity: bool = field(default=False, metadata={"identity": "neutre"})
+    scarcity_rent: float = field(default=0.5, metadata={"identity": "neutre"})
+    scarcity_exploration_response: float = field(default=0.5, metadata={"identity": "neutre"})
     # Lot C (novembre 2026) : objectifs ministériels enrichis. Vrai : chaque ministre a un objectif
     # principal et un secondaire (nouveaux indicateurs), des cibles relevées quand la situation de
     # départ les remplit déjà, et chaque objectif en retard actionne un levier de son ministère avec
@@ -1055,6 +1199,10 @@ class SimulationConfig:
         self.technology_household_level_gain = max(
             0.001, self.technology_household_level_gain
         )
+        # lot T : bornes des réglages (sans effet tant que les mécanismes sont désactivés)
+        self.takeover_share_payment = max(0.0, min(1.0, self.takeover_share_payment))
+        self.staff_change_share = max(0.0, min(1.0, self.staff_change_share))
+        self.safeguard_debt_share = max(0.0, min(1.0, self.safeguard_debt_share))
 
 
 @dataclass
@@ -1133,6 +1281,7 @@ class Person:
     fund_units: dict = field(default_factory=dict, metadata={"identity": "neutre"})  # G8 : parts de fonds
     fund_value: float = field(default=0.0, metadata={"identity": "neutre"})      # G8 : valeur de ses parts
     corporate_bonds: dict = field(default_factory=dict, metadata={"identity": "neutre"})  # lot J : obligations d'entreprise (émetteur -> encours)
+    credit_banned: bool = field(default=False, metadata={"identity": "neutre"})  # lot V1 : interdit de crédit (commission de surendettement)
 
 
 @dataclass
@@ -1181,7 +1330,9 @@ class ResolutionEvent:
     acteur placé sous administration publique), « bank » (banque reprise par une
     concurrente), « bank_exit » (jeune banque solvable désignée par la faillite tirée
     au sort : boni versé à ses actionnaires, bilan repris par une concurrente),
-    « bank_last » (dernière banque recapitalisée ou déposants mis à contribution).
+    « bank_last » (dernière banque recapitalisée ou déposants mis à contribution),
+    « safeguard » (lot T3 : plan de sauvegarde, dette bancaire en partie abandonnée, entreprise
+    maintenue).
     """
 
     month: int
@@ -1317,6 +1468,8 @@ class Company:
     potential_output: float = 0.0               # production possible du mois (travail et capacité, énergie livrée)
     unit_input_cost: float = 0.0                # intrants et matières par unité produite (dernière production)
     fixed_cost: float = field(default=0.0, metadata={"identity": "neutre"})  # lot D : frais de structure du mois
+    safeguard_month: int = field(default=-1_000_000, metadata={"identity": "neutre"})  # lot T3 : dernier plan de sauvegarde
+    safeguard_staff: int = field(default=0, metadata={"identity": "neutre"})  # lot T3 : effectif du plan (0 : aucun)
     price_markup: float = -1.0                  # marge sur le coût variable ; < 0 : à initialiser
     # anticipations locales
     demand_forecast: float = 0.0                # prévision de demande du mois, erreur comprise

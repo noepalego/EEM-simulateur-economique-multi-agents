@@ -237,7 +237,9 @@ class EconomySimulationTests(unittest.TestCase):
             100.0,
             employees=["worker"],
         )
-        resources = Resources(raw_materials=1000.0, land_units=0, knowledge=0.0)
+        # Matières déjà disponibles : ce test isole la compétence des salariés.
+        resources = Resources(raw_materials=0.0, recycled_materials=1000.0,
+                              land_units=0, knowledge=0.0)
         config = SimulationConfig(
             food_productivity=10.0,
             food_input_cost=0.0,
@@ -376,7 +378,8 @@ class EconomySimulationTests(unittest.TestCase):
             100.0,
             employees=["worker"],
         )
-        resources = Resources(raw_materials=1000.0, land_units=0, knowledge=0.0)
+        resources = Resources(raw_materials=0.0, recycled_materials=1000.0,
+                              land_units=0, knowledge=0.0)
         household = Person("p1", "Ménage", 1000.0)
         config = SimulationConfig(
             food_productivity=10.0,
@@ -1729,7 +1732,9 @@ class LongRunStabilityTests(unittest.TestCase):
         supplier = Company("materials", "Extracteur", "materials", 1000.0, 10.0, employees=["m"])
         resources = Resources(raw_materials=20.0, land_units=0, knowledge=0.0, raw_material_price=8.0)
         producer.demand_forecast = 10.0  # production voulue : sa prévision (stock visé d'un mois)
-        produce_food([producer, supplier], resources, config)
+        crew = Company("services", "Prestataire d'exploration", "services", 0.0, 10.0,
+                       employees=["s"])
+        produce_food([producer, supplier, crew], resources, config)
         self.assertAlmostEqual(resources.raw_materials, 20.0)  # reconstituées
 
         depleting = SimulationConfig(reserve_replacement_rate=0.0, food_productivity=20.0,
@@ -3807,7 +3812,8 @@ class LocalExpectationsTests(unittest.TestCase):
         config = SimulationConfig(**self.LOCAL)
         firm = Company("food_1", "F", "food", 1_000_000.0, 10.0, employees=["a", "b", "c"],
                        inventory=10.0, demand_forecast=50.0)
-        resources = Resources(raw_materials=10_000.0, land_units=0, knowledge=100.0)
+        resources = Resources(raw_materials=0.0, recycled_materials=10_000.0,
+                              land_units=0, knowledge=100.0)
         # la demande agrégée transmise (10 000) est ignorée : 50 × 1,5 − 10 = 65 unités
         produce_food([firm], resources, config, 10_000.0)
         self.assertAlmostEqual(firm.units_produced, 65.0)

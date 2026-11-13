@@ -95,6 +95,15 @@ def allocate_and_pay_labor(
                 "goods": 7,
             }.get(company.sector, 5)
         previous_employee_count = len(company.employees)
+        # bornes mensuelles fixes, ou proportionnelles à l'effectif avec le lot T2
+        max_hiring, max_layoffs = monthly_staff_bounds(previous_employee_count, config)
+        if config.demand_led_hiring:
+            # lot U : même plafond que celui qui a borné ``target_employees``
+            max_hiring = demand_led_hires(company, company.staffing_need, previous_employee_count,
+                                          max_hiring, config)
+        if company.safeguard_staff:
+            # lot T3 : plan de sauvegarde, effectif ramené au noyau viable en un mois
+            max_layoffs = max(max_layoffs, previous_employee_count - company.safeguard_staff)
         if previous_employee_count > 0 and company.wage_bill > 0.0:
             # Le revenu est lissé sur plusieurs mois : un à-coup de ventes ne
             # déclenche ni embauches ni licenciements massifs.
@@ -102,7 +111,7 @@ def allocate_and_pay_labor(
             payroll_coverage = smoothed_revenue / company.wage_bill
             if payroll_coverage < config.payroll_coverage_target:
                 target_drop = int(previous_employee_count * max(0.0, payroll_coverage))
-                if desired > max(previous_employee_count - config.max_monthly_layoffs, target_drop):
+                if desired > max(previous_employee_count - max_layoffs, target_drop):
                     diagnostics.refusal("embauche", "couverture_masse_salariale",
                                         {"entreprise": company.id, "voulu": desired,
                                          "salaries": previous_employee_count,
@@ -110,11 +119,12 @@ def allocate_and_pay_labor(
                 desired = min(
                     desired,
                     max(
-                        previous_employee_count - config.max_monthly_layoffs,
+                        previous_employee_count - max_layoffs,
                         target_drop,
                     ),
                 )
-            elif company.previous_profit < 0.0:
+            elif company.previous_profit < 0.0 and not unserved_with_margin(
+                    company, previous_employee_count, config):
                 if desired > previous_employee_count:
                     diagnostics.refusal("embauche", "pertes_du_mois",
                                         {"entreprise": company.id, "voulu": desired,
@@ -122,9 +132,9 @@ def allocate_and_pay_labor(
                 desired = min(desired, previous_employee_count)
             else:
                 diagnostics.bite("plafond_embauche_affectation",
-                                 desired > previous_employee_count + config.max_monthly_hiring)
+                                 desired > previous_employee_count + max_hiring)
                 desired = min(
-                    desired, previous_employee_count + config.max_monthly_hiring
+                    desired, previous_employee_count + max_hiring
                 )
         elif previous_employee_count == 0 and company.age_months > 1 and restart_values is not None:
             # reprise : un poste vaut-il ce qu'il coûte ? (valeur attendue contre coût du poste)
@@ -134,7 +144,9 @@ def allocate_and_pay_labor(
                                     {"entreprise": company.id,
                                      "valeur_poste": restart_values.get(company.id, 0.0),
                                      "cout_poste": position_cost(company)})
-            desired = min(desired, config.max_monthly_hiring) if worth else 0
+            desired = min(
+                desired, max_hiring if config.demand_led_hiring else config.max_monthly_hiring
+            ) if worth else 0
         elif previous_employee_count == 0 and company.age_months > 1:
             restart_reserve = max(starting_wage * 3.0, company.wage_offer * 2.0)
             if company.active and desired > 0 and company.cash < restart_reserve:
@@ -720,15 +732,49 @@ def update_workforce_targets(
         needed = max(1, min(needed, population_cap))
         company.staffing_need = needed
         hires, layoffs = monthly_staff_bounds(current, config)
+        hires = demand_led_hires(company, needed, current, hires, config)
+        if company.safeguard_staff:
+            # lot T3 : plan de sauvegarde, effectif ramené au noyau viable en un mois
+            needed = min(needed, company.safeguard_staff)
+            layoffs = max(layoffs, current - company.safeguard_staff)
         diagnostics.bite("plafond_embauche", needed > current + hires)
         diagnostics.bite("plafond_licenciement", needed < current - layoffs)
         company.target_employees = max(current - layoffs, min(needed, current + hires))
         company.target_employees = max(1, company.target_employees)
 
 
+def demand_led_hires(company: Company, needed: int, current: int, hires: int,
+                     config: SimulationConfig) -> int:
+    """Lot U (``demand_led_hiring``) : plafond mensuel d'embauche d'un producteur d'alimentation
+    ou de biens, relevé à ``demand_hiring_share`` de l'écart entre son besoin et son effectif.
+    Sans le réglage, ``hires`` inchangé. Le marché du travail et la trésorerie restent les vraies
+    contraintes."""
+    if not config.demand_led_hiring or company.sector not in ("food", "goods") or needed <= current + hires:
+        return hires
+    return max(hires, math.ceil(config.demand_hiring_share * (needed - current)))
+
+
+def unserved_with_margin(company: Company, staff: int, config: SimulationConfig) -> bool:
+    """Lot U : producteur d'alimentation ou de biens à qui il manque du personnel pour servir sa
+    demande et dont chaque unité vendue couvre ses intrants."""
+    return (
+        config.demand_led_hiring
+        and company.sector in ("food", "goods")
+        and company.staffing_need > staff
+        and company.unit_input_cost > 0.0
+        and company.price > company.unit_input_cost
+    )
+
+
 def monthly_staff_bounds(current: int, config: SimulationConfig) -> tuple[int, int]:
     """Embauches et licenciements mensuels maximaux d'une entreprise : ``max_monthly_hiring``
-    et ``max_monthly_layoffs``, quelle que soit sa taille (``current`` salariés)."""
+    et ``max_monthly_layoffs``, quelle que soit sa taille (``current`` salariés).
+
+    Lot T2 (``proportional_hiring``) : ``staff_change_share`` de l'effectif (arrondi à l'entier
+    inférieur), jamais moins que ces bornes fixes."""
+    if config.proportional_hiring:
+        step = int(config.staff_change_share * max(0, current))
+        return max(config.max_monthly_hiring, step), max(config.max_monthly_layoffs, step)
     return config.max_monthly_hiring, config.max_monthly_layoffs
 
 

@@ -441,6 +441,8 @@ class StateBudgetMixin:
         threshold = max(0.0, live.income_tax_threshold)
         flat = self.institutions.doctrine.capital_flat_factor
         collected = 0.0
+        capped = live.tax_capped_by_cash
+        spread = max(0, int(live.tax_backlog_months))
         for person in self.people:
             labour = max(0.0, person.income_this_turn)
             capital = max(0.0, person.capital_income_last_month)
@@ -450,6 +452,16 @@ class StateBudgetMixin:
                 assessed += capital * rate * flat
             due = assessed + backlog.pop(person.id, 0.0)
             paid = due * coverage
+            if spread > 0 and due > assessed:
+                # lot U : arriéré appelé par mensualités (mesuré le 12 novembre 2026 : un service
+                # des Finances de nouveau pourvu recouvrait des années d'impôt en un mois, 35,6 M
+                # pour un PIB mensuel de 22 M, et déclenchait la crise)
+                paid = (assessed + (due - assessed) / spread) * coverage
+            if capped and paid > person.cash:
+                # lot U : un ménage ne paie pas plus que sa trésorerie, le solde reste dû (mesuré
+                # le 12 novembre 2026 : des régions entières passaient en trésorerie négative,
+                # puis leur demande d'alimentation et de biens devenait négative)
+                paid = max(0.0, person.cash)
             if due - paid > 1e-9:
                 backlog[person.id] = due - paid
             person.taxes_paid = paid

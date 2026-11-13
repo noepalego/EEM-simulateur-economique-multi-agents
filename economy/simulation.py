@@ -12,6 +12,7 @@ from economy.business import (
     planned_capacity_investment,
 )
 from economy.consolidation import takeover_by_value
+from economy.safeguard import safeguard_plans
 from economy.energy import (
     decay_infrastructure,
     invest_in_energy_plants,
@@ -19,6 +20,7 @@ from economy.energy import (
 )
 from economy.intersector import settle_operating_inputs, household_suppliers
 from economy.finance import (
+    _blend_loan_spread,
     create_household_startups,
     request_operating_credit,
     resolve_distressed_companies,
@@ -95,7 +97,7 @@ from economy.ledger import Ledger
 from economy.innovation import research_effort, update_knowledge
 from economy.politics import ALL_LEVERS, Government
 from economy.public_finance import PublicFinanceMixin
-from economy.records import MonthFlows, build_record
+from economy.records import MonthFlows, build_record, inventory_stocks
 from economy.sectors import SECTORS, SKILL_SECTORS
 from economy.state_budget import StateBudgetMixin
 from economy.ownership import OwnershipMixin
@@ -103,6 +105,8 @@ from economy.enterprise import EnterpriseMixin
 from economy.macro import MacroMixin
 from economy.power import PowerMixin
 from economy.media import MediaMixin
+from economy.society import SocietyMixin
+from economy.ventures import VenturesMixin
 from economy.bank_relations import BankRelationsMixin
 from economy.learning import LearningMixin
 from economy.world_region import WorldRegionMixin
@@ -113,7 +117,7 @@ from economy.state_services import StateServicesMixin
 from economy.demography import DEMOGRAPHY_SEED_OFFSET, DemographyMixin
 
 
-class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin, EnterpriseMixin, MacroMixin, PowerMixin, MediaMixin, BankRelationsMixin, LearningMixin, WorldRegionMixin, StateBudgetMixin, StateServicesMixin, StateLaborMixin, StateIndustryMixin, BankingMixin, CentralBankMixin, PricingMixin, HousingMixin, WageMixin, DemographyMixin, ViewsMixin):
+class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin, EnterpriseMixin, MacroMixin, PowerMixin, MediaMixin, SocietyMixin, VenturesMixin, BankRelationsMixin, LearningMixin, WorldRegionMixin, StateBudgetMixin, StateServicesMixin, StateLaborMixin, StateIndustryMixin, BankingMixin, CentralBankMixin, PricingMixin, HousingMixin, WageMixin, DemographyMixin, ViewsMixin):
     def __init__(self, config: SimulationConfig | None = None) -> None:
         # ``config`` : paramètres choisis par l'utilisateur, jamais modifiés par le moteur.
         # ``live`` : copie de travail du mois, où vivent les prix de marché dérivés
@@ -228,6 +232,7 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
         self._seed_property_financing()
         self._seed_household_ownership()
         self._calibrate_money()
+        self._previous_stocks = inventory_stocks(self)
         self.warmup_offset = 0  # mois de chauffe écoulés avant la période 0
         self._warm_up()
 
@@ -443,6 +448,9 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
         if self.live.media_sector:
             # lot M : fondations, lignes éditoriales, lecteurs
             self._media_month_start()
+        if self._society_enabled():
+            # lot V : traits, interdictions de crédit, entreprises propres au lot
+            self._society_month_start()
         self._apply_shocks()
         # valeur des stocks (garanties, solvabilité) aux prix courants
         self.live.observed_default_rate = self._firm_default_rate
@@ -453,6 +461,9 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
         self.live.public_capital_bonus = self.public.productivity_bonus(
             self._annual_gdp(), self.live.public_capital_productivity
         )
+        if self.live.public_works:
+            # lot V12 : les ouvrages achevés relèvent la productivité de tous
+            self._society_live_effects()
         # productivité : stock de connaissances (calculé le mois précédent)
         self.live.knowledge_bonus = self.resources.knowledge_index - 1.0
         # investissements : le taux d'actualisation suit le taux directeur
@@ -695,6 +706,8 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
             person.id: person.mortgage_debt for person in self.people
         }
         report: dict[str, float] = {}
+        # lot V9 : prêts immobiliers inscrits avant les mensualités (``None`` sans titre adossé)
+        securitized = self._abs_snapshot() if live.mortgage_securitization else None
         service_mortgages(self.people, report)
         # le remboursement détruit un dépôt ; seuls les intérêts nourrissent les banques
         self._receive_bank_income(report.get("interest", 0.0))
@@ -704,6 +717,10 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
         for person_id, (debt, repaid) in foreclosed.items():
             self._write_off_household_loan(f"mortgage:{person_id}", debt - repaid)
         f.foreclosures = len(foreclosed)
+        if securitized is not None:
+            # lot V9 : intérêts, remboursements et pertes transmis aux porteurs de titres adossés
+            self._abs_pass_through(securitized, mortgage_debt_before_service, foreclosed,
+                                   report.get("interest", 0.0))
         # crédit à la consommation : mensualités, défauts, puis nouveaux prêts
         paid, accrued, defaults = service_consumer_credit(self.people, live)
         self._receive_bank_income(paid)
@@ -719,6 +736,9 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
         self._household_default_rate += live.default_rate_smoothing * (
             12.0 * len(defaults) / max(1, borrowers) - self._household_default_rate
         )
+        if live.personal_bankruptcy:
+            # lot V1 : commission de surendettement, interdictions de crédit
+            self._debt_commission(defaults, f)
         extend_consumer_credit(
             self.people,
             self.credit_capacity(),
@@ -736,6 +756,9 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
         if live.collective_bargaining:
             # lot J : négociation annuelle du secteur dont c'est le mois, grève éventuelle
             self._collective_bargaining(f)
+        if live.social_unrest:
+            # lot V11 : tension sociale, manifestation éventuelle (travail perdu, concession)
+            self._social_unrest(f)
 
     # ------------------------------------------------------------------
     # Phase 3 : marchés de consommation (alimentation, biens courants)
@@ -777,6 +800,22 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
             return None
         return live.inflation_target + live.price_control_slack * (1.0 - level)
 
+    def _sector_price_cap(self, sector: str, price_cap: float | None) -> float | None:
+        """Lot U (``shortage_price_release``) : l'encadrement des prix ne s'applique pas à un
+        produit dont plus de ``price_control_shortage_limit`` de la demande n'a pas été servie le
+        mois précédent (un prix bloqué y entretient la pénurie). Sans le réglage, ``price_cap``."""
+        if price_cap is None or not self.live.shortage_price_release or not self.history:
+            return price_cap
+        last = self.history[-1]
+        unmet, sold = (
+            (last.unmet_food_demand, last.food_sold) if sector == "food"
+            else (last.unmet_goods_demand, last.goods_sold)
+        )
+        total = max(0.0, unmet) + max(0.0, sold)
+        if total > 0.0 and max(0.0, unmet) / total > self.live.price_control_shortage_limit:
+            return None
+        return price_cap
+
     def _consumer_markets(self, f: MonthFlows) -> None:
         live = self.live
         # R10 : revenu attendu et risque de chômage de chaque ménage, avant ses achats
@@ -809,13 +848,15 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
             # monde à plusieurs régions : unités commandées par les autres régions mises à quai
             self._ship_world_orders("inventory")
         self.food_price = update_firm_prices(
-            self.companies, "food", live, anchor_growth, self.food_price, price_cap, self._price_ceiling(),
+            self.companies, "food", live, anchor_growth, self.food_price,
+            self._sector_price_cap("food", price_cap), self._price_ceiling(),
             regulated=self._regulated("food"),
         )
         f.sold_food, f.food_revenue, f.unmet_food_demand = sell_food(
             self.companies, self.people, self.food_price, live,
             # lot G : ``None`` sans réglage ; lot M : publicité (``base`` inchangé sans réglage)
-            affinity=self._media_affinity("food", self._sales_affinity("food")),
+            affinity=self._brand_affinity("food", self._media_affinity("food", self._sales_affinity("food")))
+            if live.brand_marketing else self._media_affinity("food", self._sales_affinity("food")),
             demand_boost=self._store_demand_boost(),  # lot I : 0 sans magasins
         )
         goods_demand = self._goods_demand()
@@ -823,12 +864,14 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
         if getattr(self, "world_orders", None):
             self._ship_world_orders("goods_inventory")
         self.goods_price = update_firm_prices(
-            self.companies, "goods", live, anchor_growth, self.goods_price, price_cap, self._price_ceiling(),
+            self.companies, "goods", live, anchor_growth, self.goods_price,
+            self._sector_price_cap("goods", price_cap), self._price_ceiling(),
             regulated=self._regulated("goods"),
         )
         f.sold_goods, f.goods_revenue, f.unmet_goods_demand = sell_consumer_goods(
             self.companies, self.people, self.goods_price, live,
-            affinity=self._media_affinity("goods", self._sales_affinity("goods")),
+            affinity=self._brand_affinity("goods", self._media_affinity("goods", self._sales_affinity("goods")))
+            if live.brand_marketing else self._media_affinity("goods", self._sales_affinity("goods")),
             demand_boost=self._store_demand_boost(),
         )
         f.vat_revenue = (f.food_revenue + f.goods_revenue) * live.vat_rate
@@ -837,6 +880,12 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
         if live.media_sector:
             # lot M : abonnements des ménages à leur média
             self._media_subscriptions(f)
+        if live.addictive_goods:
+            # lot V4 : ventes de tabac et d'alcool, accise
+            self._vice_sales(f)
+        if live.state_lottery:
+            # lot V3 : mises, part de l'État, tirage
+            self._lottery(f)
         if live.foreign_trade:
             # lot J : importations de ce que le marché intérieur n'a pas servi, exportations
             # des stocks excédentaires
@@ -948,6 +997,16 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
         if self._power_enabled():
             # lot K : dons de campagne, lobbying, conseillers, aides aux entreprises, révélations
             self._power_public_step()
+        live = self.live
+        if live.philanthropy:
+            # lot V2 : dons des ménages très riches, dépenses des fondations
+            self._philanthropy(f)
+        if live.addictive_goods:
+            # lot V4 : soins des ménages abîmés par le tabac et l'alcool
+            self._vice_health(f)
+        if live.public_works:
+            # lot V12 : chantiers, entretien des ouvrages, lancements
+            self._public_works_step(f)
         collect_recyclable_materials(self.companies, self.resources, self.live)
 
     # ------------------------------------------------------------------
@@ -1031,6 +1090,9 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
         if live.media_sector:
             # lot M : publicité des producteurs, payée aux médias
             self._media_operations()
+        if self._ventures_enabled():
+            # lot V : campagnes, redevances, prêts participatifs, titres adossés
+            self._ventures_operations()
         self._refresh_profits()
         adjust_profit_sharing_wages(
             self.companies,
@@ -1094,6 +1156,11 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
         if fund_sales:
             # lot G8 : sortie des fonds sur leurs titres cotés
             sales = [*sales, *fund_sales]
+        if live.short_selling:
+            # lot V8 : ventes à découvert des fonds spéculatifs
+            short_sales = self._short_orders()
+            if short_sales:
+                sales = [*sales, *short_sales]
         shares_before = dict(self.public.account.shares)
         cash_before_sales = self.public.cash
         unlisted = self._unlisted_ids()
@@ -1121,6 +1188,8 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
         )
         if unlisted:
             self._value_private_companies()
+        if live.short_selling:
+            self._settle_short_sales()
         self._settle_privatizations(shares_before, cash_before_sales)
         self._sync_public_debt()
 
@@ -1170,6 +1239,27 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
         # gardé pour la liquidation amiable de la phase 7 (même mois)
         self._restart_value_by_id = values
         return values
+
+    def _safeguard_month(self) -> None:
+        """Lot T3 (``economy/safeguard.py``) : plans de sauvegarde du mois, avant l'examen des
+        faillites. L'effectif du plan s'applique au marché du travail du mois suivant ; la dette
+        abandonnée devient une perte des banques (``default_loss``, passée plus loin par
+        ``_write_off_defaulted_bank_loans``) ; le prêt de sauvegarde est inscrit comme tout crédit,
+        dans la limite de la capacité de crédit des banques."""
+        live = self.live
+        for company, written, wanted in safeguard_plans(self.companies, live, self.policy_rate, self.month,
+                                                        self._public_controlled_ids()):
+            bridge = min(wanted, max(0.0, self.credit_capacity()))
+            if bridge > 1.0:
+                rate = max(0.0, self.policy_rate) + live.credit_risk_spread
+                previous = (company.debt_interest_rate if company.debt_interest_rate is not None
+                            else live.loan_interest_rate)
+                with self._credit_transaction(company, bridge):
+                    company.debt_interest_rate = (company.debt * previous + bridge * rate) / (company.debt + bridge)
+                    _blend_loan_spread(company, bridge, live.credit_risk_spread)
+                    company.cash += bridge
+                    company.debt += bridge
+            self._log_resolution(company.id, "safeguard", debt_written_off=written)
 
     def _dissolve_shells(self) -> int:
         """Liquidation amiable (idée 2) : une entreprise restée ``shell_dissolution_months`` mois
@@ -1230,7 +1320,7 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
             if company.sector == "bank":
                 # n° 32 : seuls les fonds propres qu'exige son activité, pas les bénéfices
                 # accumulés au-delà
-                exposure = positive_loan_book(company.bank_loan_accounts) + company.bond_holdings
+                exposure = self._bank_risk_exposure(company)
                 equity = min(equity, (live.capital_requirement + live.bank_recap_buffer) * exposure)
             costs[company.id] = monthly_cost * equity
         return costs
@@ -1303,13 +1393,21 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
         cash_before = self.public.cash  # boni de liquidation reçus par l'État
         # porteurs hors ménages et entreprises : l'État, et les fonds des banques (lot G8)
         holders = self._outside_shareholders()
+        terms = {}
+        if live.synergy_takeovers:
+            # lot T1 : ce que l'acquéreur apporte et l'exigence de son conseil
+            network = self._network_stores() if live.group_distribution and live.retail_stores else {}
+            terms = {"synergy": self._takeover_synergy(network),
+                     "hurdle": self._board_hurdle}
         f.acquisitions, f.takeover_bids = takeover_by_value(
             self.companies, self.people, live, self.month, holders, self.policy_rate,
-            locked=state, excluded=self._public_controlled_ids(),
+            locked=state, excluded=self._public_controlled_ids(), **terms,
         )
         if live.conglomerate_takeovers:
             # lot G5 : rachats entre secteurs (la cible devient une filiale)
             self._conglomerate_takeovers()
+        if live.safeguard_procedure:
+            self._safeguard_month()
         # lot H : entreprises restées sans salarié, fermées d'office (ensemble vide sans réglage)
         closures = self._staffless_closures(holders) if live.staffless_closure_months > 0 else frozenset()
         _, f.bankruptcies = resolve_distressed_companies(
@@ -1324,6 +1422,10 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
         # entreprises sans salarié ni perspective : liquidation amiable (boni compris ci-dessous)
         f.dissolutions = self._dissolve_shells()
         self.institutions.book.add("cessions_offres_et_boni", self.public.cash - cash_before)
+        if live.worker_buyouts:
+            # lot V7 : les salariés d'une entreprise liquidée ce mois la reprennent en coopérative
+            # (après le relevé des boni : l'avance de l'État a sa propre ligne au livre)
+            self._worker_buyouts(f)
         # diagnostic des marchés, dossiers de monopole, entreprises publiques, revue annuelle
         self._industrial_policy()
         self.total_defaults += f.bankruptcies
@@ -1370,6 +1472,9 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
                 # lot I : la société mère recapitalise une filiale ou la met en vente
                 self._manage_subsidiaries()
             self._enterprise_housekeeping()
+        if live.franchising:
+            # lot V5 : ouverture d'une franchise
+            self._open_franchises(f)
         # ventes de capacité après la clôture (défaut de comptes connu, voir ``_roll_over_firms``)
         f.production_capacity_investment = self._invest_in_capacity(f)
         # vieillissement, décès et successions (idée 3, economy/demography.py)
@@ -1434,6 +1539,7 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
         record = build_record(
             self, f, smoothed_investment, business_investment, construction_work, operated
         )
+        self._previous_stocks = inventory_stocks(self)
         household_wealth = {} if live.influence_ranking else None
         enrich_wealth_record(record, self.people, self.companies, live, self.price_index,
                              household_wealth=household_wealth)
@@ -1463,6 +1569,9 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
         if live.media_sector:
             # lot M : relevé mensuel des médias (mesures seules)
             self._media_record()
+        if self._society_enabled():
+            # lot V : relevé mensuel (mesures seules)
+            self._society_record(f)
         if live.bank_relationships:
             # lot S : relevé mensuel des relations bancaires (mesures seules)
             self._bankrel_record()

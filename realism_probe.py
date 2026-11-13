@@ -39,6 +39,7 @@ from economy.models import (  # noqa: E402
 from economy.sectors import FIRM_SECTORS  # noqa: E402
 from economy.simulation import EconomySimulation  # noqa: E402
 from economy.wealth import company_balance_sheet  # noqa: E402
+from evaluate import annualized_change, annualized_window_growth  # noqa: E402
 
 SECTORS = [s for s, _ in FIRM_SECTORS]
 
@@ -53,7 +54,7 @@ def source_fingerprint() -> str:
     paths = sorted(
         os.path.join("economy", name) for name in os.listdir(os.path.join(root, "economy"))
         if name.endswith(".py")
-    ) + ["realism_probe.py"]
+    ) + ["evaluate.py", "realism_probe.py"]
     for path in paths:
         digest.update(path.replace(os.sep, "/").encode())
         with open(os.path.join(root, path), "rb") as handle:
@@ -165,7 +166,8 @@ def observe(sim, record, f) -> dict:
             "eq": equity,
             "cash": sum(c.cash for c in firms),
             "debt": sum(c.debt for c in firms),
-            "hhi": (sum((c.previous_revenue / revenue_prev) ** 2 for c in firms) if revenue_prev > 0.0 else (1.0 if firms else 0.0)),
+            "hhi": (sum((c.previous_revenue / revenue_prev) ** 2 for c in firms)
+                    if revenue_prev > 0.0 else float("nan")),
             # coquilles : actives sans salarié, sans production ni ventes ce mois
             "n_idle": sum(1 for c in firms if not c.employees and c.units_produced <= 0.0 and c.revenue <= 0.0),
             # offre salariale des employeurs, pondérée par les effectifs (en salaires de référence)
@@ -243,11 +245,15 @@ class ProbeSimulation(EconomySimulation):
 
 def run(args):
     seed, months, overrides, label, json_dir = args
+    if months <= 0:
+        raise ValueError("La période observée doit durer au moins un mois.")
     # compteurs de diagnostic : chauffe, puis période observée (différence des cumuls)
     diagnostics.start(sample_limit=20)
     try:
         sim = ProbeSimulation(SimulationConfig(seed=seed, **overrides))
         warmup = len(sim._probe_rows)
+        initial_cpi = sim.price_index
+        initial_bank_losses = sum(c.default_loss for c in sim.companies if c.sector == "bank")
         after_warmup = diagnostics.snapshot()
         for _ in range(months):
             sim.step()
@@ -255,6 +261,7 @@ def run(args):
     finally:
         diagnostics.stop()
     out = {"seed": seed, "label": label, "warmup": warmup, "rows": sim._probe_rows,
+           "initial_cpi": initial_cpi, "initial_bank_losses": initial_bank_losses,
            "exits": sim._probe_exits, "erp": sim.config.equity_risk_premium,
            "capital_requirement": sim.config.capital_requirement,
            "diagnostics": {"chauffe": after_warmup,
@@ -274,6 +281,8 @@ def summarize(out: dict) -> dict:
     rows = out["rows"]
     w = out["warmup"]
     obs = rows[w:]
+    if not obs:
+        raise ValueError("Aucun mois observé à résumer.")
     s = {"seed": out["seed"], "months": len(obs), "warmup": w}
     g = [r["rgdp"] for r in rows]
     ma = _ma(g)
@@ -281,12 +290,12 @@ def summarize(out: dict) -> dict:
     s["gdp_final_peak"] = o_ma[-1] / max(o_ma)
     s["gdp_peak_warmup_over_start"] = max(ma[:w]) / ma[11] if w > 12 else float("nan")
     # croissance réelle annualisée de l'observation (24 premiers mois → 24 derniers)
-    first, last = statistics.mean(g[w:w + 24]), statistics.mean(g[-24:])
-    s["growth"] = 100.0 * ((last / first) ** (12.0 / (len(obs) - 24)) - 1.0)
+    s["growth"] = annualized_window_growth(g[w:])
     # bulle : plus forte hausse du PIB lissé sur 24 mois, puis chute éventuelle
     s["max_rise24_W"] = max((ma[i] / ma[i - 24] for i in range(36, w)), default=float("nan"))
-    s["max_rise24_O"] = max(ma[i] / ma[i - 24] for i in range(w + 24, len(ma)))
-    s["start_jump"] = statistics.mean(g[w + 12:w + 36]) / statistics.mean(g[w:w + 12])
+    s["max_rise24_O"] = max((ma[i] / ma[i - 24] for i in range(w + 24, len(ma))), default=float("nan"))
+    s["start_jump"] = (statistics.mean(g[w + 12:w + 36]) / statistics.mean(g[w:w + 12])
+                       if len(obs) >= 36 else float("nan"))
     peak, crashes, low = 0.0, [], None
     for i, v in enumerate(o_ma):
         peak = max(peak, v)
@@ -298,21 +307,26 @@ def summarize(out: dict) -> dict:
                 crashes.append(tuple(low)); low = None
     s["crashes"] = crashes + ([tuple(low) + ("en cours",)] if low else [])
     s["u_mean"] = 100 * statistics.mean(r["u"] for r in obs)
-    s["u_max"] = 100 * max(r["u"] for r in obs[36:])
+    s["u_max"] = 100 * max(r["u"] for r in (obs[36:] or obs))
     s["u_mean_W"] = 100 * statistics.mean(r["u"] for r in rows[:w]) if w else float("nan")
-    s["infl"] = 100 * ((obs[-1]["cpi"] / rows[w - 1]["cpi"]) ** (12 / len(obs)) - 1) if w else float("nan")
-    # formule d'evaluate.py (IPC de base 100 au tout premier mois de la chauffe) : contrôle d'identité
+    initial_cpi = out.get("initial_cpi", rows[w - 1]["cpi"] if w else 100.0)
+    s["infl"] = annualized_change(initial_cpi, obs[-1]["cpi"], len(obs))
+    # Ancienne formule d'evaluate.py, conservée pour comparer les anciens rapports :
+    # elle attribuait l'inflation de la chauffe à la seule période observée.
     s["infl_eval"] = 100 * ((obs[-1]["cpi"] / 100) ** (12 / len(obs)) - 1)
     infl12 = [obs[i]["cpi"] / obs[i - 12]["cpi"] - 1 for i in range(12, len(obs))]
-    s["infl12_max"] = 100 * max(infl12)
-    s["infl_last10y"] = 100 * ((obs[-1]["cpi"] / obs[-121]["cpi"]) ** 0.1 - 1)
+    s["infl12_max"] = 100 * max(infl12, default=float("nan"))
+    s["infl_last10y"] = (annualized_change(obs[-121]["cpi"], obs[-1]["cpi"], 120)
+                         if len(obs) >= 121 else float("nan"))
     # ménages
     def ratio(key_a, key_b, rs):
         b = sum(r[key_b] for r in rs)
         return sum(r[key_a] for r in rs) / b if b else float("nan")
     yd = sum(r["y"] - r["tax"] for r in obs)
     s["saving_rate"] = 100 * (1 - sum(r["c"] for r in obs) / yd) if yd else float("nan")
-    s["saving_rate_W"] = 100 * (1 - sum(r["c"] for r in rows[:w]) / max(1.0, sum(r["y"] - r["tax"] for r in rows[:w])))
+    warmup_income = sum(r["y"] - r["tax"] for r in rows[:w])
+    s["saving_rate_W"] = (100 * (1 - sum(r["c"] for r in rows[:w]) / warmup_income)
+                          if warmup_income else float("nan"))
     s["cash_months"] = statistics.mean(r["cash"] / max(1.0, r["y"] - r["tax"]) for r in obs)
     s["fin_wealth_months"] = statistics.mean((r["cash"] + r["bonds"] + r["stocks"]) / max(1.0, r["y"] - r["tax"]) for r in obs)
     s["c_over_cash"] = 100 * statistics.mean(r["c"] / max(1.0, r["cash"]) for r in obs)
@@ -340,13 +354,14 @@ def summarize(out: dict) -> dict:
         rev = sum(r["sec"][x]["rev"] for r in obs[-300:])
         prof = sum(r["sec"][x]["prof"] for r in obs[-300:])
         eq = statistics.mean(r["sec"][x]["eq"] for r in obs[-300:])
+        hhi = [r["sec"][x]["hhi"] for r in obs[-300:] if math.isfinite(r["sec"][x]["hhi"])]
         sector[x] = {
             "margin": 100 * prof / rev if rev > 0 else float("nan"),
-            "roe": 100 * 12 * prof / 300 / eq if eq > 0 and x != "bank" else float("nan"),
+            "roe": 100 * 12 * prof / len(obs[-300:]) / eq if eq > 0 and x != "bank" else float("nan"),
             "share": 100 * rev / max(1.0, sum(sum(r["sec"][k]["rev"] for k in SECTORS) for r in obs[-300:])),
             "alive": 100 * statistics.mean(r["sec"][x]["n"] >= 1 for r in obs),
             "alive_emp": 100 * statistics.mean(r["sec"][x]["n_emp"] >= 1 for r in obs),
-            "hhi": statistics.mean(r["sec"][x]["hhi"] for r in obs[-300:]),
+            "hhi": statistics.mean(hhi) if hhi else float("nan"),
             "n_end": obs[-1]["sec"][x]["n"],
         }
     s["sector"] = sector
@@ -371,7 +386,8 @@ def summarize(out: dict) -> dict:
     s["firm_debt_gdp"] = statistics.mean(r["firm_debt"] / max(1.0, 12 * r["ngdp"]) for r in obs)
     s["bank_capmin_p10"] = sorted(r["b_capmin"] for r in obs)[len(obs) // 10]
     s["ccap_zero"] = 100 * statistics.mean(r["ccap"] <= 1.0 for r in obs)
-    s["bank_loss_gdp"] = 100 * (obs[-1]["b_loss_cum"] - rows[w - 1]["b_loss_cum"]) / max(1.0, sum(r["ngdp"] for r in obs))
+    initial_losses = out.get("initial_bank_losses", rows[w - 1]["b_loss_cum"] if w else 0.0)
+    s["bank_loss_gdp"] = 100 * (obs[-1]["b_loss_cum"] - initial_losses) / max(1.0, sum(r["ngdp"] for r in obs))
     s["dep_zero"] = 100 * statistics.mean(r["dep"] <= 1e-9 for r in obs)
     # comptes
     s["resid_max"] = max(abs(r["resid"]) for r in obs)
@@ -384,9 +400,9 @@ def summarize(out: dict) -> dict:
     s["debt_err_max_all"] = max(abs(r["debt_err"]) for r in rows)
     s["banks_min"] = min(r["nb"] for r in obs)
     s["banks_min_all"] = min(r["nb"] for r in rows)
-    s["infl1_max_all"] = 100 * max(
+    s["infl1_max_all"] = 100 * max((
         rows[i]["cpi"] / rows[i - 1]["cpi"] - 1 for i in range(1, len(rows))
-    )
+    ), default=float("nan"))
     # coquilles (mois-entreprise sans salarié, production ni ventes) et offres extrêmes
     s["idle_firm_months"] = sum(sum(r["sec"][x].get("n_idle", 0) for x in SECTORS) for r in obs)
     s["vacancy_mean"] = 100 * statistics.mean(r["vac"] for r in obs)
@@ -441,15 +457,10 @@ def _rescue_summary(out: dict, obs: list[dict]) -> dict:
     diag = out.get("diagnostics", {}).get("observation", {})
     bites = diag.get("bites", {})
     warmup_bites = out.get("diagnostics", {}).get("chauffe", {}).get("bites", {})
-    years = max(1.0, (len(obs) - 12) / 12.0)
-    first_w = statistics.mean(r["wref"] for r in obs[:12])
-    last_w = statistics.mean(r["wref"] for r in obs[-12:])
-    first_rw = statistics.mean(r["rwage"] for r in obs[:12])
-    last_rw = statistics.mean(r["rwage"] for r in obs[-12:])
     return {
         # croissance annuelle du salaire de référence (nominal) et du salaire réel moyen
-        "wage_ref_growth": 100 * ((last_w / max(first_w, 1e-9)) ** (1.0 / years) - 1.0),
-        "real_wage_growth": 100 * ((last_rw / max(first_rw, 1e-9)) ** (1.0 / years) - 1.0),
+        "wage_ref_growth": annualized_window_growth([r["wref"] for r in obs], window=12),
+        "real_wage_growth": annualized_window_growth([r["rwage"] for r in obs], window=12),
         "employment_share": {x: 100 * statistics.mean(
             r["sec"][x]["emp"] / max(1, r["employed"]) for r in obs) for x in SECTORS},
         "offer_relative": {x: statistics.mean(r["sec"][x].get("offer", 0.0) for r in obs) for x in SECTORS},
@@ -511,7 +522,7 @@ def main():
         ("chômage max après 3 ans (%)", "u_max", "{:.1f}"),
         ("chômage moyen pendant la chauffe (%)", "u_mean_W", "{:.1f}"),
         ("inflation moyenne de l'observation (%/an)", "infl", "{:.2f}"),
-        ("inflation, formule d'evaluate.py (contrôle)", "infl_eval", "{:.2f}"),
+        ("inflation, ancienne formule biaisée (archive)", "infl_eval", "{:.2f}"),
         ("inflation sur 12 mois, max (%)", "infl12_max", "{:.1f}"),
         ("inflation des 10 dernières années (%/an)", "infl_last10y", "{:.2f}"),
         ("ménages : taux d'épargne (% du revenu disponible)", "saving_rate", "{:.1f}"),

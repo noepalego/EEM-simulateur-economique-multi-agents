@@ -127,7 +127,10 @@ class BankRelationsMixin:
 
     def _bank_solidity(self, bank) -> float:
         """Fonds propres d'une banque rapportés à ceux qu'exige son encours (1 : juste conforme)."""
-        exposure = positive_loan_book(bank.bank_loan_accounts) + bank.bond_holdings
+        bonds = bank.bond_holdings
+        if self.live.sovereign_risk_weight != 1.0:
+            bonds *= max(0.0, self.live.sovereign_risk_weight)  # lot U, comme ``_bank_capacity``
+        exposure = positive_loan_book(bank.bank_loan_accounts) + bonds
         required = max(self.live.capital_requirement, 1e-6) * exposure
         if required <= 0.0:
             return float("inf")

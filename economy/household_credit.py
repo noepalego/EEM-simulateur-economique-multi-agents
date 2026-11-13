@@ -9,7 +9,8 @@ Un ménage qui ne paie pas sa mensualité accumule des impayés : au-delà de
 ``consumer_default_months`` (crédit à la consommation) ou de
 ``mortgage_default_months`` (prêt immobilier), il fait défaut. Le logement saisi
 est vendu à une entreprise immobilière avec une décote ; le produit rembourse la
-banque, qui passe le reste en pertes.
+banque, qui passe le reste en pertes. Faute d'acheteur capable de payer le prix
+décoté, la vente est reportée : ni le logement ni la dette ne sont transférés.
 """
 
 from __future__ import annotations
@@ -38,6 +39,8 @@ def extend_consumer_credit(
         wage = person.current_wage
         if wage <= 0.0 or person.consumer_arrears > 0 or person.mortgage_arrears > 0:
             continue
+        if person.credit_banned:
+            continue  # lot V1 : interdit de crédit par la commission de surendettement
         limit = config.consumer_credit_income_multiple * wage - person.consumer_debt
         need = config.consumer_credit_buffer_months * wage - person.cash
         loan = min(limit, need, remaining)
@@ -115,7 +118,8 @@ def foreclose_homes(
     Le logement est vendu à l'entreprise immobilière la mieux dotée, avec
     ``foreclosure_discount`` de décote, payée sur sa trésorerie. Le produit
     rembourse le prêt ; un éventuel surplus revient au ménage. Retourne, par
-    ménage saisi, (encours avant saisie, montant remboursé).
+    ménage saisi, (encours avant saisie, montant remboursé). La vente est reportée
+    si aucun acheteur ne peut payer le prix décoté.
     """
     foreclosed: dict[str, tuple[float, float]] = {}
     buyers = [c for c in companies if c.active and c.sector == "real_estate"]
@@ -130,7 +134,9 @@ def foreclose_homes(
         ):
             continue
         buyer = max(buyers, key=lambda c: (c.cash, c.id))
-        paid = min(price, max(0.0, buyer.cash))
+        if buyer.cash < price:
+            continue
+        paid = price
         buyer.cash -= paid
         buyer.property_inventory += 1
         debt = person.mortgage_debt

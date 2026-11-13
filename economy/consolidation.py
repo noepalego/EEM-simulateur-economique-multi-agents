@@ -8,6 +8,56 @@ from economy.treasury import working_capital
 
 # délai d'intégration entre deux opérations d'un même acquéreur (mois)
 INTEGRATION_MONTHS = 6
+# part de l'écart de productivité qu'un acquéreur transmet à une cible rachetée (lots G5 et T1)
+MANAGEMENT_TRANSFER = 0.25
+
+
+def management_synergy(buyer: Company, target: Company) -> float:
+    """Gain qu'un acquéreur mieux géré attend d'une cible : la part de l'écart de productivité
+    qu'il lui transmettra (``MANAGEMENT_TRANSFER``), écart borné à 50 % ; nul s'il n'est pas
+    plus productif qu'elle."""
+    if buyer.productivity_trait <= target.productivity_trait:
+        return 0.0
+    gap = buyer.productivity_trait / max(target.productivity_trait, 1e-9) - 1.0
+    return MANAGEMENT_TRANSFER * min(0.5, gap)
+
+
+def share_payment(buyer: Company, config: SimulationConfig) -> float:
+    """Part du prix qu'un acquéreur paie en actions nouvelles (lot T1) : ``takeover_share_payment``
+    s'il est coté et a un cours, sinon rien (une société non cotée paie en monnaie)."""
+    if not buyer.listed or buyer.stock_price <= 0.0:
+        return 0.0
+    return config.takeover_share_payment
+
+
+def _realistic_terms(buyer, sector_firms, free_cash, fundamental, config, excluded, synergy, hurdle):
+    """Choix de la cible d'une offre réaliste (lot T1), au format de ``takeover_by_value``.
+
+    L'offre vaut au moins la valeur fondamentale de la cible : au cours + ``control_premium``,
+    relevée à cette valeur si le cours est trop bas (des actionnaires qui connaissent la valeur
+    de leur titre refuseraient moins). L'acquéreur y ajoute ce qu'il apporte (``synergy``) ; son
+    conseil exige ``hurdle`` × le prix. Seule la part en monnaie doit tenir dans sa trésorerie
+    libre. Retourne (surplus, cible, titres à acheter, prix offert, titres en circulation) ou None.
+    """
+    in_cash = 1.0 - share_payment(buyer, config)
+    best = None
+    for target in sector_firms:
+        circulating = target.shares_outstanding - target.treasury_shares
+        if target is buyer or circulating <= 0.0 or target.stock_price <= 0.0 or target.id in excluded:
+            continue
+        held = buyer.shares.get(target.id, 0.0)
+        need = max(0.0, config.control_threshold * circulating - held)
+        value = fundamental(target)
+        offer = max(target.stock_price * (1.0 + config.control_premium), value)
+        if need * offer * in_cash > max(0.0, free_cash):
+            continue
+        worth = value * (1.0 + synergy(buyer, target, value))
+        # déjà au-delà du seuil : l'absorption vaut d'être faite si la valeur dépasse le cours
+        price = (offer if need > 0.0 else target.stock_price) * hurdle(buyer)
+        surplus = (worth - price) * (need if need > 0.0 else circulating - held)
+        if worth > price and (best is None or surplus > best[0]):
+            best = (surplus, target, need, offer, circulating)
+    return best
 
 
 def _holder_valuation(holder: Person | Company, base: float, config: SimulationConfig) -> float:
@@ -38,8 +88,17 @@ def takeover_by_value(
     policy_rate: float | None = None,
     locked: tuple = (),
     excluded: frozenset = frozenset(),
+    synergy=None,
+    hurdle=None,
 ) -> tuple[int, int]:
     """Prises de contrôle décidées par la valeur (seul mode de rachat depuis le 5 novembre 2026).
+
+    Lot T1 (``config.synergy_takeovers``, voir ``_realistic_terms``) : l'offre ne descend pas
+    sous la valeur fondamentale de la cible, l'acquéreur y ajoute ce qu'il apporte (``synergy``,
+    acquéreur, cible et valeur par action -> hausse relative de la valeur) et l'exigence de son
+    conseil (``hurdle``, acquéreur -> facteur sur le prix), et paie une part du prix en actions
+    nouvelles. Sans le
+    réglage, ``synergy`` et ``hurdle`` sont ignorés et le calcul est celui d'avant.
 
     Les porteurs de ``locked`` (l'État) n'apportent jamais leurs titres (ils ne cèdent que par
     décision de privatisation) ; les entreprises de ``excluded`` (sous contrôle public) ne
@@ -66,6 +125,10 @@ def takeover_by_value(
         return fundamentals[company.id]
 
     completed = bids = 0
+    realistic = config.synergy_takeovers
+    if realistic:
+        synergy = synergy or (lambda buyer, target, value: management_synergy(buyer, target))
+        hurdle = hurdle or (lambda buyer: 1.0)
     for buyer in sorted(companies, key=lambda company: company.cash, reverse=True):
         if not buyer.active or buyer.sector == "bank" or buyer.id in excluded:
             continue
@@ -80,23 +143,27 @@ def takeover_by_value(
         if len(sector_firms) <= max(1, config.min_firms_per_sector):
             continue
         best = None
-        for target in sector_firms:
-            circulating = target.shares_outstanding - target.treasury_shares
-            if target is buyer or circulating <= 0.0 or target.stock_price <= 0.0 or target.id in excluded:
-                continue
-            held = buyer.shares.get(target.id, 0.0)
-            need = max(0.0, config.control_threshold * circulating - held)
-            offer = target.stock_price * (1.0 + config.control_premium)
-            if need * offer > max(0.0, free_cash):
-                continue
-            # valeur fondamentale par action (sans marge visée, une fusion ne promet aucun
-            # gain de pouvoir de prix)
-            value = fundamental(target)
-            # déjà au-delà du seuil : l'absorption vaut d'être faite si la valeur dépasse le cours
-            price = offer if need > 0.0 else target.stock_price
-            surplus = (value - price) * (need if need > 0.0 else circulating - held)
-            if value > price and (best is None or surplus > best[0]):
-                best = (surplus, target, need, offer, circulating)
+        if realistic:
+            best = _realistic_terms(buyer, sector_firms, free_cash, fundamental, config, excluded,
+                                    synergy, hurdle)
+        else:
+            for target in sector_firms:
+                circulating = target.shares_outstanding - target.treasury_shares
+                if target is buyer or circulating <= 0.0 or target.stock_price <= 0.0 or target.id in excluded:
+                    continue
+                held = buyer.shares.get(target.id, 0.0)
+                need = max(0.0, config.control_threshold * circulating - held)
+                offer = target.stock_price * (1.0 + config.control_premium)
+                if need * offer > max(0.0, free_cash):
+                    continue
+                # valeur fondamentale par action (sans marge visée, une fusion ne promet aucun
+                # gain de pouvoir de prix)
+                value = fundamental(target)
+                # déjà au-delà du seuil : l'absorption vaut d'être faite si la valeur dépasse le cours
+                price = offer if need > 0.0 else target.stock_price
+                surplus = (value - price) * (need if need > 0.0 else circulating - held)
+                if value > price and (best is None or surplus > best[0]):
+                    best = (surplus, target, need, offer, circulating)
         if best is None:
             continue
         _, target, need, offer, circulating = best
@@ -116,6 +183,8 @@ def takeover_by_value(
                 # offre ratée : pas d'échange, l'acquéreur attend avant une nouvelle offre
                 buyer.last_acquisition_month = month
                 continue
+            # lot T1 : part du prix payée en actions nouvelles de l'acquéreur, au cours du jour
+            in_shares = share_payment(buyer, config) if realistic else 0.0
             for holder, quantity in tendered:
                 bought = need * quantity / supply
                 remaining = holder.shares[target.id] - bought
@@ -123,16 +192,23 @@ def takeover_by_value(
                     holder.shares[target.id] = remaining
                 else:
                     holder.shares.pop(target.id, None)
-                transfer_cash(buyer, holder, bought * offer)
+                if in_shares > 0.0:
+                    transfer_cash(buyer, holder, bought * offer * (1.0 - in_shares))
+                    issued = bought * offer * in_shares / buyer.stock_price
+                    buyer.shares_outstanding += issued
+                    holder.shares[buyer.id] = holder.shares.get(buyer.id, 0.0) + issued
+                else:
+                    transfer_cash(buyer, holder, bought * offer)
                 buyer.shares[target.id] = buyer.shares.get(target.id, 0.0) + bought
             # achat de titres existants : un transfert, pas un investissement (hors PIB)
-            buyer.secondary_asset_purchases += need * offer
+            buyer.secondary_asset_purchases += need * offer * (1.0 - in_shares) if in_shares > 0.0 else need * offer
         skill = 0.0
         if config.experience_learning:
             # lot G1 : meilleures pratiques gardées selon l'expérience de l'acquéreur
             count = float(buyer.acquisition_count)
             skill = count / (count + max(config.experience_half_count, 1e-9))
-        _merge_into(buyer, target, people, companies, extra_holders, skill)
+        _merge_into(buyer, target, people, companies, extra_holders, skill,
+                    config=config if realistic else None)
         # Une entreprise absorbée disparaît des cibles des acquéreurs suivants.
         sector_firms[:] = [company for company in sector_firms if company is not target]
         target.exit_month = month
@@ -168,9 +244,17 @@ def _merge_into(
     companies: list[Company],
     extra_holders: tuple = (),
     experience: float = 0.0,
+    config: SimulationConfig | None = None,
 ) -> None:
     """``experience`` (lot G1, 0 à 1) : part de l'écart entre la productivité moyenne et la
-    meilleure des deux que l'acquéreur conserve (0 : moyenne, comme avant)."""
+    meilleure des deux que l'acquéreur conserve (0 : moyenne, comme avant).
+
+    ``config`` (lot T1, offres réalistes seulement) : la productivité fusionnée est la moyenne
+    pondérée par les postes (salariés + 1) de celle de l'acquéreur et de celle de la cible, qui
+    rattrape d'abord ``MANAGEMENT_TRANSFER`` de son retard ; sans lui, moyenne simple."""
+    staff_weights = None
+    if config is not None and config.synergy_takeovers:
+        staff_weights = (len(buyer.employees) + 1.0, len(target.employees) + 1.0)
     issued_target_shares = sum(
         holder.shares.get(target.id, 0.0)
         for holder in [*people, *companies, *extra_holders]
@@ -230,7 +314,18 @@ def _merge_into(
     buyer.grid_level = max(buyer.grid_level, target.grid_level)
     buyer.storage_level = max(buyer.storage_level, target.storage_level)
     best_practice = max(buyer.productivity_trait, target.productivity_trait)
-    buyer.productivity_trait = min(1.8, (buyer.productivity_trait + target.productivity_trait) / 2.0)
+    if staff_weights is None:
+        buyer.productivity_trait = min(1.8, (buyer.productivity_trait + target.productivity_trait) / 2.0)
+    else:
+        # lot T1 : la cible adopte une part des méthodes de l'acquéreur, puis chaque partie pèse
+        # selon ses effectifs (une grande entreprise ne perd pas la moitié de son avance)
+        caught_up = target.productivity_trait + MANAGEMENT_TRANSFER * max(
+            0.0, buyer.productivity_trait - target.productivity_trait
+        )
+        own, acquired = staff_weights
+        buyer.productivity_trait = min(
+            1.8, (own * buyer.productivity_trait + acquired * caught_up) / (own + acquired)
+        )
     if experience > 0.0:
         buyer.productivity_trait = min(
             1.8, buyer.productivity_trait + experience * (best_practice - buyer.productivity_trait)

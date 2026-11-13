@@ -41,14 +41,21 @@ from economy.business import incremental_capacity_project
 import math
 from heapq import nsmallest
 
-from economy.consolidation import INTEGRATION_MONTHS, _employee_stake, _holder_valuation, _merge_into
+from economy.consolidation import (
+    INTEGRATION_MONTHS,
+    MANAGEMENT_TRANSFER,
+    _employee_stake,
+    _holder_valuation,
+    _merge_into,
+    management_synergy,
+)
 from economy.energy import infrastructure_unit_price
 from economy.finance import _entrant_wage_offer, sector_entry_signals
 from economy.intersector import (
     household_suppliers,
     pay_business_suppliers,
 )
-from economy.labor import experience_skill, workforce_targets
+from economy.labor import experience_skill, monthly_staff_bounds, workforce_targets
 from economy.models import Company
 from economy.payments import transfer_cash
 from economy.sectors import FIRM_SECTORS
@@ -64,7 +71,7 @@ SUBSIDIARY_SECTORS = ("food", "goods", "technology", "materials", "energy", "ser
 GROUP_MIN_AGE_MONTHS = 24       # ancienneté d'une entreprise avant de bâtir un groupe
 GROUP_SIZE_RATIO = 0.5          # une cible vaut au plus la moitié de la capitalisation de l'acquéreur
 CONTROL_RETENTION = 2.0 / 3.0   # part du seuil de contrôle sous laquelle une filiale quitte son groupe
-MANAGEMENT_TRANSFER = 0.25      # part de l'écart de productivité qu'une société mère transmet à une cible rachetée
+# MANAGEMENT_TRANSFER (part de l'écart de productivité transmise à une cible rachetée) : consolidation.py
 DATA_LEARNING_RATE = 0.2        # part de l'écart de connaissance comblée par un budget de données complet
 REPAIR_SPLIT = {"services": 0.6, "materials": 0.4}
 STORE_BUILD_SPLIT = {"real_estate": 0.5, "services": 0.3, "materials": 0.2}
@@ -313,11 +320,13 @@ class EnterpriseMixin:
     def _store_staffing(self) -> None:
         """Vendeurs des magasins (lot I) : ``STORE_STAFF`` postes par magasin s'ajoutent au besoin
         en personnel du producteur, dans la limite des embauches mensuelles."""
-        hiring = self.live.max_monthly_hiring
+        live = self.live
         for company in self.companies:
             if company.active and company.stores > 0.0:
                 extra = math.ceil(company.stores * STORE_STAFF)
                 company.staffing_need += extra
+                # borne fixe, ou proportionnelle à l'effectif avec le lot T2
+                hiring = monthly_staff_bounds(len(company.employees), live)[0]
                 company.target_employees = min(
                     company.target_employees + extra, len(company.employees) + hiring
                 )
@@ -931,10 +940,27 @@ class EnterpriseMixin:
         """Gain qu'un acquéreur mieux géré attend d'une cible : la part de l'écart de productivité
         qu'il lui transmettra (``MANAGEMENT_TRANSFER``), écart borné à 50 % ; nul s'il n'est pas
         plus productif qu'elle."""
-        if buyer.productivity_trait <= target.productivity_trait:
-            return 0.0
-        gap = buyer.productivity_trait / max(target.productivity_trait, 1e-9) - 1.0
-        return MANAGEMENT_TRANSFER * min(0.5, gap)
+        return management_synergy(buyer, target)
+
+    def _takeover_synergy(self, network: dict[str, float]):
+        """Ce qu'un acquéreur apporte à une cible de son secteur (lot T1), en hausse relative de sa
+        valeur : ses méthodes (``management_synergy``), ses magasins (G7, nul sans magasins ni
+        distribution de groupe) et, avec les frais de structure (lot D), le forfait mensuel de la
+        cible que la fusion évite, capitalisé au taux d'actualisation des actions."""
+        live = self.live
+        discount = max(
+            live.stock_min_discount,
+            12.0 * max(0.0, self.policy_rate) + live.equity_risk_premium - live.stock_growth_expectation,
+        )
+
+        def synergy(buyer, target, value: float) -> float:
+            gain = management_synergy(buyer, target) + self._distribution_synergy(buyer, target, network)
+            if live.fixed_cost_share > 0.0 and target.fixed_cost > 0.0 and value > 0.0:
+                equity = value * max(target.shares_outstanding, 1.0)
+                gain += 12.0 * target.fixed_cost / discount / equity
+            return gain
+
+        return synergy
 
     def _board_hurdle(self, company) -> float:
         """Exigence du conseil d'actionnaires sur un investissement (lot I) : 1 sans conseil ; de

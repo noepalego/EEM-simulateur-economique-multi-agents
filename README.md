@@ -39,6 +39,12 @@ et leurs mesures sont séparés du scénario historique : [rapport de livraison]
 > Les crises, faillites, pénuries et récessions font partie des résultats possibles : le modèle
 > n'est pas recalibré pour les éviter.
 
+L'[audit économique du 12 novembre 2026](docs/audit_economique_20261112.md) corrige la
+comptabilisation des stocks dans le PIB, les matières disponibles sans extracteur,
+l'exploration non financée, la cohérence du capital bancaire et les saisies sans paiement.
+Il fiabilise aussi les outils d'évaluation. Les graphiques historiques ci-dessous précèdent
+ces corrections ; le rapport décrit leur validation et les limites qui restent à traiter.
+
 ---
 
 ## Sommaire
@@ -79,8 +85,10 @@ réutilise cet état.
 
 Pour rejouer les mesures de ce README dans l’interface, appliquez les
 [réglages du scénario complet](#réglages-et-protocole) avant la réinitialisation.
-Gardez le monde, les médias, les relations bancaires individuelles et les agents apprenants
-désactivés pour reproduire ces anciens graphiques. Pour explorer les nouveautés, **Tout activer**
+Gardez le monde, les médias, les relations bancaires individuelles, les agents apprenants et le
+lot T (offres publiques réalistes, croissance proportionnelle des effectifs) et la rareté des
+matières premières désactivés, et l'efficacité de la recherche à 0,25, pour reproduire ces anciens
+graphiques. Pour explorer les nouveautés, **Tout activer**
 puis **Réinitialiser** ouvre le monde ; choisissez la **Région observée** et consultez **Monde**.
 Les commandes d'avance font progresser toutes les régions simultanément.
 
@@ -274,7 +282,20 @@ c'est ce qui permet une reproduction exacte.
   jamais sous le salaire minimum légal.
 - **Investissement** : une entreprise achète de la capacité ou des centrales, et investit en
   recherche, en jugeant la rentabilité au taux d'actualisation du moment. La connaissance
-  accumulée fait monter la productivité globale (PGF).
+  accumulée fait monter la productivité globale (PGF) : chaque mois, le stock croît de
+  `knowledge_growth_per_intensity` × intensité de recherche (en part du PIB) et perd 0,2 %
+  d'obsolescence. Le curseur « Efficacité de la recherche » (barre latérale, rubrique
+  « Politique publique & hasard ») règle ce coefficient : 0,25 par défaut, trajectoire inchangée.
+  À 0,5 avec les réglages de base, le PIB réel par ménage croît d'environ 2 % par an au lieu de
+  reculer. Dans le scénario complet, 0,5 épuise les matières premières vierges, sauf avec la
+  rareté des matières premières ci-dessous ou une exploration qui reconstitue 100 % des réserves
+  (voir [§ 12](#12-limites-connues)). « Tout activer » porte ce coefficient à 0,5.
+- **Rareté des matières premières** (`raw_material_scarcity`, désactivée par défaut, incluse dans
+  « Tout activer ») : quand le stock vierge passe sous son niveau de départ, le prix plancher des
+  matières reçoit une rente de rareté (× 1 + 0,5 × rareté / (1 − rareté)) et l'exploration
+  remplace une part croissante des volumes extraits (0,95 + 0,5 × rareté), pour la production
+  comme pour les chantiers. Le stock se stabilise près de son niveau de départ au lieu de
+  s'épuiser d'un coup.
 - **Finance** : crédit d'exploitation, dividendes, émission d'actions, obligations, offres
   publiques de rachat sur des concurrents moins bien valorisés. Le régime de propriété permet
   aussi un rachat ciblé de titres pour constituer les parts salariées (voir [§ 6](#6-létat-et-la-politique)).
@@ -360,7 +381,9 @@ Sans nouveau réglage : ces règles s'appliquent quand le mécanisme concerné e
   repart de zéro.
 - **Barre latérale** : boutons « Tout activer » et « Tout désactiver » pour tous les mécanismes
   optionnels, exigence de fonds propres contracyclique, recapitalisation de dernier recours des
-  banques, lots J et K compris (fermeture des entreprises sans salarié réglée à 6 mois).
+  banques, lots J et K compris (fermeture des entreprises sans salarié réglée à 6 mois), et la
+  rareté des matières premières ; « Tout activer » porte aussi l'efficacité de la recherche à 0,5
+  et « Tout désactiver » la remet à 0,25.
 
 ### Obligations d'entreprise, commerce extérieur, syndicats (lot J, désactivés par défaut)
 
@@ -390,6 +413,103 @@ commerce extérieur & syndicats » de la barre latérale.
   moitié du travail perdue, la moitié de l'écart concédée), au plus une fois tous les trois ans.
 
 Mesure : `results/lot_g_entreprises/RESUME.md`, section « Lot J ».
+
+### Offres publiques réalistes et croissance des effectifs (lot T, désactivés par défaut)
+
+Sans ce lot, une offre publique dans un même secteur n'est lancée que si l'acquéreur juge la
+cible **sous-évaluée** (valeur fondamentale au-dessus du cours + 30 %), alors que les
+actionnaires de la cible connaissent **la même valeur** et ne vendent pas en dessous : les
+entreprises, les fonds et l'État refusent toujours, seuls quelques ménages prudents apportent leurs
+titres. Dans le scénario complet, moins de 0,4 % des offres aboutissent (2 589 offres pour
+4 absorptions, graine 1001). Deux cases de la rubrique « Concurrence, dette & entreprises » :
+
+- **Offres publiques réalistes** (`synergy_takeovers`, economy/consolidation.py). L'offre vaut le
+  cours + 30 %, relevée à la valeur fondamentale si le cours est trop bas. L'acquéreur ne la lance
+  que si ce qu'il apporte justifie le prix : ses méthodes (la cible rattrape un quart de son écart
+  de productivité, comme pour les rachats entre secteurs), ses magasins (distribution de groupe) et,
+  avec les frais de structure, le forfait mensuel de la cible que la fusion évite. Son conseil
+  d'actionnaires garde son exigence. Jusqu'à `takeover_share_payment` (50 %) du prix est payé en
+  **actions nouvelles** de l'acquéreur coté : la trésorerie libre ne finance que le reste. La
+  productivité fusionnée est la moyenne pondérée par les effectifs, au lieu d'une moyenne simple
+  qui coûtait à un grand acquéreur la moitié de son avance. Le seuil de contrôle, l'acceptation par
+  chaque actionnaire, le nombre minimal d'entreprises par secteur et la politique de concurrence
+  de l'État restent inchangés.
+- **Croissance des effectifs proportionnelle** (`proportional_hiring`, economy/labor.py). Une
+  entreprise embauche ou licencie chaque mois jusqu'à `staff_change_share` (10 %) de son effectif,
+  jamais moins que les bornes fixes de 3 embauches et 2 licenciements, qui s'appliquent sinon à
+  toutes les tailles.
+
+- **Procédure de sauvegarde** (`safeguard_procedure`, economy/safeguard.py). Une entreprise d'au
+  moins dix salariés, en pertes depuis trois mois, avec moins de trois mois de paie en trésorerie,
+  à qui les banques refusent le crédit de sa paie mais dont les recettes paient au moins un quart
+  de ses salariés, obtient un plan : effectif ramené en un mois à ce noyau viable, dette bancaire
+  abandonnée au-delà de la moitié de ce que ses recettes permettent de servir (perte des banques),
+  prêt de sauvegarde de trois mois de paie. Le plan est noté sur la fiche de l'entreprise.
+
+Les rachats d'une région à l'autre (lot P) gardent leurs propres règles : prise de contrôle sans
+fusion, une seule nouvelle offre par mois dans le monde.
+
+Mesure (scénario complet, 5 graines × 400 mois, contre le témoin) : avec les offres réalistes,
+30 % des offres aboutissent (0,2 % sans), environ 600 absorptions par trajectoire, et la première
+entreprise de l'alimentation fait 87 % du chiffre d'affaires du secteur sur les dix dernières
+années (20 % sans). Mais le chômage moyen passe de 5,3 à 7,6 % (pic moyen de 21 à 32 %), et de
+13,8 % avec les deux premières cases. La cause, tracée mois par mois : un géant qui a additionné
+les dettes de ses rachats perd sa trésorerie, licencie tout son personnel en quelques mois et
+survit en coquille. La procédure de sauvegarde ramène T1 + T2 à 7,8 % de chômage, mais elle porte
+le témoin de 5,3 à 7,9 % et T1 seul de 7,6 à 10,5 % : elle ne corrige pas le problème. Aucune des
+trois cases ne fait partie de « Tout activer ». Détail : `results/lot_t_rachats/RESUME.md` et
+`DIAGNOSTIC.md`.
+
+### Impôt, crédit, prix et embauche (lot U, désactivés par défaut)
+
+Quatre réglages de la rubrique « Concurrence, dette & entreprises », issus d'un diagnostic du monde
+« Tout activer » (12 mondes de trois régions, 400 mois) :
+
+- **Impôt borné par la trésorerie** (`tax_capped_by_cash`) : l'impôt sur le revenu recouvré,
+  arriérés compris, ne dépasse pas ce que le ménage possède ; le solde reste dû. Sans lui, des
+  ménages passent en trésorerie négative et leur demande devient négative.
+- **Poids des titres publics** (`sovereign_risk_weight`, 1 par défaut) : part des titres publics
+  comptée dans l'exposition qui consomme les fonds propres des banques. À 0, la dette publique ne
+  gèle plus le crédit privé.
+- **Encadrement des prix levé en cas de pénurie** (`shortage_price_release`) : l'encadrement ne
+  s'applique pas à un produit dont plus de 20 % de la demande n'a pas été servie le mois précédent.
+- **Embauche tirée par la demande** (`demand_led_hiring`) : plafond d'embauche relevé et offre
+  salariale alignée pour l'alimentation et les biens. **Mesuré nuisible** : le chômage moyen passe
+  de 7,0 à 15,5 %. Hors de « Tout activer ».
+
+Avec les trois premiers (inclus dans « Tout activer »), médiane de 36 régions : chômage moyen de
+7,0 à 5,0 %, régions encore à plus de 25 % de chômage au mois 400 de 12 à 3, mois à crédit nul de
+62 à 9,5, biens non servis de 49 à 28 %. L'inflation devient plus volatile (écart-type de 9,5 à
+11,2 points) et 18 régions sur 36 connaissent encore une crise. Détail et réserves :
+`results/chantiers_20261112/RAPPORT.md`.
+
+### Société : dettes, jeux, marques, finance et contestation (lot V, désactivés par défaut)
+
+Douze mécanismes (`economy/society.py`, `economy/ventures.py`), chacun derrière sa case de la
+rubrique « Société : dettes, jeux, marques & finance » de la barre latérale. Tant qu'aucun n'est
+coché, la simulation est identique au bit près. Résultats dans l'onglet **Société**.
+
+| Réglage | Ce qui se passe |
+|---|---|
+| `personal_bankruptcy` | **Surendettement.** Une commission examine les ménages en impayé de crédit à la consommation dont la charge de dette dépasse la moitié du revenu : elle saisit leur trésorerie au-delà d'un mois de salaire minimum, efface le reste (perte de la banque) et les interdit de crédit pendant cinq ans. Un ménage en défaut ordinaire est interdit aussi. |
+| `philanthropy` | **Dons et fondations.** Un ménage dont la fortune nette dépasse dix fois la moyenne donne chaque mois une part de l'excédent à une fondation (école, hôpital ou presse), qui dépense auprès des entreprises. L'école relève la compétence des nouveaux ménages, l'hôpital baisse la mortalité, la presse finance les médias. Le donateur gagne de la renommée, et de la notoriété avec le lot K. |
+| `state_lottery` | **Loterie d'État.** La mise ne dépend pas du revenu, et les ménages modestes jouent jusqu'à trois fois plus que les plus riches. La moitié des mises va à l'État ; le reste nourrit une cagnotte qu'un seul joueur emporte, une fois sur quatre chaque mois. |
+| `addictive_goods` | **Tabac et alcool.** Des ménages fondent deux entreprises d'un nouveau secteur. Un ménage dépendant veut la même quantité quel que soit le prix ; il paie une accise de 50 % et la TVA. Sa dépendance suit son penchant et son chômage ; les dégâts de santé s'accumulent, coûtent des soins (partagés entre l'État et le ménage selon l'orientation du gouvernement) et relèvent la mortalité. |
+| `franchising` | **Franchises.** Un producteur rentable qui refuse des commandes loue sa marque et ses méthodes à un petit entrepreneur : droit d'entrée, puis redevance de 5 % du chiffre d'affaires. Le franchisé est une entreprise à part entière. |
+| `brand_marketing` | **Marques.** Des ménages fondent des agences de marketing. Un producteur bénéficiaire y consacre 2 % de son chiffre d'affaires ; sa notoriété s'efface de 3 % par mois et relève jusqu'à 50 % son poids dans les achats des ménages. |
+| `worker_buyouts` | **Coopératives de chômeurs.** Les salariés d'une entreprise liquidée la relancent avec leur épargne et six mois d'allocation chômage versés d'avance par l'État ; parts égales et incessibles. |
+| `short_selling` | **Vente à découvert.** Des fonds spéculatifs financés par des ménages empruntent les titres d'une entreprise en pertes et endettée, les vendent à la séance de Bourse, et gagnent si le cours baisse ou si elle fait faillite. |
+| `mortgage_securitization` | **Titrisation.** Une banque émet des titres adossés à la moitié au plus de ses prêts immobiliers. Intérêts, remboursements et pertes passent aux ménages porteurs ; les fonds propres de la banque sont libérés, elle peut prêter davantage. |
+| `crowdfunding` | **Financement participatif.** Les ménages prêtent directement aux entreprises de moins de trois ans, sans banque ni création de monnaie ; en faillite ils passent après les banques. |
+| `social_unrest` | **Manifestations et émeutes.** La tension suit le chômage au-delà de 10 %, la part du patrimoine des 10 % les plus riches au-delà de 60 % et la baisse du salaire réel. Une manifestation fait perdre 30 % du travail du mois ; une émeute détruit 2 % des stocks ; le gouvernement concède 10 % de transferts et d'allocation en plus, trois fois au plus. |
+| `public_works` | **Grands travaux.** Route, réseau, port : chantiers de 18 à 36 mois payés aux entreprises, hors loi de finances. Un ouvrage achevé relève la productivité de tous de 2 % × son état ; l'entretien dépend de la doctrine et des fonds de l'État, et l'état se dégrade sans lui. |
+
+Mesure (configuration de base, 3 graines × 240 mois, chaque mécanisme seul puis les douze
+ensemble, contre le témoin) : comptes exacts, aucun effondrement, et des effets du même ordre que
+l'écart entre graines (chômage moyen de 4,3 à 5,5 % selon la variante, 4,7 % pour le témoin, 4,4 %
+pour les douze). Le surendettement ne se déclenche jamais dans cette configuration, faute de crédit
+à la consommation en impayé. Les douze mécanismes font partie de « Tout activer ». Tableaux, ce
+que chaque mécanisme a produit et limites : `results/lot_v_societe/RESUME.md`.
 
 ### Banques et banque centrale
 - Les banques prêtent dans la limite de leurs **fonds propres** (8 % des prêts et titres). Les
@@ -630,7 +750,7 @@ Mesure : `results/lot_k_pouvoir/RESUME.md`.
 | **Population & entreprises** | **500 ménages**, **3 entreprises par secteur** (24 au total), **10 ans de chauffe** |
 | **Croissance démographique mensuelle** | **0,5 %**, soit environ **6,17 % par an** tant que le plafond n’est pas atteint, avant les effets d’arrondi |
 | **Plafond de croissance de la population** | **100 %** au-dessus de la population initiale, soit **1 000 ménages** au maximum |
-| Bouton **Tout activer** | **24 mécanismes sur 24**, dont la fermeture des entreprises sans salarié après **6 mois** |
+| Bouton **Tout activer** | **24 mécanismes sur 24** à l'époque, dont la fermeture des entreprises sans salarié après **6 mois**. Le bouton active aujourd'hui davantage : pour rejouer ce scénario, décocher aussi la rareté des matières premières et remettre l'efficacité de la recherche à 0,25 |
 | **État institutionnel** | Cocher **Objectifs ministériels enrichis** et **Régime de propriété selon l’orientation**. L’État institutionnel est déjà le modèle utilisé par l’interface. |
 | **Politique publique & hasard** | Garder **Élections et alternance politique** et **Vote économique** actifs. Mandats de **5 ans**, sans orientation imposée. |
 | **Concurrence, dette & entreprises** | Activer aussi les leviers à curseur pour cette expérience : **22 %** de remise maximale sur le volume, **10 %** de frais de structure et **3 mois** de lissage du bénéfice pour la valeur fondamentale des actions. |
@@ -755,7 +875,7 @@ illustre cette méthode sur une configuration antérieure.
 
 ## 8. L'interface
 
-`python -m streamlit run main.py` ouvre six onglets :
+`python -m streamlit run main.py` ouvre sept onglets :
 
 | Onglet | Contenu |
 |---|---|
@@ -764,6 +884,7 @@ illustre cette méthode sur une configuration antérieure.
 | **État** | **Gouvernement** (cabinet et objectifs), **Budget**, **Fonction publique**, **Salaire minimum**, **Industrie**, **Journal** et **Pouvoir & influence** : classement et détail de l’influence, popularité et élections, lois de pouvoir, aides et scandales, réseaux (dons, lobbying, conseillers et dynasties) |
 | **Entreprises & bourse** | **Toutes les entreprises**, **Fiche d’une entreprise**, **Groupes & filiales**, **Fonds d’investissement**, **Bourse**, **Obligations**, **Commerce extérieur**, **Syndicats**, **Médias** (audience, recettes et enquêtes), **Relations bancaires** (clients, dépôts, encours et changements), **Apprentissage** (traits et essais des agents) |
 | **Ménages** | trois sous-onglets : **Vue d'ensemble** (indicateurs, répartition des fortunes), **Fiche d'un ménage** (revenus, patrimoine, actions, parts de fonds, expérience, état de ses logements, historiques), **Tous les ménages** (une ligne par ménage, triable) |
+| **Société** | les douze mécanismes du lot V, en cinq sous-onglets : **Ménages** (surendettement, loterie, dons, tabac et alcool), **Entreprises** (marques, franchises, coopératives), **Finance** (vente à découvert, titrisation, prêts participatifs), **État & contestation** (manifestations, grands travaux), **Journal** |
 | **Modèle & réglages** | comparaison des paramètres de base et en vigueur, description des mécanismes |
 
 Les entreprises fermées ou absorbées ne sont plus listées ; une entreprise absorbée par fusion
@@ -912,6 +1033,8 @@ economy/                   Moteur, sans dépendance à Streamlit
 ├── enterprise.py          Expérience, gros entretien, préférences et données, filiales, rachats entre
 │                          secteurs, magasins, non cotées et fonds des banques (lots G à I)
 ├── macro.py               Obligations d'entreprise, commerce extérieur, négociation collective (lot J)
+├── consolidation.py       Offres publiques dans un même secteur, fusions, offres réalistes (lot T)
+├── safeguard.py           Procédure de sauvegarde des entreprises en difficulté (lot T3)
 ├── world.py, world_region.py   Régions, compensation, commerce, frontaliers, migrations,
 │                          groupes multirégionaux et politiques comparées (lots L, N à Q)
 ├── media.py               Entreprises de médias, publicité, audience et enquêtes (lot M)
@@ -919,6 +1042,10 @@ economy/                   Moteur, sans dépendance à Streamlit
 ├── bank_relations.py      Clientèle bancaire, choix du prêteur et financement (lot S)
 ├── power.py               Influence, popularité, élection à candidats, lois de pouvoir, aides aux
 │                          entreprises, favoritisme, lobbying, pantouflage, dynasties (lot K)
+├── society.py             Surendettement, philanthropie, loterie, tabac et alcool, manifestations,
+│                          grands travaux (lot V, ménages et État)
+├── ventures.py            Franchises, marques et agences, coopératives, vente à découvert,
+│                          titrisation, prêts participatifs (lot V, entreprises et finance)
 ├── state_government.py    Gouvernement, cabinet, journal
 ├── state_budget.py        Loi de finances, exécution, dette
 ├── state_services.py      Fonction publique, éducation
@@ -952,6 +1079,9 @@ python identity_check.py      # 5 trajectoires de référence, comparées au bit
 python performance_probe.py identity --output results/identity_before
 python performance_probe.py ui --repeats 1 --output results/ui   # parcours de l'interface
 python results/lot_l_monde/parcours_interface.py  # quatre régions, options et retour au témoin
+python results/lot_v_societe/parcours_interface.py  # onglet Société, douze mécanismes du lot V
+python results/lot_v_societe/identite.py  # lot V désactivé : mêmes empreintes qu'avant le lot
+python results/lot_v_societe/comparaison.py 240 1001 1002 1003  # chaque mécanisme contre le témoin
 python results/lot_l_monde/comparaison.py --months 400 --jobs 4  # 8 variantes × 5 graines
 python experiences/gauche_droite_campagne.py 400 1001 1002 1003 1004 1005 --output lot_e_propriete/active --set ownership_regime=1
 python experiences/gauche_droite_analyse.py lot_e_propriete/active
@@ -968,7 +1098,7 @@ fusion ; le parcours UI, comparé avec les exclusions, reste identique. `python 
 l'interface avec les huit mécanismes du lot G activés ;
 `python results/lot_g_entreprises/comparaison.py 400 1001 1002 1003 1004 1005` refait la mesure.
 
-- La suite contient 690 tests : mécanismes, cohérence comptable, stabilité, État,
+- La suite contient 723 tests : mécanismes, cohérence comptable, stabilité, État,
   interventions et régression.
 - `tests/test_advance_cache.py` contrôle l'identité des avances préparées, leur annulation,
   l'isolation des copies et des régions, la sérialisation des comptes de prêts, l'attribution
@@ -1013,6 +1143,29 @@ du rendu côté Streamlit 1.66.1, hors calcul du moteur.
   individuels en partie double. Le lot S attribue les soldes et les prêts à des banques nommées,
   avec compensation mensuelle des écarts de financement. Une version en centimes existe à l'état de prototype
   (`bank_ledger.py`, `bank_opening.py`), mais elle n'est pas branchée.
+- **Peu de croissance par ménage.** Avec les réglages de base, le PIB réel par ménage recule
+  de 18 % en 20 ans (moyenne de trois graines, 240 ménages). Seule la connaissance peut faire
+  croître la productivité sans plafond, et elle ne profite qu'au travail de l'alimentation et des
+  biens. Le logement (un par ménage) et les services (productivité constante) ne croissent pas
+  par ménage. Le prix du capital productif suit en entier l'indice de l'énergie. Enfin, la
+  population croît plus vite que le capital. Une efficacité de la recherche de 0,5 donne environ
+  +55 % en 20 ans avec les réglages de base, avec le même chômage et moins d'inflation. Dans le
+  scénario complet (§ 7), elle épuise les matières premières vierges dans les trois graines
+  (mois 249, 335 et 371) : biens puis alimentation s'arrêtent, le chômage dépasse 50 %. Avec des
+  réserves reconstituées à 100 % (curseur « Réserves de matières reconstituées par
+  l'exploration »), il n'y a plus d'épuisement : PIB réel moyen par ménage 11 728 contre 7 255,
+  chômage moyen 4,4 % contre 6,2 %, pic 12,6 % contre 28,1 %. Avec la rareté des matières
+  premières (réglage de « Tout activer ») : PIB réel moyen par ménage 13 309, multiplié par 2,5
+  entre la première et la dernière année, chômage moyen 6,3 %, inflation 6,9 % contre 8,6 %, aucun
+  épuisement ; mais pic de chômage moyen de 32,8 % (une crise à 49,5 % dans la graine 1002)
+  (`results/analyse_pib_par_menage_20261112/RESUME.md`).
+- **Matières premières : un stock fini sans signal de rareté.** Le stock initial (300 000) ne
+  dépend pas du nombre de ménages. Il perd la part de l'extraction que l'exploration ne remplace pas
+  (5 % par défaut), plus 10 % à chaque choc de matières premières. Son prix suit le coût d'extraction,
+  pas le stock restant : rien ne ralentit la consommation avant la rupture, qui est brutale. Dans le
+  scénario complet aux réglages du § 7, il reste 7 à 17 % du stock initial au mois 400. L'option
+  `raw_material_scarcity` (§ 5, Entreprises) ajoute ce signal de rareté ; elle reste désactivée
+  par défaut.
 - **Stabilité non garantie.** Les récessions longues, la concentration bancaire et les booms de
   crédit qui finissent en faillites restent possibles. Le modèle est sensible à certaines
   élasticités, notamment l'élasticité-prix des achats entre entreprises.
@@ -1021,6 +1174,13 @@ du rendu côté Streamlit 1.66.1, hors calcul du moteur.
   il reste moins d'entreprises, les marchés se concentrent et le chômage monte, alors que les
   inégalités de patrimoine baissent nettement (`results/lot_e_propriete/RESUME.md`). Les parts
   salariées n'atteignent que 10 % du capital en 400 mois, pour 30 % visés.
+- **Lot T : concentration coûteuse.** Les offres réalistes font émerger des quasi-monopoles
+  durables, mais avec plus de chômage et des crises plus profondes ; avec la croissance
+  proportionnelle des effectifs, un secteur peut se retrouver sans aucune entreprise. Cause : un
+  géant qui a additionné les dettes de ses rachats perd sa trésorerie, licencie tout son
+  personnel en quelques mois et survit en zombie (`results/lot_t_rachats/DIAGNOSTIC.md`). La
+  procédure de sauvegarde (T3) n'y remédie pas : elle aide T1 + T2 mais aggrave le témoin et T1.
+  Mesure sur 5 graines et une seule région.
 - **Économies d'échelle sans contrepoids.** Les frais de structure (`fixed_cost_share`) créent
   une boucle « plus gros, moins cher, plus gros » que rien ne freine rapidement : quasi-monopoles
   et récessions dès 10 %. La remise sur le volume ne s'applique pas aux matières premières.
@@ -1034,6 +1194,11 @@ du rendu côté Streamlit 1.66.1, hors calcul du moteur.
   regroupent en 33 ans un tiers des entreprises dans des groupes. Les distributions d'un fonds
   sont imposées comme des dividendes, remboursement de capital compris. Mesures sur 400 mois et
   5 graines seulement (`results/lot_g_entreprises/RESUME.md`), sans évaluation à 800 mois.
+- **Lot V : mécanismes non calibrés.** Mesurés sur 3 graines et 240 mois seulement, dans la
+  configuration de base. Le surendettement n'y a aucun dossier. Les fonds spéculatifs manient des
+  montants faibles (les entreprises fragiles valent peu en Bourse) et clôturent leurs positions
+  sans rachat en séance. Le secteur du tabac et de l'alcool emploie un ou deux salariés. Détail :
+  `results/lot_v_societe/RESUME.md`.
 - **Lot J : simplifications.** Le commerce extérieur ne porte que sur l'alimentation, les biens
   et, à l'exportation, les services et la technologie ; pas d'énergie ni de matières importées,
   pas de mouvements de capitaux. Une grève ne réduit la production que dans l'alimentation, les

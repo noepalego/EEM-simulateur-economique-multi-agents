@@ -16,19 +16,47 @@ from economy.sectors import FIRM_SECTORS
 KEYS = [s for s, _ in FIRM_SECTORS]
 
 
+def annualized_change(start, end, months):
+    """Variation en %/an ; une base positive et une durée positive sont nécessaires."""
+    if months <= 0 or start <= 0 or end <= 0:
+        return float("nan")
+    return 100.0 * ((end / start) ** (12.0 / months) - 1.0)
+
+
+def annualized_window_growth(values, window=24, start=0):
+    """Croissance entre deux moyennes, datées au centre de leurs fenêtres.
+
+    La fenêtre finale doit commencer après la fenêtre de référence. Une série
+    trop courte donne une mesure indisponible, sans inventer une annualisation.
+    """
+    elapsed = len(values) - window - start
+    if elapsed <= 0 or window <= 0 or start < 0:
+        return float("nan")
+    first = statistics.mean(values[start:start + window])
+    last = statistics.mean(values[-window:])
+    return annualized_change(first, last, elapsed)
+
+
 def top_share(sim, sector, exclude=None):
     firms = [c for c in sim.companies if c.active and c.sector == sector and c.id != exclude]
     rv = sum(c.previous_revenue for c in firms)
-    return (max((c.previous_revenue for c in firms), default=0) / rv) if rv > 0 else (1.0 if firms else 0.0), len(firms)
+    # Sans ventes, aucune entreprise n'a de part de chiffre d'affaires mesurable.
+    # Le nombre de producteurs permet encore de détecter un monopole structurel.
+    return (max((c.previous_revenue for c in firms), default=0) / rv) if rv > 0 else 0.0, len(firms)
 
 
 def run(args):
     seed, months, overrides = args
+    if months <= 0:
+        raise ValueError("La période observée doit durer au moins un mois.")
     sim = EconomySimulation(SimulationConfig(seed=seed, **overrides))
+    initial_cpi = sim.price_index
     rec = []
     mono = {s: 0 for s in KEYS}
     entry_events = []
-    seen = set()
+    # Les entreprises nées pendant la chauffe ne sont pas des entrées de la
+    # période observée, même si elles sont encore présentes au premier relevé.
+    seen = {c.id for c in sim.companies}
     vacancies = []
     for _ in range(months):
         rec.append(sim.step())
@@ -44,7 +72,7 @@ def run(args):
             if c.id.startswith("startup") and c.id not in seen:
                 seen.add(c.id)
                 top, n = top_share(sim, c.sector, exclude=c.id)
-                entry_events.append((len(rec), c.sector, round(top, 2), n, c.id))
+                entry_events.append((len(rec), c.sector, top, n, c.id))
     out = {"seed": seed}
     out["nan"] = any(not math.isfinite(v) for r in rec for v in (r.nominal_gdp, r.average_wage, r.unemployment, r.consumer_price_index, r.total_profit))
     out["accounting"] = dict(
@@ -68,7 +96,7 @@ def run(args):
                 cur = 0
         sec[s] = dict(share=100 * rev / max(tot, 1), margin=100 * prof / max(rev, 1), active=act, loss_streak=best)
     out["sec"] = sec
-    out["infl_avg"] = ((rec[-1].consumer_price_index / 100) ** (1 / (len(rec) / 12)) - 1) * 100
+    out["infl_avg"] = annualized_change(initial_cpi, rec[-1].consumer_price_index, len(rec))
     out["unemp_mean"] = 100 * statistics.mean(r.unemployment for r in rec)
     out["unemp_max"] = 100 * max(r.unemployment for r in (rec[36:] or rec))
     out["gdp_ratio"] = rec[-1].real_gdp / max(r.real_gdp for r in rec)
@@ -83,6 +111,8 @@ def run(args):
                 episodes.append((low[0], round(low[2] / low[1], 2), i - low[0])); low = None
     out["crashes"] = episodes + ([(low[0], round(low[2] / low[1], 2), None)] if low else [])
     rw = [statistics.mean(r.real_average_wage for r in rec[i:i + 12]) for i in range(0, len(rec) - 11, 12)]
+    if not rw:
+        rw = [statistics.mean(r.real_average_wage for r in rec)]
     out["real_wage"] = (round(rw[0]), round(rw[len(rw) // 2]), round(rw[-1]))
     out["re_props"] = [c.property_inventory for c in sim.companies if c.active and c.sector == "real_estate"]
     out["firms"] = sum(1 for c in sim.companies if c.active)
@@ -99,7 +129,7 @@ def run(args):
         out["entry_by_sector"][e[1]] = out["entry_by_sector"].get(e[1], 0) + 1
     out["owners"] = sum(p.owns_home for p in sim.people)
     out["money"] = (round(rec[-1].money_supply / max(1, 12 * statistics.mean(r.nominal_gdp for r in rec[-12:])), 2), round(max(abs(r.ledger_residual) for r in rec), 0), round(100 * statistics.mean(r.policy_rate * 12 for r in rec[-300:]), 1), round(100 * max(r.policy_rate * 12 for r in rec), 1))
-    out["growth"] = (round(rec[-1].tfp_index, 2), round(100 * ((statistics.mean(r.real_gdp for r in rec[-24:]) / statistics.mean(r.real_gdp for r in rec[240:264])) ** (12 / (len(rec) - 252)) - 1), 2), round(statistics.mean(r.research_intensity for r in rec[-120:]) * 100, 2))
+    out["growth"] = (round(rec[-1].tfp_index, 2), round(annualized_window_growth([r.real_gdp for r in rec], start=240), 2), round(statistics.mean(r.research_intensity for r in rec[-120:]) * 100, 2))
     gdp12 = 12 * statistics.mean(r.nominal_gdp for r in rec[-12:])
     out["public"] = (round(rec[-1].public_debt / max(gdp12, 1), 2), round(statistics.mean(r.tax_adjustment for r in rec[-120:]), 2), round(100 * sum(r.public_spending for r in rec[-120:]) / max(1, sum(r.nominal_gdp for r in rec[-120:])), 1), round(1200 * statistics.mean(r.policy_rate for r in rec), 1))
     out["invest_homes"] = sum(p.investment_homes for p in sim.people)

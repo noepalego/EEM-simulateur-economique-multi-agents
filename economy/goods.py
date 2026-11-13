@@ -349,15 +349,39 @@ def _affordable_production(
     return lower, total_cost(lower)
 
 
+def raw_material_scarcity(resources: Resources, config: SimulationConfig) -> float:
+    """Rareté des matières vierges, entre 0 et 1 : part du stock de départ (``raw_materials``)
+    consommée ; 0 tant que le stock reste au-dessus de son niveau de départ."""
+    reference = max(config.raw_materials, 1.0)
+    return max(0.0, min(1.0, 1.0 - resources.raw_materials / reference))
+
+
+def exploration_rate(resources: Resources, config: SimulationConfig) -> float:
+    """Part des volumes extraits que l'exploration remplace. Sans l'option
+    ``raw_material_scarcity`` : ``reserve_replacement_rate``, inchangé. Avec : l'exploration
+    croît avec la rareté (gisements plus chers à trouver, mais mieux payés)."""
+    rate = config.reserve_replacement_rate
+    if config.raw_material_scarcity:
+        rate += max(0.0, config.scarcity_exploration_response) * raw_material_scarcity(resources, config)
+    return rate
+
+
+def scarcity_rent_factor(resources: Resources, config: SimulationConfig) -> float:
+    """Multiplicateur du prix plancher des matières (option ``raw_material_scarcity``) :
+    1 + ``scarcity_rent`` × rareté / (1 − rareté), borné quand le stock s'annule."""
+    scarcity = raw_material_scarcity(resources, config)
+    return 1.0 + max(0.0, config.scarcity_rent) * scarcity / max(1.0 - scarcity, 0.05)
+
+
 def _available_raw_materials(
     suppliers: list[Company],
     resources: Resources,
     material_capacities: dict[str, float],
 ) -> float:
     if not suppliers:
-        return max(0.0, resources.raw_materials) + max(
-            0.0, resources.recycled_materials
-        )
+        # Les réserves souterraines ne sont pas un stock déjà extrait : sans
+        # extracteur, seuls les matériaux recyclés sont utilisables.
+        return max(0.0, resources.recycled_materials)
     remaining_capacity = sum(
         max(0.0, material_capacities[company.id] - company.materials_supplied_this_turn)
         for company in suppliers
@@ -437,14 +461,19 @@ def _purchase_raw_materials(
         # gisements à hauteur de ``reserve_replacement_rate`` des volumes
         # extraits. Sans cela les réserves finies s'épuisent (~tour 220) et
         # l'économie entière s'arrête faute d'intrants.
-        explored = supplied * config.reserve_replacement_rate
+        explored = supplied * exploration_rate(resources, config)
         exploration_cost = explored * config.exploration_cost_per_unit
         extraction_cost = supplied * extraction_cost_per_unit + exploration_cost
         # extraction et exploration : prestations de services (forage, logistique)
-        pay_business_suppliers(
+        paid = pay_business_suppliers(
             supplier, extraction_cost, {"services": 1.0}, companies, resources,
             suppliers_by_sector=suppliers_by_sector,
         )
+        # Le lot de prestations d'extraction et d'exploration doit être livré
+        # et financé. Une commande refusée ou partiellement payée ne découvre
+        # pas gratuitement la totalité des réserves annoncées.
+        if extraction_cost > 0.0 and paid < extraction_cost:
+            explored *= max(0.0, paid) / extraction_cost
         resources.raw_materials += explored
     # intrants non matériels : achats réels aux secteurs fournisseurs
     pay_business_suppliers(

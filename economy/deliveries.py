@@ -140,6 +140,22 @@ def deliver_capital_work(buyer: Company, reference_value: float, material_share:
         supplier.materials_supplied_this_turn += units
         supplier.units_sold += units
         credit_supplier(buyer, supplier, units * resources.raw_material_price)
+    if config.raw_material_scarcity and quantity > recycled:
+        # option de rareté : les matériaux des chantiers sont aussi remplacés par l'exploration
+        # (sans elle, un boom de construction vide le stock), payée par les extracteurs aux services
+        from economy.goods import exploration_rate
+        from economy.intersector import pay_business_suppliers
+
+        explored = (quantity - recycled) * exploration_rate(resources, config)
+        funded_exploration = explored
+        for supplier, capacity in zip(materials, capacities):
+            share = capacity / total_capacity if total_capacity else 0.0
+            if share > 0.0:
+                cost = explored * share * config.exploration_cost_per_unit
+                paid = pay_business_suppliers(supplier, cost, {"services": 1.0}, companies, resources)
+                if cost > 0.0 and paid < cost:
+                    funded_exploration -= explored * share * (1.0 - max(0.0, paid) / cost)
+        resources.raw_materials += max(0.0, funded_exploration)
     for supplier in services:
         units = work * supplier.construction_work_available / service_capacity if service_capacity else 0.0
         supplier.construction_work_available = max(0.0, supplier.construction_work_available - units)

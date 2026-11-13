@@ -86,6 +86,17 @@ def _flow_sum(operated: list, sector: str, attribute: str) -> float:
     return sum(getattr(c, attribute) for c in operated if c.sector == sector)
 
 
+def inventory_stocks(sim: "EconomySimulation") -> tuple[tuple[float, float], float]:
+    """Volumes et valeur des stocks à mémoriser après la clôture du mois."""
+    units = (
+        sum(c.inventory for c in sim.companies if c.active),
+        sum(c.goods_inventory for c in sim.companies if c.active),
+    )
+    value = (units[0] * sim.live.food_input_cost + units[1] * sim.live.goods_input_cost
+             ) * sim.resources.input_cost_index
+    return units, value
+
+
 def _household_financial_services(sim: "EconomySimulation") -> float:
     """Services d'intermédiation consommés par les ménages (SIFIM simplifiés).
 
@@ -242,21 +253,15 @@ def build_record(
     household_fisim = _household_financial_services(sim)
     services_price = sim._services_price_index()
     deflator = 100.0 / max(sim.price_index, 1.0)
-    # variation des stocks (alimentation, biens), au coût des intrants
-    stock_units = (
-        sum(c.inventory for c in companies if c.active),
-        sum(c.goods_inventory for c in companies if c.active),
-    )
-    stock_value = (
-        stock_units[0] * live.food_input_cost + stock_units[1] * live.goods_input_cost
-    ) * resources.input_cost_index
-    previous_units, previous_value = getattr(sim, "_previous_stocks", (stock_units, stock_value))
-    inventory_change = stock_value - previous_value
+    # Flux physiques au coût courant : la réévaluation des stocks déjà produits
+    # est un gain de détention, pas une production supplémentaire du mois.
+    stock_units, stock_value = inventory_stocks(sim)
+    previous_units, _ = getattr(sim, "_previous_stocks", (stock_units, stock_value))
     real_inventory_change = (
         (stock_units[0] - previous_units[0]) * live.food_input_cost
         + (stock_units[1] - previous_units[1]) * live.goods_input_cost
     )
-    sim._previous_stocks = (stock_units, stock_value)
+    inventory_change = real_inventory_change * resources.input_cost_index
     consumption = (
         f.food_revenue
         + f.goods_revenue

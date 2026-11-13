@@ -68,12 +68,21 @@ class BankingMixin:
         """Trésorerie propre des banques (salaires, dividendes) : pas une réserve de prêt."""
         return sum(b.cash for b in self.companies if b.sector == "bank" and b.active)
 
+    def _bank_risk_exposure(self, bank) -> float:
+        """Encours soumis aux exigences de capital, titres publics pondérés compris."""
+        bonds = bank.bond_holdings
+        if self.live.sovereign_risk_weight != 1.0:
+            # lot U : titres publics pondérés (0 : ils ne consomment aucun fonds propre)
+            bonds *= max(0.0, self.live.sovereign_risk_weight)
+        book = positive_loan_book(bank.bank_loan_accounts)
+        if self.live.mortgage_securitization and getattr(self, "society", None) is not None:
+            # lot V9 : les prêts titrisés ne consomment plus de fonds propres
+            book -= min(book, self._securitized(bank))
+        return book + bonds
+
     def _bank_capacity(self, bank) -> float:
         """Prêts supplémentaires possibles pour une banque : ses fonds propres / exigence - son encours."""
-        exposure = (
-            positive_loan_book(bank.bank_loan_accounts)
-            + bank.bond_holdings
-        )
+        exposure = self._bank_risk_exposure(bank)
         requirement = max(self.live.capital_requirement, 1e-6)
         # coussin volontaire : une banque qui a perdu sur ses prêts au cours du cycle exige
         # plus de fonds propres par euro prêté (sa propre décision, pas la règle)
@@ -158,7 +167,7 @@ class BankingMixin:
         même rythme. L'exigence allégée vaut pour tout le mois (capacité, coussins, dividendes)."""
         central_bank = self.central_bank
         banks = [b for b in self.companies if b.sector == "bank" and b.active]
-        exposure = sum(positive_loan_book(b.bank_loan_accounts) + b.bond_holdings for b in banks)
+        exposure = sum(self._bank_risk_exposure(b) for b in banks)
         capacity = self.credit_capacity()  # exigence de base : ``live`` vient d'être recréé
         recent = self.history[-12:]
         falling = (
@@ -187,7 +196,7 @@ class BankingMixin:
         hausse des fonds propres réduit d'autant les dépôts du bilan bancaire."""
         live, central_bank = self.live, self.central_bank
         banks = [b for b in self.companies if b.sector == "bank" and b.active]
-        exposures = {b.id: positive_loan_book(b.bank_loan_accounts) + b.bond_holdings for b in banks}
+        exposures = {b.id: self._bank_risk_exposure(b) for b in banks}
         total = sum(exposures.values())
         if total <= 0.0 or self.credit_capacity() >= 0.001 * total:
             central_bank.frozen_months = 0
@@ -629,8 +638,14 @@ class BankingMixin:
                 hole = -bank.bank_equity
                 public = self._public_share_of_bank_hole(hole)
                 bank.bond_holdings += public
-                self._haircut_deposits(hole - public, bank)
+                taken = self._haircut_deposits(hole - public, bank)
                 bank.bank_equity = 0.0
+                shortfall = hole - public - taken
+                if shortfall > 1e-6 * max(1.0, hole):
+                    # les déposants n'avaient pas de quoi combler le trou : le reste demeure un
+                    # trou de fonds propres, traité le mois suivant (mesuré le 12 novembre 2026 :
+                    # remis à zéro, il créait de la monnaie, jusqu'à 2,5 milliards de résidu)
+                    bank.bank_equity = -shortfall
                 self._log_resolution(bank.id, "bank_last", public_cost=public,
                                      depositor_loss=hole - public)
                 handled.add(bank.id)
@@ -647,10 +662,7 @@ class BankingMixin:
             if bank.sector == "bank"
             and bank.active
             and bank.bank_equity
-            < ratio * (
-                positive_loan_book(bank.bank_loan_accounts)
-                + bank.bond_holdings
-            )
+            < ratio * self._bank_risk_exposure(bank)
         )
 
     def _authorize_bank_rights_issues(self) -> None:
@@ -666,7 +678,7 @@ class BankingMixin:
         for bank in self.companies:
             if bank.sector != "bank" or not bank.active:
                 continue
-            exposure = positive_loan_book(bank.bank_loan_accounts) + bank.bond_holdings
+            exposure = self._bank_risk_exposure(bank)
             shortfall = target_ratio * exposure - max(0.0, bank.bank_equity)
             if shortfall <= 0.0:
                 continue
@@ -688,16 +700,18 @@ class BankingMixin:
         for bank in self.companies:
             if bank.sector != "bank" or not bank.active:
                 continue
-            exposure = (
-                positive_loan_book(bank.bank_loan_accounts)
-                + bank.bond_holdings
-            )
+            exposure = self._bank_risk_exposure(bank)
             target_ratio = self.live.capital_requirement + self.live.bank_recap_buffer
-            # les titres apportés augmentent eux-mêmes l'exposition :
-            # E + x >= r (X + x)  =>  x = (r X - E) / (1 - r)
+            # Les titres apportés augmentent l'exposition selon leur pondération w :
+            # E + x >= r (X + w x)  =>  x = (r X - E) / (1 - r w).
+            # À w = 1, conserver exactement le calcul historique.
+            bond_weight = max(0.0, self.live.sovereign_risk_weight)
+            denominator = 1.0 - target_ratio
+            if bond_weight != 1.0:
+                denominator = 1.0 - target_ratio * bond_weight
             shortfall = (
                 target_ratio * exposure - max(0.0, bank.bank_equity)
-            ) / max(1e-6, 1.0 - target_ratio)
+            ) / max(1e-6, denominator)
             injection = self._public_share_of_bank_hole(max(0.0, shortfall))
             if injection <= 0.0:
                 continue

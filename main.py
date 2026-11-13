@@ -298,6 +298,7 @@ def new_simulation() -> EconomySimulation:
             policy_strength=st.session_state.policy_strength_percent / 100,
             policy_noise=st.session_state.policy_noise_percent / 100,
             knowledge_elasticity=st.session_state.knowledge_elasticity,
+            knowledge_growth_per_intensity=st.session_state.knowledge_growth_per_intensity,
             executive_wage_multiplier=st.session_state.executive_pay_multiple,
             skill_wage_slope=st.session_state.skill_wage_slope_percent / 100,
             entrepreneurial_trait_threshold=1.0 - st.session_state.entrepreneurial_share_percent / 100,
@@ -346,6 +347,24 @@ def new_simulation() -> EconomySimulation:
             objective_effort=st.session_state.objective_effort_percent / 100,
             volume_discount_max=st.session_state.volume_discount_max_percent / 100,
             fixed_cost_share=st.session_state.fixed_cost_share_percent / 100,
+            # lot T : offres publiques réalistes, croissance proportionnelle des effectifs
+            synergy_takeovers=bool(st.session_state.synergy_takeovers),
+            takeover_share_payment=st.session_state.takeover_share_payment_percent / 100,
+            proportional_hiring=bool(st.session_state.proportional_hiring),
+            staff_change_share=st.session_state.staff_change_share_percent / 100,
+            safeguard_procedure=bool(st.session_state.safeguard_procedure),
+            raw_material_scarcity=bool(st.session_state.raw_material_scarcity),
+            # lot U : impôt borné par la trésorerie, titres publics pondérés, embauche tirée par la
+            # demande, encadrement des prix levé en cas de pénurie
+            tax_capped_by_cash=bool(st.session_state.tax_capped_by_cash),
+            tax_backlog_months=int(st.session_state.tax_backlog_months),
+            sovereign_risk_weight=st.session_state.sovereign_risk_weight_percent / 100,
+            demand_led_hiring=bool(st.session_state.demand_led_hiring),
+            demand_hiring_share=st.session_state.demand_hiring_share_percent / 100,
+            shortage_price_release=bool(st.session_state.shortage_price_release),
+            price_control_shortage_limit=st.session_state.price_control_shortage_limit_percent / 100,
+            scarcity_rent=st.session_state.scarcity_rent,
+            scarcity_exploration_response=st.session_state.scarcity_exploration_response,
             ownership_regime=bool(st.session_state.ownership_regime),
             countercyclical_capital=bool(st.session_state.countercyclical_capital),
             bank_capital_backstop=bool(st.session_state.bank_capital_backstop),
@@ -408,6 +427,31 @@ def new_simulation() -> EconomySimulation:
             learning_period_months=int(st.session_state.learning_period_months),
             learning_step=st.session_state.learning_step_percent / 100,
             imitation_rate=st.session_state.imitation_percent / 100,
+            # lot V : douze mécanismes de société (economy/society.py, economy/ventures.py)
+            personal_bankruptcy=bool(st.session_state.personal_bankruptcy),
+            credit_ban_months=12 * int(st.session_state.credit_ban_years),
+            philanthropy=bool(st.session_state.philanthropy),
+            philanthropy_wealth_multiple=float(st.session_state.philanthropy_wealth_multiple),
+            state_lottery=bool(st.session_state.state_lottery),
+            lottery_stake_share=st.session_state.lottery_stake_percent / 100,
+            addictive_goods=bool(st.session_state.addictive_goods),
+            addiction_excise_rate=st.session_state.addiction_excise_percent / 100,
+            franchising=bool(st.session_state.franchising),
+            franchise_royalty_rate=st.session_state.franchise_royalty_percent / 100,
+            brand_marketing=bool(st.session_state.brand_marketing),
+            marketing_budget_share=st.session_state.marketing_budget_percent / 100,
+            worker_buyouts=bool(st.session_state.worker_buyouts),
+            buyout_benefit_months=int(st.session_state.buyout_benefit_months),
+            short_selling=bool(st.session_state.short_selling),
+            short_float_share=st.session_state.short_float_percent / 100,
+            mortgage_securitization=bool(st.session_state.mortgage_securitization),
+            securitization_share=st.session_state.securitization_percent / 100,
+            crowdfunding=bool(st.session_state.crowdfunding),
+            crowdfunding_savings_share=st.session_state.crowdfunding_savings_percent / 100,
+            social_unrest=bool(st.session_state.social_unrest),
+            unrest_unemployment=st.session_state.unrest_unemployment_percent / 100,
+            public_works=bool(st.session_state.public_works),
+            public_works_gdp_share=st.session_state.public_works_gdp_percent / 100,
         )
     st.session_state.pop("active_region", None)
     if st.session_state.world_enabled:
@@ -2004,6 +2048,30 @@ OPTIONAL_MECHANISMS = {
     "corporate_lobbying": True, "revolving_door": True, "political_dynasties": True,
     "media_sector": True, "bank_relationships": True, "adaptive_agents": True,
     "enriched_objectives": True, "ownership_regime": True,
+    # rareté des matières premières (results/analyse_pib_par_menage_20261112)
+    "raw_material_scarcity": True,
+    # lot U (results/chantiers_20261112/RAPPORT.md) : impôt borné par la trésorerie, encadrement
+    # des prix levé en cas de pénurie. L'embauche tirée par la demande est volontairement absente :
+    # chômage moyen de 7,0 à 15,5 % mesuré.
+    "tax_capped_by_cash": True, "shortage_price_release": True,
+    # lot V : douze mécanismes de société (results/lot_v_societe/RESUME.md)
+    "personal_bankruptcy": True, "philanthropy": True, "state_lottery": True,
+    "addictive_goods": True, "franchising": True, "brand_marketing": True,
+    "worker_buyouts": True, "short_selling": True, "mortgage_securitization": True,
+    "crowdfunding": True, "social_unrest": True, "public_works": True,
+    # lot T (offres publiques réalistes, croissance proportionnelle) volontairement absent :
+    # chômage nettement plus élevé mesuré (results/lot_t_rachats/RESUME.md)
+}
+
+# Curseurs réglés par « Tout activer » : clé -> (valeur activée, valeur de base rétablie par
+# « Tout désactiver »). La valeur de base est celle de ``SimulationConfig``.
+OPTIONAL_SETTINGS = {
+    # efficacité de la recherche (results/analyse_pib_par_menage_20261112)
+    "knowledge_growth_per_intensity": (0.5, 0.25),
+    # lot U : titres publics sans fonds propres exigés des banques (results/chantiers_20261112)
+    "sovereign_risk_weight_percent": (0, 100),
+    # arriérés d'impôt recouvrés sur 24 mois (results/credit_20261112/RAPPORT.md)
+    "tax_backlog_months": (24, 0),
 }
 
 
@@ -2011,6 +2079,8 @@ def _set_optional_mechanisms(enabled: bool) -> None:
     """Coche ou décoche d'un coup les mécanismes optionnels (appliqués à la réinitialisation)."""
     for key, value in OPTIONAL_MECHANISMS.items():
         st.session_state[key] = value if enabled else type(value)()
+    for key, (on_value, base_value) in OPTIONAL_SETTINGS.items():
+        st.session_state[key] = on_value if enabled else base_value
     st.session_state.world_enabled = enabled
 
 
@@ -2028,8 +2098,9 @@ def render_sidebar() -> None:
             "**Mécanismes optionnels** : groupes, magasins, fonds, expérience, conseil d'actionnaires, "
             "fermeture des entreprises sans salarié (6 mois), exigence de fonds propres contracyclique "
             "et recapitalisation de dernier recours des banques, obligations d'entreprise, commerce "
-            "extérieur, négociation collective, médias, apprentissage et relations bancaires. "
-            "« Tout activer » ouvre aussi le monde à plusieurs régions."
+            "extérieur, négociation collective, médias, apprentissage, relations bancaires et rareté "
+            "des matières premières. « Tout activer » ouvre aussi le monde à plusieurs régions et "
+            "porte l'efficacité de la recherche à 0,5 (« Tout désactiver » la remet à 0,25)."
         )
         preset = st.columns(2)
         preset[0].button("Tout activer", key="optional_all_on", use_container_width=True,
@@ -2096,6 +2167,109 @@ def render_sidebar() -> None:
                       format="%d %%", key="imitation_percent")
             st.caption("Les agents apprennent à partir de leurs propres résultats ; une même graine "
                        "et les mêmes réglages reproduisent la même trajectoire.")
+        with st.expander("Société : dettes, jeux, marques & finance", expanded=False):
+            st.caption(
+                "Douze mécanismes désactivés par défaut ; ils agissent dès la période de chauffe. "
+                "Résultats dans l'onglet « Société »."
+            )
+            st.checkbox(
+                "Surendettement et faillite personnelle", key="personal_bankruptcy",
+                help="Une commission efface le crédit à la consommation d'un ménage en impayé dont la "
+                     "charge de dette dépasse la moitié du revenu, après saisie de sa trésorerie au-delà "
+                     "d'un mois de salaire minimum. La banque passe la perte ; le ménage est interdit de crédit.",
+            )
+            st.slider("Interdiction de crédit (années)", 1, 10, 5, key="credit_ban_years",
+                      disabled=not st.session_state.get("personal_bankruptcy", False))
+            st.checkbox(
+                "Dons et fondations", key="philanthropy",
+                help="Les ménages très riches donnent à trois fondations (école, hôpital, presse) qui "
+                     "dépensent auprès des entreprises. Le donateur gagne de la renommée.",
+            )
+            st.slider("Fortune d'un donateur (× la moyenne)", 2.0, 30.0, 10.0, 1.0,
+                      key="philanthropy_wealth_multiple",
+                      disabled=not st.session_state.get("philanthropy", False))
+            st.checkbox(
+                "Loterie d'État", key="state_lottery",
+                help="La mise ne dépend pas du revenu et les ménages modestes jouent davantage. La moitié "
+                     "des mises va à l'État, le reste à une cagnotte qu'un seul joueur emporte.",
+            )
+            st.slider("Mise du joueur le plus assidu (salaire de référence)", 0.0, 10.0, 2.0, 0.5,
+                      format="%.1f %%", key="lottery_stake_percent",
+                      disabled=not st.session_state.get("state_lottery", False))
+            st.checkbox(
+                "Tabac et alcool", key="addictive_goods",
+                help="Des ménages fondent des entreprises de tabac et d'alcool. Les ménages dépendants "
+                     "achètent la même quantité quel que soit le prix ; accise et TVA vont à l'État ; "
+                     "soins et surmortalité plus tard.",
+            )
+            st.slider("Accise (prix hors taxes)", 0, 300, 50, 10, format="%d %%",
+                      key="addiction_excise_percent",
+                      disabled=not st.session_state.get("addictive_goods", False))
+            st.checkbox(
+                "Franchises", key="franchising",
+                help="Un producteur rentable qui refuse des commandes loue sa marque et ses méthodes à un "
+                     "petit entrepreneur : droit d'entrée, puis redevance sur le chiffre d'affaires.",
+            )
+            st.slider("Redevance (chiffre d'affaires)", 0.0, 20.0, 5.0, 0.5, format="%.1f %%",
+                      key="franchise_royalty_percent",
+                      disabled=not st.session_state.get("franchising", False))
+            st.checkbox(
+                "Marques et agences de marketing", key="brand_marketing",
+                help="Des agences fondées par des ménages vendent des campagnes aux producteurs. La "
+                     "notoriété d'une marque s'efface lentement et relève son poids dans les achats.",
+            )
+            st.slider("Budget de marketing (chiffre d'affaires)", 0.0, 10.0, 2.0, 0.5, format="%.1f %%",
+                      key="marketing_budget_percent",
+                      disabled=not st.session_state.get("brand_marketing", False))
+            st.checkbox(
+                "Coopératives de chômeurs", key="worker_buyouts",
+                help="Les salariés d'une entreprise liquidée la reprennent avec leur épargne et leurs "
+                     "allocations chômage versées d'avance par l'État.",
+            )
+            st.slider("Allocations versées d'avance (mois)", 0, 24, 6, key="buyout_benefit_months",
+                      disabled=not st.session_state.get("worker_buyouts", False))
+            st.checkbox(
+                "Vente à découvert et fonds spéculatifs", key="short_selling",
+                help="Des fonds financés par des ménages empruntent les titres d'une entreprise fragile "
+                     "et les vendent ; ils gagnent si le cours baisse ou si elle fait faillite.",
+            )
+            st.slider("Flottant emprunté par mois au plus", 0, 50, 15, format="%d %%",
+                      key="short_float_percent",
+                      disabled=not st.session_state.get("short_selling", False))
+            st.checkbox(
+                "Titrisation des prêts immobiliers", key="mortgage_securitization",
+                help="Les banques émettent des titres adossés à leurs prêts immobiliers. Intérêts, "
+                     "remboursements et pertes passent aux ménages porteurs ; les fonds propres des "
+                     "banques sont libérés.",
+            )
+            st.slider("Part titrisable des prêts immobiliers", 0, 100, 50, 5, format="%d %%",
+                      key="securitization_percent",
+                      disabled=not st.session_state.get("mortgage_securitization", False))
+            st.checkbox(
+                "Financement participatif", key="crowdfunding",
+                help="Les ménages prêtent directement aux entreprises de moins de trois ans de leur "
+                     "région, sans banque et sans création de monnaie.",
+            )
+            st.slider("Épargne prêtée (ménage audacieux, × 2)", 0.0, 10.0, 2.0, 0.5, format="%.1f %%",
+                      key="crowdfunding_savings_percent",
+                      disabled=not st.session_state.get("crowdfunding", False))
+            st.checkbox(
+                "Manifestations et émeutes", key="social_unrest",
+                help="La tension monte avec le chômage, les inégalités de patrimoine et la baisse du "
+                     "salaire réel. Une manifestation fait perdre du travail ; le gouvernement concède "
+                     "des transferts, trois fois au plus.",
+            )
+            st.slider("Chômage qui fait monter la tension", 0, 30, 10, format="%d %%",
+                      key="unrest_unemployment_percent",
+                      disabled=not st.session_state.get("social_unrest", False))
+            st.checkbox(
+                "Grands travaux", key="public_works",
+                help="Route, réseau, port : chantiers de plusieurs années payés aux entreprises. Un "
+                     "ouvrage achevé relève la productivité de tous et se dégrade sans entretien.",
+            )
+            st.slider("Coût d'un ouvrage (PIB annuel)", 0.0, 10.0, 2.0, 0.5, format="%.1f %%",
+                      key="public_works_gdp_percent",
+                      disabled=not st.session_state.get("public_works", False))
         with st.expander("Population & entreprises", expanded=True):
             st.number_input("Ménages", min_value=10, max_value=500, value=240, step=10, key="population_size")
             st.number_input("Entreprises par secteur", min_value=1, max_value=10, value=3, key="companies_per_sector")
@@ -2159,7 +2333,13 @@ def render_sidebar() -> None:
                 help="Limite la croissance maximale par rapport à la population de départ.",
             )
         with st.expander("Ressources & prix", expanded=False):
-            st.number_input("Matières premières", min_value=0.0, max_value=1000000.0, value=300000.0, step=10000.0, key="raw_materials")
+            st.number_input(
+                "Matières premières", min_value=0.0, max_value=100000000.0, value=300000.0, step=50000.0,
+                key="raw_materials",
+                help="Stock initial de matières vierges, jusqu'à 100 millions d'unités (300 000 par défaut, "
+                     "quelle que soit la population). La rareté des matières premières se mesure par rapport "
+                     "à ce stock de départ.",
+            )
             st.number_input("Terrains disponibles", min_value=5, max_value=5000, value=250, step=10, key="land_units")
             st.number_input("Salaire de référence mensuel (€)", min_value=500.0, max_value=5000.0, value=1400.0, step=100.0, key="starting_wage")
             st.number_input("Prix alimentaire initial (€)", min_value=10.0, max_value=500.0, value=120.0, step=10.0, key="starting_food_price")
@@ -2353,6 +2533,102 @@ def render_sidebar() -> None:
                 help="Alimentation et biens : cette part des intrants non matériels devient un forfait "
                      "mensuel calé sur les ventes moyennes du secteur ; une entreprise plus grande "
                      "produit moins cher par unité. 0 : désactivé.",
+            )
+            # lot T : offres publiques réalistes et croissance proportionnelle (désactivées par défaut)
+            st.checkbox(
+                "Offres publiques réalistes (même secteur)", key="synergy_takeovers",
+                help="L'acquéreur offre au moins la valeur fondamentale de la cible, compte ce qu'il lui "
+                     "apporte (méthodes, magasins, frais de structure évités) et peut payer une part du "
+                     "prix en actions nouvelles ; la productivité fusionnée est pondérée par les effectifs. "
+                     "Sans cette case, presque toutes les offres échouent : l'offre reste sous la valeur "
+                     "que connaissent les actionnaires.",
+            )
+            st.slider(
+                "Part du prix payée en actions de l'acquéreur", min_value=0, max_value=100, value=50,
+                step=5, format="%d %%", key="takeover_share_payment_percent",
+                disabled=not st.session_state.get("synergy_takeovers", False),
+                help="Offre mixte : la trésorerie libre ne paie que le reste. 0 : offre entièrement en monnaie.",
+            )
+            st.checkbox(
+                "Croissance des effectifs proportionnelle à la taille", key="proportional_hiring",
+                help="Embauches et licenciements mensuels bornés à une part de l'effectif, jamais moins "
+                     "que les bornes fixes (3 embauches, 2 licenciements par mois).",
+            )
+            st.slider(
+                "Variation mensuelle maximale de l'effectif", min_value=1, max_value=50, value=10,
+                format="%d %%", key="staff_change_share_percent",
+                disabled=not st.session_state.get("proportional_hiring", False),
+            )
+            st.checkbox(
+                "Procédure de sauvegarde des entreprises en difficulté", key="safeguard_procedure",
+                help="Une entreprise d'au moins dix salariés, en pertes, presque sans trésorerie, à qui les "
+                     "banques refusent le crédit de sa paie mais dont les recettes paient un noyau viable : "
+                     "effectif ramené à ce noyau en un mois, dette en partie abandonnée par les banques, "
+                     "prêt de sauvegarde de trois mois de paie. Évite le licenciement en bloc puis la survie "
+                     "en coquille des grandes entreprises surendettées.",
+            )
+            # lot U (12 novembre 2026) : quatre réglages mesurés dans results/chantiers_20261112
+            st.checkbox(
+                "Impôt sur le revenu borné par la trésorerie du ménage", key="tax_capped_by_cash",
+                help="L'impôt recouvré, arriérés compris, ne dépasse pas ce que le ménage possède ; le "
+                     "solde reste dû. Sans cette case, un rappel d'impôt peut rendre sa trésorerie "
+                     "négative, puis sa demande négative.",
+            )
+            st.slider(
+                "Étalement du recouvrement des arriérés d'impôt (mois)", min_value=0, max_value=60,
+                value=0, step=6, key="tax_backlog_months",
+                help="L'arriéré d'impôt d'un ménage est appelé par mensualités au lieu d'être exigé en "
+                     "une fois. 0 : règle historique. Mesuré : un service des Finances de nouveau pourvu "
+                     "recouvrait des années d'arriéré en un mois et déclenchait une crise.",
+            )
+            st.slider(
+                "Poids des titres publics dans les fonds propres exigés des banques", min_value=0,
+                max_value=100, value=100, step=10, format="%d %%", key="sovereign_risk_weight_percent",
+                help="100 % : un titre public consomme autant de fonds propres qu'un prêt (règle "
+                     "historique). 0 % : aucun, comme la pondération nulle des titres souverains. Mesuré : "
+                     "quand le crédit est gelé, les titres publics font 64 % de l'exposition des banques.",
+            )
+            st.checkbox(
+                "Embauche tirée par la demande non servie", key="demand_led_hiring",
+                help="Alimentation et biens : plafond mensuel d'embauche relevé à une part de l'écart entre "
+                     "le besoin et l'effectif, une perte du mois ne bloque plus l'embauche si chaque unité "
+                     "vendue couvre ses intrants, et l'offre salariale rejoint celle du marché tant que la "
+                     "valeur d'un salarié la couvre.",
+            )
+            st.slider(
+                "Part de l'écart d'effectif comblée par mois", min_value=5, max_value=100, value=25,
+                step=5, format="%d %%", key="demand_hiring_share_percent",
+                disabled=not st.session_state.get("demand_led_hiring", False),
+            )
+            st.checkbox(
+                "Encadrement des prix levé en cas de pénurie", key="shortage_price_release",
+                help="L'encadrement des prix d'un gouvernement social ne s'applique pas à un produit dont "
+                     "la demande non servie du mois précédent dépasse le seuil ci-dessous.",
+            )
+            st.slider(
+                "Seuil de pénurie qui lève l'encadrement", min_value=0, max_value=100, value=20,
+                step=5, format="%d %%", key="price_control_shortage_limit_percent",
+                disabled=not st.session_state.get("shortage_price_release", False),
+            )
+            # rareté des matières premières (désactivée par défaut)
+            st.checkbox(
+                "Rareté des matières premières", key="raw_material_scarcity",
+                help="Quand le stock de matières vierges baisse sous son niveau de départ, leur prix "
+                     "plancher reçoit une rente de rareté et l'exploration remplace une plus grande part "
+                     "des volumes extraits. Sans cette case, le stock peut s'épuiser d'un coup et arrêter "
+                     "biens et alimentation (results/analyse_pib_par_menage_20261112).",
+            )
+            st.slider(
+                "Rente de rareté", min_value=0.0, max_value=2.0, value=0.5, step=0.1,
+                key="scarcity_rent",
+                disabled=not st.session_state.get("raw_material_scarcity", False),
+                help="Prix plancher × (1 + rente × rareté / (1 − rareté)) ; rareté = part du stock de départ consommée.",
+            )
+            st.slider(
+                "Réponse de l'exploration à la rareté", min_value=0.0, max_value=1.0, value=0.5, step=0.05,
+                key="scarcity_exploration_response",
+                disabled=not st.session_state.get("raw_material_scarcity", False),
+                help="Part remplacée = réserves reconstituées + réponse × rareté.",
             )
             st.slider(
                 "Sensibilité des clients aux écarts de prix",
@@ -2937,6 +3213,16 @@ def render_sidebar() -> None:
                 min_value=0.0, max_value=1.0, value=0.5, step=0.05,
                 key="knowledge_elasticity",
                 help="Les connaissances se construisent par la recherche (R&D et entreprises technologiques) et font croître la productivité.",
+            )
+            st.slider(
+                "Efficacité de la recherche",
+                min_value=0.0, max_value=1.0, value=0.25, step=0.05,
+                key="knowledge_growth_per_intensity",
+                help="Croissance mensuelle du stock de connaissances par point de PIB consacré à la recherche ; "
+                     "l'obsolescence retire 0,2 % par mois. 0,25 : réglage de base. Au-delà, la production "
+                     "croît plus vite et épuise plus tôt les matières premières vierges : avec « Tout "
+                     "activer », 0,5 n'est stable que si les réserves sont reconstituées à 100 % "
+                     "(results/analyse_pib_par_menage_20261112).",
             )
             st.slider(
                 "Rémunération maximale de la direction (× salaire d'entrée)",
@@ -3699,6 +3985,14 @@ def render_company_profile(
                 if selected_company.founder_id is not None else " · Entreprise initiale"
             )
         )
+        plans = [e for e in simulation.resolution_events
+                 if e.kind == "safeguard" and e.company_id == selected_company.id]
+        if plans:
+            # lot T3 : plans de sauvegarde (mois observés, comme les autres historiques)
+            offset = simulation.month - simulation.period
+            st.caption("Procédure de sauvegarde : " + " ; ".join(
+                f"période {e.month - offset}, dette abandonnée par les banques {compact(e.debt_written_off, ' €')}"
+                for e in plans))
         executive = next(
             (person for person in simulation.people if person.id == selected_company.executive_id),
             None,
@@ -4165,6 +4459,286 @@ def render_learning_panel(simulation: EconomySimulation) -> None:
                   | {"Essais des banques": r.get("essais_banques", 0),
                      "Essais des ministres": r.get("essais_ministres", 0)}
                   for r in history[-60:]], hide_index=True, width="stretch")
+
+
+def _society_off(simulation: EconomySimulation, setting: str, label: str) -> bool:
+    """Message d'activation d'un mécanisme du lot V ; vrai s'il est désactivé."""
+    if getattr(simulation.live, setting):
+        return False
+    st.info(f"Désactivé : cochez « {label} » dans la barre latérale (rubrique « Société : dettes, "
+            "jeux, marques & finance »), puis réinitialisez la simulation.")
+    return True
+
+
+def _society_series(history: list, columns: dict, title: str | None = None) -> None:
+    """Courbe des relevés du lot V : ``columns`` associe un libellé à une clé du relevé."""
+    rows = [{"Période": r["periode"], **{label: r.get(key, 0.0) for label, key in columns.items()}}
+            for r in history]
+    if len(rows) >= 2:
+        line_chart(rows, "Période", list(columns), title=title)
+
+
+def render_society_households(simulation: EconomySimulation, history: list) -> None:
+    state = getattr(simulation, "society", None)
+    labels = {p.id: display_name(p.id) for p in simulation.people}
+    st.markdown("#### Surendettement et faillite personnelle")
+    if not _society_off(simulation, "personal_bankruptcy", "Surendettement et faillite personnelle"):
+        offset = simulation.warmup_offset
+        relief = [r for r in state.relief if r["mois"] - offset >= 0] if state is not None else []
+        cols = st.columns(4)
+        cols[0].metric("Interdits de crédit", f"{len(state.bans) if state is not None else 0}")
+        cols[1].metric("Dossiers et défauts", f"{len(relief)}")
+        cols[2].metric("Dettes effacées", compact(sum(r["efface"] for r in relief), " €"))
+        cols[3].metric("Recouvré par les banques", compact(sum(r["rembourse"] for r in relief), " €"))
+        _society_series(history, {"Interdits de crédit": "interdits_en_cours"})
+        if relief:
+            st.dataframe([{
+                "Période": r["mois"] - offset, "Ménage": labels.get(r["menage"], r["menage"]),
+                "Motif": r["motif"], "Dette (€)": r["dette"], "Remboursé (€)": r["rembourse"],
+                "Effacé (€)": r["efface"],
+            } for r in reversed(relief[-100:])], hide_index=True, width="stretch")
+        else:
+            st.caption("Aucun dossier pour l'instant : il faut un ménage en impayé dont la charge de "
+                       "dette dépasse la part de revenu réglée.")
+    st.markdown("#### Loterie d'État")
+    if not _society_off(simulation, "state_lottery", "Loterie d'État"):
+        offset = simulation.warmup_offset
+        winners = [w for w in state.winners if w["mois"] - offset >= 0] if state is not None else []
+        last = history[-1] if history else {}
+        cols = st.columns(4)
+        cols[0].metric("Cagnotte", compact(last.get("loterie_cagnotte", 0.0), " €"))
+        cols[1].metric("Recette de l'État (cumul)", compact(sum(r.get("loterie_etat", 0.0) for r in history), " €"))
+        cols[2].metric("Effort des revenus modestes", f"{last.get('loterie_effort_modestes', 0.0):.2%}",
+                       help="Mises du mois / revenu du mois, cinquième des joueurs aux revenus les plus bas.")
+        cols[3].metric("Effort des revenus aisés", f"{last.get('loterie_effort_aises', 0.0):.2%}",
+                       help="Même mesure pour le cinquième aux revenus les plus hauts.")
+        _society_series(history, {"Mises (€)": "loterie_mises", "Part de l'État (€)": "loterie_etat"})
+        if winners:
+            st.markdown("**Gagnants**")
+            st.dataframe([{
+                "Période": w["mois"] - offset, "Ménage": labels.get(w["menage"], w["menage"]),
+                "Gain (€)": w["gain"], "Trésorerie avant (€)": w["tresorerie_avant"],
+            } for w in reversed(winners[-100:])], hide_index=True, width="stretch")
+    st.markdown("#### Dons et fondations")
+    if not _society_off(simulation, "philanthropy", "Dons et fondations"):
+        last = history[-1] if history else {}
+        cols = st.columns(4)
+        cols[0].metric("Dons (cumul)", compact(sum(r.get("dons", 0.0) for r in history), " €"))
+        cols[1].metric("Trésorerie des fondations", compact(last.get("fondations_tresorerie", 0.0), " €"))
+        cols[2].metric("Qualité de l'éducation ajoutée", f"{last.get('effet_ecole', 0.0):.3f}")
+        cols[3].metric("Mortalité évitée", f"{last.get('effet_hopital', 0.0):.2%}")
+        foundations = simulation.foundations_table()
+        if foundations:
+            st.dataframe([{"Fondation": r["nom"], "Trésorerie (€)": r["tresorerie"]} for r in foundations],
+                         hide_index=True, width="stretch")
+        donors = simulation.donors_table()
+        if donors:
+            st.markdown("**Plus gros donateurs**")
+            st.dataframe([{
+                "Ménage": r["nom"], "Dons cumulés (€)": r["dons"], "Renommée": r["renommee"], "Cause": r["cause"],
+            } for r in donors], hide_index=True, width="stretch",
+                column_config=_percent_columns("Renommée"))
+        else:
+            st.caption("Aucun don pour l'instant : aucun ménage ne dépasse le multiple de fortune réglé.")
+    st.markdown("#### Tabac et alcool")
+    if not _society_off(simulation, "addictive_goods", "Tabac et alcool"):
+        last = history[-1] if history else {}
+        cols = st.columns(5)
+        cols[0].metric("Consommateurs", f"{last.get('vice_consommateurs', 0):.0f}")
+        cols[1].metric("Dépendance moyenne", f"{last.get('vice_dependance_moyenne', 0.0):.2f}")
+        cols[2].metric("Prix / référence", f"{last.get('vice_prix_relatif', 0.0):.2f}",
+                       help="Au-delà de 1 : les fabricants ont relevé leurs prix sans perdre leurs volumes.")
+        cols[3].metric("Accises (cumul)", compact(sum(r.get("vice_accises", 0.0) for r in history), " €"))
+        cols[4].metric("Ménages à soigner", f"{last.get('vice_malades', 0):.0f}")
+        _society_series(history, {"Ventes hors taxes (€)": "vice_ventes", "Accises (€)": "vice_accises",
+                                  "Soins publics (€)": "vice_soins_publics",
+                                  "Soins des ménages (€)": "vice_soins_menages"})
+        _society_series(history, {"Dépendance moyenne": "vice_dependance_moyenne",
+                                  "Dégâts de santé moyens": "vice_degats_moyens"})
+
+
+def render_society_firms(simulation: EconomySimulation, history: list) -> None:
+    labels = simulation.company_labels()
+    st.markdown("#### Marques et agences de marketing")
+    if not _society_off(simulation, "brand_marketing", "Marques et agences de marketing"):
+        last = history[-1] if history else {}
+        cols = st.columns(4)
+        cols[0].metric("Agences", f"{last.get('agences', 0):.0f}")
+        cols[1].metric("Salariés des agences", f"{last.get('agences_salaries', 0):.0f}")
+        cols[2].metric("Campagnes du mois", compact(last.get("marques_depenses", 0.0), " €"))
+        cols[3].metric("Budgets non servis", compact(last.get("marques_non_servies", 0.0), " €"),
+                       help="Budgets que les agences n'ont pas pu livrer faute de salariés.")
+        brands = simulation.brands_table()
+        if brands:
+            st.dataframe([{
+                "Entreprise": labels.get(r["id"], r["nom"]), "Secteur": sector_label(r["secteur"]),
+                "Notoriété (€)": r["notoriete"], "Poids dans les achats": r["poids"], "Prix (€)": r["prix"],
+                "Franchise": "oui" if r["franchise"] else "",
+            } for r in brands[:60]], hide_index=True, width="stretch")
+        _society_series(history, {"Alimentation": "prime_de_marque_food", "Biens": "prime_de_marque_goods"},
+                        title="Écart de prix des producteurs à marque sur les autres")
+    st.markdown("#### Franchises")
+    if not _society_off(simulation, "franchising", "Franchises"):
+        rows = simulation.franchises_table()
+        cols = st.columns(3)
+        cols[0].metric("Franchises en activité", f"{len(rows)}")
+        cols[1].metric("Ouvertures (cumul)", f"{sum(r.get('franchises_ouvertes', 0) for r in history):.0f}")
+        cols[2].metric("Redevances (cumul)", compact(sum(r.get("franchises_redevances", 0.0) for r in history), " €"))
+        if rows:
+            st.dataframe([{
+                "Franchisé": labels.get(r["id"], r["nom"]), "Franchiseur": r["franchiseur"],
+                "Ouverture (période)": r["periode"], "Salariés": r["salaries"],
+                "Droit d'entrée (€)": r["droits"], "Redevances versées (€)": r["redevances"],
+                "Trésorerie (€)": r["tresorerie"],
+            } for r in rows], hide_index=True, width="stretch")
+        else:
+            st.caption("Aucune franchise : il faut un producteur rentable qui refuse des commandes et "
+                       "un ménage entreprenant doté de deux droits d'entrée.")
+    st.markdown("#### Coopératives de chômeurs")
+    if not _society_off(simulation, "worker_buyouts", "Coopératives de chômeurs"):
+        rows = simulation.cooperatives_table()
+        cols = st.columns(3)
+        cols[0].metric("Reprises", f"{len(rows)}")
+        cols[1].metric("Encore en activité", f"{sum(1 for r in rows if r['active'])}")
+        cols[2].metric("Reprises abandonnées", f"{sum(r.get('reprises_abandonnees', 0) for r in history):.0f}",
+                       help="Capital réuni inférieur à deux mois de paie.")
+        if rows:
+            st.dataframe([{
+                "Coopérative": r["nom"], "Reprise (période)": r["periode"], "Repreneurs": r["repreneurs"],
+                "Capital (€)": r["capital"], "Avance de l'État (€)": r["avance"],
+                "En activité": "oui" if r["active"] else "non", "Salariés": r["salaries"],
+            } for r in rows], hide_index=True, width="stretch")
+        else:
+            st.caption("Aucune reprise : il faut la liquidation d'une entreprise qui avait encore des salariés.")
+
+
+def render_society_finance(simulation: EconomySimulation, history: list) -> None:
+    st.markdown("#### Vente à découvert et fonds spéculatifs")
+    if not _society_off(simulation, "short_selling", "Vente à découvert et fonds spéculatifs"):
+        funds = simulation.hedge_table()
+        closed = simulation.shorts_table()
+        cols = st.columns(4)
+        cols[0].metric("Fonds en activité", f"{len(funds)}")
+        cols[1].metric("Positions ouvertes", f"{sum(r['positions'] for r in funds)}")
+        cols[2].metric("Positions closes", f"{len(closed)}")
+        cols[3].metric("Gains réalisés", compact(sum(r["gain"] for r in closed), " €"))
+        if funds:
+            st.dataframe([{
+                "Fonds": r["nom"], "Capital (€)": r["capital"], "Trésorerie (€)": r["tresorerie"],
+                "Souscripteurs": r["souscripteurs"], "Positions": r["positions"],
+                "Titres dus (€)": r["engagement"], "Gains (€)": r["gains"],
+            } for r in funds], hide_index=True, width="stretch")
+        else:
+            st.caption("Aucun fonds : il faut des ménages au goût du risque élevé et à la trésorerie suffisante.")
+        if closed:
+            st.markdown("**Positions closes**")
+            st.dataframe([{
+                "Période": r["periode"], "Fonds": r["fonds"], "Entreprise": r["entreprise"], "Motif": r["motif"],
+                "Cours de vente (€)": r["entree"], "Cours de rachat (€)": r["sortie"], "Gain (€)": r["gain"],
+            } for r in closed[:100]], hide_index=True, width="stretch")
+    st.markdown("#### Titrisation des prêts immobiliers")
+    if not _society_off(simulation, "mortgage_securitization", "Titrisation des prêts immobiliers"):
+        last = history[-1] if history else {}
+        cols = st.columns(4)
+        cols[0].metric("Titres en circulation", compact(last.get("titrisation_encours", 0.0), " €"))
+        cols[1].metric("Part des prêts immobiliers", f"{last.get('titrisation_part', 0.0):.1%}")
+        cols[2].metric("Ménages porteurs", f"{last.get('titrisation_porteurs', 0):.0f}")
+        cols[3].metric("Pertes des porteurs (cumul)",
+                       compact(sum(r.get("titrisation_pertes", 0.0) for r in history), " €"))
+        pools = simulation.pools_table()
+        if pools:
+            st.dataframe([{
+                "Banque": r["banque"], "Titres (€)": r["encours"], "Prêts immobiliers (€)": r["prets_immobiliers"],
+                "Part titrisée": r["part"], "Porteurs": r["porteurs"], "Coupons versés (€)": r["coupons"],
+                "Pertes transmises (€)": r["pertes"],
+            } for r in pools], hide_index=True, width="stretch", column_config=_percent_columns("Part titrisée"))
+        _society_series(history, {"Titres en circulation (€)": "titrisation_encours"})
+    st.markdown("#### Financement participatif")
+    if not _society_off(simulation, "crowdfunding", "Financement participatif"):
+        last = history[-1] if history else {}
+        rows = simulation.crowd_table()
+        cols = st.columns(4)
+        cols[0].metric("Prêts en cours", compact(last.get("participatif_encours", 0.0), " €"))
+        cols[1].metric("Entreprises financées", f"{len(rows)}")
+        cols[2].metric("Prêts levés (cumul)", compact(sum(r["leve"] for r in rows), " €"))
+        cols[3].metric("Emprunteurs en faillite", f"{sum(1 for r in rows if r['defaut'])}")
+        if rows:
+            labels = simulation.company_labels()
+            st.dataframe([{
+                "Entreprise": labels.get(r["id"], r["nom"]), "Secteur": sector_label(r["secteur"]),
+                "Levé (€)": r["leve"], "Encours (€)": r["encours"], "Taux annuel": r["taux_annuel"],
+                "État": "faillite" if r["defaut"] else ("active" if r["active"] else "fermée"),
+            } for r in rows[-100:]], hide_index=True, width="stretch", column_config=_percent_columns("Taux annuel"))
+
+
+def render_society_state(simulation: EconomySimulation, history: list) -> None:
+    state = getattr(simulation, "society", None)
+    st.markdown("#### Manifestations et émeutes")
+    if not _society_off(simulation, "social_unrest", "Manifestations et émeutes"):
+        offset = simulation.warmup_offset
+        protests = [p for p in state.protests if p["mois"] - offset >= 0] if state is not None else []
+        last = history[-1] if history else {}
+        cols = st.columns(4)
+        cols[0].metric("Tension sociale", f"{last.get('tension_sociale', 0.0):.2f}",
+                       help="Manifestation à 1, émeute à 2.")
+        cols[1].metric("Manifestations", f"{len(protests)}")
+        cols[2].metric("Émeutes", f"{sum(1 for p in protests if p['emeute'])}")
+        cols[3].metric("Concessions du gouvernement", f"{sum(1 for p in protests if p['concession'] > 0.0)}")
+        _society_series(history, {"Tension": "tension_sociale", "Pression": "pression_sociale"})
+        if protests:
+            st.dataframe([{
+                "Période": p["mois"] - offset, "Type": "émeute" if p["emeute"] else "manifestation",
+                "Tension": p["tension"], "Chômage": p["chomage"], "Travail perdu": p["travail_perdu"],
+                "Concession": p["concession"], "Participants": p["participants"],
+            } for p in reversed(protests[-100:])], hide_index=True, width="stretch",
+                column_config=_percent_columns("Chômage", "Travail perdu", "Concession"))
+    st.markdown("#### Grands travaux")
+    if not _society_off(simulation, "public_works", "Grands travaux"):
+        last = history[-1] if history else {}
+        works = simulation.works_table()
+        cols = st.columns(4)
+        cols[0].metric("Ouvrages achevés", f"{sum(1 for w in works if w['fin'] is not None)}")
+        cols[1].metric("Chantiers en cours", f"{sum(1 for w in works if w['fin'] is None)}")
+        cols[2].metric("Gain de productivité", f"{last.get('ouvrages_gain', 0.0):.2%}")
+        cols[3].metric("Dépensé (cumul)", compact(
+            sum(r.get("travaux_chantiers", 0.0) + r.get("travaux_entretien", 0.0) for r in history), " €"))
+        if works:
+            st.dataframe([{
+                "Ouvrage": w["nom"], "Coût (€)": w["cout"], "Avancement": w["avancement"],
+                "Lancé (période)": w["debut"], "Achevé (période)": w["fin"] if w["fin"] is not None else "en chantier",
+                "État": w["etat"], "Entretien financé": w["entretien"],
+            } for w in works], hide_index=True, width="stretch",
+                column_config=_percent_columns("Avancement", "État", "Entretien financé"))
+        else:
+            st.caption("Aucun chantier : la dette publique dépasse la limite réglée, ou la doctrine du "
+                       "gouvernement est hostile à l'investissement public.")
+        _society_series(history, {"État moyen des ouvrages": "ouvrages_etat_moyen"})
+
+
+def render_society(simulation: EconomySimulation) -> None:
+    st.subheader("Société : dettes, jeux, marques, finance et contestation")
+    st.markdown(
+        '<p class="section-note">Douze mécanismes optionnels (lot V). Chacun s\'active dans la barre '
+        "latérale, rubrique « Société : dettes, jeux, marques & finance », puis à la réinitialisation.</p>",
+        unsafe_allow_html=True,
+    )
+    history = simulation.society_history()
+    households, firms, finance, state, journal = result_tabs(
+        ["Ménages", "Entreprises", "Finance", "État & contestation", "Journal"], "society_section",
+    )
+    for tab, renderer in ((households, render_society_households), (firms, render_society_firms),
+                          (finance, render_society_finance), (state, render_society_state)):
+        if tab_is_open(tab):
+            with tab:
+                renderer(simulation, history)
+    if tab_is_open(journal):
+        with journal:
+            events = simulation.society_events()
+            if events:
+                st.dataframe([{"Période": e["periode"], "Type": e["type"], "Événement": e["texte"]}
+                              for e in events[:300]], hide_index=True, width="stretch")
+            else:
+                st.info("Aucun événement : activez un mécanisme, réinitialisez, puis avancez la simulation.")
 
 
 def render_world(simulation: EconomySimulation) -> None:
@@ -4901,17 +5475,19 @@ def render_dashboard() -> None:
         "overview_section", "state_section", "power_section", "firms_section", "households_section",
         "public_service_filter", "state_journal_author", "company_selector", "household_selector",
         "stock_chart_companies", "world_indicator", "world_section", "world_ranking_sort",
-        "world_ranking_limit",
+        "world_ranking_limit", "society_section",
     ):
         if key in st.session_state:
             st.session_state[key] = st.session_state[key]
 
     tabs = result_tabs(
-        ["Vue d’ensemble", "Monde", "État", "Entreprises & bourse", "Ménages", "Modèle & réglages"],
+        ["Vue d’ensemble", "Monde", "État", "Entreprises & bourse", "Ménages", "Société",
+         "Modèle & réglages"],
         "results_tab",
     )
     for tab, renderer in zip(tabs, (
-        render_overview, render_world, render_institutional_state, render_firms, render_households, render_model,
+        render_overview, render_world, render_institutional_state, render_firms, render_households,
+        render_society, render_model,
     )):
         if tab_is_open(tab):
             with tab:

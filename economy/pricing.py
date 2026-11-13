@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 from economy import diagnostics
-from economy.goods import household_budget, update_food_price
+from economy.goods import exploration_rate, household_budget, scarcity_rent_factor, update_food_price
 from economy.labor import effective_worker_count
 from economy.models import productivity_multiplier
 
@@ -98,6 +98,7 @@ class PricingMixin:
             # de l'extraction ne devienne infini).
             staffed = [s for s in suppliers if s.employees]
             if staffed:
+                replacement = exploration_rate(self.resources, self.live)
                 # coût variable sur la production possible des extracteurs (comme pour
                 # l'alimentation et les biens) : un coût à l'utilisation observée monterait
                 # quand la demande baisse, ce qui relèverait le prix et ferait encore baisser
@@ -106,9 +107,12 @@ class PricingMixin:
                     s.wage_offer / self.live.raw_material_extraction_productivity
                     + self.live.raw_material_extraction_cost
                     + self.live.exploration_cost_per_unit
-                    * self.live.reserve_replacement_rate
+                    * replacement
                     for s in staffed
                 ) / len(staffed)
+                if self.live.raw_material_scarcity:
+                    # rente de rareté : le plancher monte quand le stock vierge baisse
+                    unit_cost *= scarcity_rent_factor(self.resources, self.live)
                 # plancher au coût unitaire, sans marge visée
                 minimum_price = max(minimum_price, unit_cost)
         diagnostics.bite("plafond_prix_plancher_matieres", minimum_price > self._price_ceiling())

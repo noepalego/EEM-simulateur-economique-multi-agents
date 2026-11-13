@@ -94,7 +94,10 @@ class DemographyMixin:
     def _education_skill_bonus(self) -> float:
         """Compétence de départ ajoutée par l'éducation publique reçue (idée 5) : gain maximal ×
         qualité de l'éducation (couverture lissée du service, entre 0 et 1)."""
-        return self.live.education_skill_gain * max(0.0, min(1.0, getattr(self, "education_quality", 0.0)))
+        quality = getattr(self, "education_quality", 0.0)
+        if self.live.philanthropy:
+            quality += self._society_school_quality()  # lot V2 : écoles des fondations
+        return self.live.education_skill_gain * max(0.0, min(1.0, quality))
 
     def _estate_tax_rate(self) -> float:
         """Taux des droits de succession décidé par la doctrine en place."""
@@ -115,9 +118,13 @@ class DemographyMixin:
         prices = None
         allowance = live.estate_tax_allowance_years * 12.0 * max(self.wage_reference, 0.0)
         rate = self._estate_tax_rate()
+        society = getattr(self, "society", None)
         for person in self.people:
             person.age_months += 1
-            if self.demography_random.random() >= monthly_mortality(person.age_months, live):
+            chance = monthly_mortality(person.age_months, live)
+            if society is not None:
+                chance = self._society_mortality(person, chance)  # lot V : tabac, alcool, hôpitaux
+            if self.demography_random.random() >= chance:
                 continue
             prices = prices if prices is not None else share_prices(self.companies)
             estate = household_net_worth(person, self.companies, live, prices)
@@ -193,6 +200,8 @@ class DemographyMixin:
         if getattr(self, "power", None) is not None:
             # lot K : l'héritier a ses propres traits ; dynasties (part de la notoriété gardée)
             self._power_succession(person)
+        if getattr(self, "society", None) is not None:
+            self._society_succession(person)  # lot V : traits, dépendance, interdiction de crédit
         person.employer_tenure = 0
         person.rank = -1
         person.lifetime_earnings = 0.0

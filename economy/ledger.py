@@ -71,6 +71,10 @@ class Ledger:
         if enterprise is not None and enterprise.foreign is not None:
             # lot J : monnaie intérieure détenue par le reste du monde (produit de ses ventes)
             total += enterprise.foreign.cash
+        society = getattr(sim, "society", None)
+        if society is not None:
+            # lot V : cagnotte de la loterie, fondations, fonds spéculatifs
+            total += sum(account.cash for account in society.accounts())
         abroad = getattr(sim, "world_accounts", None)
         if abroad:
             # monde à plusieurs régions : chambre de compensation et compte des non-résidents
@@ -99,10 +103,15 @@ class Ledger:
     def deposits(self, sim: "EconomySimulation") -> float:
         """Dépôts de la clientèle déduits du bilan consolidé des banques."""
         b = self.banking(sim)
-        return (
+        deposits = (
             b["reserves"] + b["loans"] + b["bonds"] + b["real_assets"]
             - b["equity"] - b["advances"]
         )
+        society = getattr(sim, "society", None)
+        if society is not None and society.pools:
+            # lot V9 : les titres adossés sont un passif des banques, comme les dépôts
+            deposits -= society.securitized()
+        return deposits
 
     def deposits_from_cash(self, sim: "EconomySimulation") -> float:
         """Dépôts déduits de la trésorerie (monnaie totale moins monnaie fiduciaire)."""

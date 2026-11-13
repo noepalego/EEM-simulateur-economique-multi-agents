@@ -68,5 +68,50 @@ class WealthDistributionTests(unittest.TestCase):
         self.assertEqual(money_label(5020.0, resolution=20.0), "5,02 k")
 
 
+class ResearchEfficiencySliderTests(unittest.TestCase):
+    """Curseur « Efficacité de la recherche » (12 novembre 2026) : sa valeur de départ est celle de
+    ``SimulationConfig``, et elle est transmise à la configuration (trajectoire de base inchangée)."""
+
+    def test_default_matches_config_and_is_passed(self):
+        import re
+        from pathlib import Path
+
+        from economy.models import SimulationConfig
+
+        source = (Path(__file__).resolve().parent.parent / "main.py").read_text(encoding="utf-8")
+        slider = re.search(
+            r'"Efficacité de la recherche",\s*min_value=[^,]+, max_value=[^,]+, value=([0-9.]+),'
+            r'[^)]*key="knowledge_growth_per_intensity"',
+            source,
+        )
+        self.assertIsNotNone(slider)
+        self.assertEqual(float(slider.group(1)), SimulationConfig().knowledge_growth_per_intensity)
+        self.assertIn(
+            "knowledge_growth_per_intensity=st.session_state.knowledge_growth_per_intensity", source
+        )
+
+    def test_all_on_preset_covers_research_and_scarcity(self):
+        """« Tout activer » coche la rareté des matières et porte la recherche à 0,5 ;
+        « Tout désactiver » rétablit la valeur de ``SimulationConfig``."""
+        import ast
+        from pathlib import Path
+
+        from economy.models import SimulationConfig
+
+        tree = ast.parse((Path(__file__).resolve().parent.parent / "main.py").read_text(encoding="utf-8"))
+        literals = {
+            node.targets[0].id: ast.literal_eval(node.value)
+            for node in tree.body
+            if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name)
+            and node.targets[0].id in ("OPTIONAL_MECHANISMS", "OPTIONAL_SETTINGS")
+        }
+        self.assertIs(literals["OPTIONAL_MECHANISMS"]["raw_material_scarcity"], True)
+        on_value, base_value = literals["OPTIONAL_SETTINGS"]["knowledge_growth_per_intensity"]
+        self.assertEqual(on_value, 0.5)
+        self.assertEqual(base_value, SimulationConfig().knowledge_growth_per_intensity)
+        for key in literals["OPTIONAL_MECHANISMS"]:
+            self.assertTrue(hasattr(SimulationConfig(), key), key)
+
+
 if __name__ == "__main__":
     unittest.main()

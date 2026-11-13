@@ -190,12 +190,14 @@ class _HouseholdSupplierBatch(dict):
     de chaque paiement restent dans l'ordre historique.
     """
 
-    __slots__ = ("parts", "divisor")
+    __slots__ = ("parts", "divisor", "has_order")
 
     def __init__(self, suppliers: dict, split: dict[str, float]) -> None:
         super().__init__(suppliers)
         positive = tuple((sector, max(0.0, share)) for sector, share in split.items())
-        self.divisor = max(sum(share for _, share in positive), 1e-9)
+        total_share = sum(share for _, share in positive)
+        self.divisor = max(total_share, 1e-9)
+        self.has_order = total_share > 0.0
         self.parts = tuple(
             (sector, share, tuple(zip(*suppliers[sector])), sum(suppliers[sector][1]))
             for sector, share in positive
@@ -208,6 +210,8 @@ class _HouseholdSupplierBatch(dict):
         ``split`` d'origine ne modifie pas ce plan. Recréer le lot dès que la
         répartition ou les fournisseurs changent.
         """
+        if not self.has_order:
+            return 0.0
         amount = min(max(0.0, amount), max(0.0, person.cash))
         if amount <= 0.0:
             return 0.0
@@ -265,13 +269,15 @@ def pay_suppliers_from_household(
     suppliers_by_sector: dict | None = None,
 ) -> float:
     """Un ménage achète des services (formation, entretien) à des entreprises."""
+    total_share = sum(max(0.0, s) for s in split.values())
+    if total_share <= 0.0:
+        return 0.0
     amount = min(max(0.0, amount), max(0.0, person.cash))
     if amount <= 0.0:
         return 0.0
     person.cash -= amount
     person.expenses_this_turn += amount
     person.cumulative_expenses += amount
-    total_share = sum(max(0.0, s) for s in split.values())
     unserved = 0.0
     for sector, share in split.items():
         part = amount * max(0.0, share) / max(total_share, 1e-9)
