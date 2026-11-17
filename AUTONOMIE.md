@@ -43,6 +43,7 @@ des modes déjà codés. Les valeurs exactes sont celles de `SimulationConfig`.
 | `minimum_wage_boost_cap` | coup de pouce borné | Nouvel État : hausse discrétionnaire annuelle du salaire minimum au-delà de l'indexation légale, au plus 10 %, sans dilution sur le mandat restant depuis novembre 2026 (montée progressive vers l'ambition de la doctrine), et baisse décidée par un gouvernement non social bornée de même ; vitesse d'une décision politique (révision sur observations retardées), pas un niveau visé du salaire minimum. |
 | `social_pay_ratio_cap` | plafond politique | État institutionnel : un gouvernement social plafonne le salaire de la présidence à 8 fois le salaire minimum ; choix de doctrine consigné au journal, appliqué aux révisions. |
 | `countercyclical_floor` | plancher prudentiel | Lot F1, actif seulement avec `countercyclical_capital` : exigence de fonds propres minimale (6 %) pendant un allègement contracyclique ; borne un instrument de politique prudentielle, sans viser de volume de crédit ni de croissance. |
+| `addiction_margin_target` | marge de devis | Lot V, actif seulement avec `addictive_goods` : marge d'exploitation recherchée par les fabricants de tabac et d'alcool dans leur devis, sur leurs coûts et les quantités finançables prévues ; le plafond de prix et les budgets des ménages restent contraignants, sans recette ni rentabilité garanties. |
 
 ### Cibles institutionnelles explicitement reconnues
 
@@ -448,7 +449,15 @@ trésorerie ; le plus modeste joue trois fois plus que le plus riche. Addictions
 de chômage), 2 % de l'écart à l'équilibre comblé par mois, 5 % de sevrage par mois sans produit,
 1 % par doublement du prix, dégâts de 0,002 par mois à dépendance complète, soins à partir de 0,05,
 prix entre 0,5 et 2,5 fois la référence (+1 % si les volumes tiennent, −3 % s'ils reculent de plus
-de 5 %). Capital d'une entreprise de tabac ou d'une agence : 60 000, apport d'au plus la moitié de
+de 5 %, avec un devis couvrant les coûts et la marge visée sur les quantités finançables).
+Les fabricants démarrent avec un poste ; les reprises comparent les débouchés finançables d'un
+salarié à son coût, sans valeur de reprise infinie. Les commandes refusées faute de capacité
+passent aux autres fabricants ; le reliquat reste mesuré. Le pouvoir addictif vaut
+`1 + addiction_technology_gain × niveau / (1 + niveau)` : il renforce la dépendance seulement
+au prorata des produits consommés, et s'érode avec l'obsolescence des équipements. Les achats
+technologiques sont payés et capitalisés selon les règles communes ; leur valeur dépend ici
+du supplément marginal de pouvoir addictif, à rendements décroissants.
+Capital d'une entreprise de tabac ou d'une agence : 60 000, apport d'au plus la moitié de
 la trésorerie du fondateur. Manifestations : tension rejointe de 15 % par mois, pression de 1 pour
 10 points de chômage, 20 points de patrimoine des 10 % ou 10 % de salaire réel perdus ; manifestation
 à 1, émeute à 2 (2 % des stocks détruits), six mois entre deux, trois concessions par gouvernement,
@@ -486,6 +495,9 @@ propres, prêt minimal de 2 salaires de référence.
 | `addiction_excise_rate` | 0,5 | Accise en part du prix hors taxes, recette de l'État (la TVA s'applique en plus, accise comprise). Taxe de comportement : la moitié du prix hors taxes. |
 | `addiction_care_cost` | 0,10 | Coût mensuel des soins d'un ménage aux dégâts de santé complets, en part du salaire de référence ; proportionnel aux dégâts. Partagé entre l'État et le ménage selon l'orientation du gouvernement. |
 | `addiction_mortality_gain` | 1,0 | Hausse de la probabilité de décès à dégâts de santé complets : doublée. Les dégâts s'accumulent lentement (0,5 après vingt ans de dépendance complète). |
+| `addiction_margin_target` | 0,20 | Marge d'exploitation recherchée dans les devis de tabac et d'alcool, sur les coûts et les quantités finançables prévues. Le plafond de prix et les budgets restent contraignants : aucune recette ni rentabilité n'est garantie. |
+| `addiction_technology_gain` | 1,0 | Supplément maximal de pouvoir addictif dû aux équipements technologiques payés, atteint progressivement selon niveau / (1 + niveau). Effet sur la dépendance pondéré par les quantités réellement consommées, nul sans livraison. |
+| `addiction_technology_value_share` | 0,5 | Part du chiffre d'affaires exposée au rendement marginal d'un produit plus addictif dans le devis technologique. Le fournisseur n'en capte que la part commune tech_value_capture ; l'achat respecte stocks, fonds de roulement et budget d'investissement. |
 | `franchising` | faux | Franchises : un producteur rentable et débordé loue sa marque et ses méthodes à un petit entrepreneur, qui ouvre une entreprise à part entière. Entrée de concurrents moins capitalisés, liés à un réseau. |
 | `franchise_entry_fee` | 10 000 | Droit d'entrée payé par le franchisé au franchiseur, en euros de départ indexés sur les salaires : un dixième du seuil de trésorerie d'un fondateur ordinaire (100 000). |
 | `franchise_royalty_rate` | 0,05 | Redevance mensuelle sur le chiffre d'affaires du franchisé (5 %), ordre de grandeur des contrats de franchise ; payée dans la limite de sa trésorerie. |

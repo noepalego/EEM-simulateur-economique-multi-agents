@@ -9,7 +9,7 @@ from uuid import uuid4
 
 from economy.models import SimulationConfig
 from economy.simulation import EconomySimulation, SECTORS
-from economy.sectors import sector_label
+from economy.sectors import display_sectors, sector_label
 from economy.warmup_cache import warm_many, warmed_simulation
 from economy.advance_cache import AdvanceCache
 from economy import world_views
@@ -436,6 +436,7 @@ def new_simulation() -> EconomySimulation:
             lottery_stake_share=st.session_state.lottery_stake_percent / 100,
             addictive_goods=bool(st.session_state.addictive_goods),
             addiction_excise_rate=st.session_state.addiction_excise_percent / 100,
+            addiction_technology_gain=st.session_state.addiction_technology_gain_percent / 100,
             franchising=bool(st.session_state.franchising),
             franchise_royalty_rate=st.session_state.franchise_royalty_percent / 100,
             brand_marketing=bool(st.session_state.brand_marketing),
@@ -1865,6 +1866,10 @@ def render_overview_sectors(view_id: str, month: int, _simulation: EconomySimula
     simulation = _simulation
     observed_history = simulation.observed_history
     if len(observed_history) > 1:
+        sectors = display_sectors(
+            {company.sector for company in simulation.companies}
+            | {sector for record in observed_history for sector in record.sector_employment}
+        )
         st.subheader("Activité et emploi")
         employment_history = [
             {
@@ -1918,7 +1923,7 @@ def render_overview_sectors(view_id: str, month: int, _simulation: EconomySimula
                 "Période": record.month,
                 **{
                     label: record.sector_employment.get(sector, 0)
-                    for sector, label in SECTORS
+                    for sector, label in sectors
                 },
             }
             for record in observed_history
@@ -1942,7 +1947,7 @@ def render_overview_sectors(view_id: str, month: int, _simulation: EconomySimula
                 "Période": record.month,
                 **{
                     label: record.sector_revenue.get(sector, 0.0)
-                    for sector, label in SECTORS
+                    for sector, label in sectors
                 },
             }
             for record in observed_history
@@ -1952,7 +1957,7 @@ def render_overview_sectors(view_id: str, month: int, _simulation: EconomySimula
                 "Période": record.month,
                 **{
                     label: record.sector_profit.get(sector, 0.0)
-                    for sector, label in SECTORS
+                    for sector, label in sectors
                 },
             }
             for record in observed_history
@@ -1969,7 +1974,7 @@ def render_overview_sectors(view_id: str, month: int, _simulation: EconomySimula
                 "Période": record.month,
                 **{
                     label: record.sector_average_wage.get(sector, 0.0)
-                    for sector, label in SECTORS
+                    for sector, label in sectors
                 },
             }
             for record in observed_history
@@ -2205,6 +2210,14 @@ def render_sidebar() -> None:
             st.slider("Accise (prix hors taxes)", 0, 300, 50, 10, format="%d %%",
                       key="addiction_excise_percent",
                       disabled=not st.session_state.get("addictive_goods", False))
+            st.slider(
+                "Gain addictif maximal de la technologie", 0, 200, 100, 10, format="%d %%",
+                key="addiction_technology_gain_percent",
+                disabled=not st.session_state.get("addictive_goods", False),
+                help="Les équipements réellement achetés renforcent la dépendance quand le produit est "
+                     "consommé. Le gain est plafonné, augmente de moins en moins avec la technologie et "
+                     "s'érode avec l'obsolescence des équipements. À 100 %, le pouvoir addictif tend vers ×2.",
+            )
             st.checkbox(
                 "Franchises", key="franchising",
                 help="Un producteur rentable qui refuse des commandes loue sa marque et ses méthodes à un "
@@ -3302,9 +3315,9 @@ def render_firm_tables(view_id: str, month: int, _simulation: EconomySimulation)
     st.markdown("#### Résumé par secteur")
     sector_summary = []
     revenue_total = sum(c.revenue for c in active_companies) or 1.0
-    for sector, label in SECTORS:
-        if sector == "public":
-            continue
+    for sector, label in display_sectors(
+        (company.sector for company in simulation.companies), include_public=False,
+    ):
         sector_firms = [c for c in simulation.companies if c.sector == sector]
         sector_active = [c for c in sector_firms if c.active]
         sector_revenue = sum(c.revenue for c in sector_active)
@@ -3402,7 +3415,9 @@ def render_groups_panel(view_id: str, month: int, _simulation: EconomySimulation
     state = getattr(simulation, "enterprise", None)
     live, offset = simulation.live, simulation.warmup_offset
     labels = simulation.company_labels()
-    sectors = {key: label.split(" (")[0] for key, label in SECTORS}
+    sectors = {key: label.split(" (")[0] for key, label in display_sectors(
+        company.sector for company in simulation.companies
+    )}
     active = [c for c in simulation.companies if c.active]
     by_id = {c.id: c for c in simulation.companies}
     history = simulation.enterprise_history()
@@ -3606,7 +3621,9 @@ def render_funds_panel(view_id: str, month: int, _simulation: EconomySimulation)
         )
         return
     labels = simulation.company_labels()
-    sectors = {key: label.split(" (")[0] for key, label in SECTORS}
+    sectors = {key: label.split(" (")[0] for key, label in display_sectors(
+        company.sector for company in simulation.companies
+    )}
     by_id = {c.id: c for c in simulation.companies}
     prices = {c.id: c.stock_price for c in simulation.companies if c.active}
     funds = state.funds
@@ -3761,7 +3778,9 @@ def render_bonds_panel(view_id: str, month: int, _simulation: EconomySimulation)
         )
         return
     labels = simulation.company_labels()
-    sectors = {key: label.split(" (")[0] for key, label in SECTORS}
+    sectors = {key: label.split(" (")[0] for key, label in display_sectors(
+        company.sector for company in simulation.companies
+    )}
     history = simulation.enterprise_history()
     issuers = [c for c in simulation.companies if c.active and c.bond_debt > 0.0]
     outstanding = sum(c.bond_debt for c in issuers)
@@ -3901,7 +3920,9 @@ def render_unions_panel(view_id: str, month: int, _simulation: EconomySimulation
         )
         return
     offset = simulation.warmup_offset
-    sectors = {key: label.split(" (")[0] for key, label in SECTORS}
+    sectors = {key: label.split(" (")[0] for key, label in display_sectors(
+        company.sector for company in simulation.companies
+    )}
     agreements = [row for row in state.agreements if row["mois"] - offset >= 0]
     strikes = [row for row in agreements if row["greve"]]
     unemployment = simulation.observed_history[-1].unemployment if simulation.observed_history else 0.0
@@ -4543,6 +4564,28 @@ def render_society_households(simulation: EconomySimulation, history: list) -> N
     st.markdown("#### Tabac et alcool")
     if not _society_off(simulation, "addictive_goods", "Tabac et alcool"):
         last = history[-1] if history else {}
+        firms = [c for c in simulation.companies if c.active and c.sector == "vice"]
+        labels = simulation.company_labels()
+        business = st.columns(4)
+        business[0].metric("Entreprises de tabac et alcool", f"{len(firms)}")
+        business[1].metric("Salariés du secteur", f"{sum(len(c.employees) for c in firms)}")
+        business[2].metric("Chiffre d'affaires du mois", compact(sum(c.revenue for c in firms), " €"))
+        business[3].metric("Bénéfice du secteur", compact(sum(c.profit for c in firms), " €"))
+        if firms:
+            st.dataframe([{
+                "Entreprise": labels[c.id], "Salariés": len(c.employees),
+                "Chiffre d'affaires (€)": c.revenue, "Bénéfice (€)": c.profit,
+                "Technologie": c.tech_level, "Pouvoir addictif (×)": simulation._vice_addictiveness(c),
+            } for c in sorted(firms, key=lambda c: labels[c.id])], hide_index=True, width="stretch",
+                column_config={
+                    **_money_columns("Chiffre d'affaires (€)", "Bénéfice (€)"),
+                    "Technologie": st.column_config.NumberColumn(format="%.2f"),
+                    "Pouvoir addictif (×)": st.column_config.NumberColumn(
+                        format="%.2f", help="Multiplicateur lié à la technologie ; 1 correspond au niveau de départ.",
+                    ),
+                })
+        else:
+            st.caption("Aucune entreprise active : un ménage disposant du capital nécessaire pourra en fonder une.")
         cols = st.columns(5)
         cols[0].metric("Consommateurs", f"{last.get('vice_consommateurs', 0):.0f}")
         cols[1].metric("Dépendance moyenne", f"{last.get('vice_dependance_moyenne', 0.0):.2f}")

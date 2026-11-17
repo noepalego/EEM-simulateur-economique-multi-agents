@@ -1215,6 +1215,9 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
                 )
                 sector_staff[company.sector] = sector_staff.get(company.sector, 0) + len(company.employees)
         values: dict[str, float] = {}
+        vice_potential = self._vice_potential_units(
+            [c for c in self.companies if c.active and c.sector == "vice"]
+        ) if live.addictive_goods else {}
         for company in self.companies:
             if not company.active:
                 continue
@@ -1235,6 +1238,8 @@ class EconomySimulation(PublicFinanceMixin, StateGovernmentMixin, OwnershipMixin
             elif company.sector == "media":
                 # lot M : un média sans journaliste vaut les abonnements de ses lecteurs
                 value = max(value, self._media_restart_value(company))
+            elif company.sector == "vice" and live.addictive_goods:
+                value = self._vice_restart_value(company, vice_potential)
             values[company.id] = value
         # gardé pour la liquidation amiable de la phase 7 (même mois)
         self._restart_value_by_id = values

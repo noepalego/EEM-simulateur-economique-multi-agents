@@ -17,7 +17,8 @@ premier usage et partagé avec ``economy/ventures.py`` ; les tirages viennent d'
   emporte.
 - **Addictions** (``addictive_goods``) : des entreprises de tabac et d'alcool (secteur « vice »)
   vendent à des ménages dépendants une quantité qui ne dépend pas du prix ; accise et TVA vont à
-  l'État ; l'exposition cumulée coûte des soins et relève la mortalité.
+  l'État ; leurs achats technologiques renforcent le pouvoir addictif des produits consommés.
+  Les prix tiennent compte des coûts ; l'exposition cumulée coûte des soins et relève la mortalité.
 - **Manifestations** (``social_unrest``) : la tension suit le chômage, les inégalités de patrimoine
   et la baisse du salaire réel ; une manifestation fait perdre du travail, une émeute détruit des
   stocks, et le gouvernement concède des transferts.
@@ -345,7 +346,7 @@ class SocietyMixin:
                 sector=sector,
                 cash=contribution,
                 wage_offer=max(self.wage_reference, live.minimum_wage, 1.0),
-                target_employees=2,
+                target_employees=1 if sector == VICE_SECTOR else 2,
                 price=max(price, 0.01),
                 stock_price=max(1.0, contribution / shares),
                 previous_stock_price=max(1.0, contribution / shares),
@@ -603,6 +604,38 @@ class SocietyMixin:
             self.society.month_stats[key] = sum(stake for _, stake in group) / income if income > 0.0 else 0.0
 
     # ------------------------------------------------------------------ V4 : addictions
+    def _vice_addictiveness(self, company: Company) -> float:
+        """Pouvoir addictif du produit : équipement payé, effet borné et décroissant à la marge."""
+        level = max(0.0, company.tech_level)
+        return 1.0 + max(0.0, self.live.addiction_technology_gain) * level / (1.0 + level)
+
+    def _vice_potential_units(self, firms: list) -> dict[str, float]:
+        """Débouchés finançables aux prix affichés, y compris pour un fabricant sans salarié.
+
+        Sert aux devis et aux reprises ; aucune vente, aucun paiement ni gain de dépendance.
+        Chaque ménage garde la même limite de trésorerie que sur le marché effectif.
+        """
+        weights = {c.id: self._vice_addictiveness(c) / max(c.price, 0.01) ** 2 for c in firms}
+        total = sum(weights.values())
+        units = {c.id: 0.0 for c in firms}
+        if total <= 0.0:
+            return units
+        gross = (1.0 + max(0.0, self.live.addiction_excise_rate)) * (1.0 + self.live.vat_rate)
+        price = sum(c.price * weights[c.id] / total for c in firms) * gross
+        for person in self.people:
+            wanted = VICE_UNITS * self._dependence(person)
+            affordable = VICE_CASH_LIMIT * max(0.0, person.cash) / max(price, 0.01)
+            demand = min(wanted, affordable)
+            for company in firms:
+                units[company.id] += demand * weights[company.id] / total
+        return units
+
+    def _vice_restart_value(self, company: Company, potential: dict) -> float:
+        """Recette réalisable par un salarié, nette de l'amortissement, sans reprise à l'infini."""
+        capacity = VICE_OUTPUT * max(company.productivity_trait, 0.1)
+        revenue = min(capacity, potential.get(company.id, 0.0)) * company.price
+        return max(0.0, revenue - company.depreciation_this_turn)
+
     def _vice_reference_price(self) -> float:
         """Prix hors taxes d'une unité tel qu'un ménage pleinement dépendant y consacre, accise et
         TVA comprises, ``addiction_budget_share`` du salaire de référence."""
@@ -632,21 +665,24 @@ class SocietyMixin:
 
         Demande rigide : un ménage veut ``VICE_UNITS`` × sa dépendance, quel que soit le prix, et
         n'y renonce que faute de trésorerie (au plus ``VICE_CASH_LIMIT`` de celle-ci). Il achète
-        aux fabricants qui ont des salariés, au prorata de 1 / prix², dans la limite de ce que
+        aux fabricants qui ont des salariés, au prorata du pouvoir addictif / prix², dans la limite de ce que
         leurs salariés vendent. Il paie le prix, l'accise (``addiction_excise_rate`` du prix hors
         taxes) et la TVA sur le tout ; accise et TVA vont à l'État.
 
-        Prix : un fabricant relève le sien de ``VICE_PRICE_UP`` quand ses volumes tiennent et le
-        baisse de ``VICE_PRICE_DOWN`` quand ils reculent, entre ``VICE_PRICE_BAND`` × le prix de
-        référence. Dépendance : elle rejoint de ``VICE_REINFORCE`` par mois le niveau d'équilibre
+        Prix : un fabricant tient compte des volumes et du coût par unité finançable, avec une
+        marge visée, entre ``VICE_PRICE_BAND`` × le prix de référence. Les commandes refusées par un
+        fabricant saturé sont redistribuées aux autres. Dépendance : elle rejoint le niveau d'équilibre
         du ménage (``_vice_goal`` : selon son penchant, plus haut après ``VICE_STRESS_MONTHS``
-        mois de chômage), et baisse quand il est privé de produit ou que le prix dépasse la
+        mois de chômage), relevé par le pouvoir addictif des produits effectivement livrés. Elle
+        baisse quand le ménage est privé de produit ou que le prix dépasse la
         référence. Les dégâts de santé s'accumulent avec la consommation."""
         live = self.live
         state = self._society_state()
         reference = self._vice_reference_price()
         firms = [c for c in self.companies if c.active and c.sector == VICE_SECTOR]
+        potential = self._vice_potential_units(firms)
         low, high = VICE_PRICE_BAND
+        margin = _clip(live.addiction_margin_target, 0.0, 0.8)
         for company in firms:
             before = state.vice_units.get(company.id)
             if company.price <= 0.0 or before is None:
@@ -655,12 +691,22 @@ class SocietyMixin:
                 company.price *= 1.0 + VICE_PRICE_UP
             else:
                 company.price *= 1.0 - VICE_PRICE_DOWN
+            # Un démarrage à un poste évite de surdimensionner ce petit marché. Le devis
+            # d'une entreprise à l'arrêt inclut la paie attendue d'un poste, sans vente fictive.
+            capacity = max(1, len(company.employees)) * VICE_OUTPUT * max(company.productivity_trait, 0.1)
+            expected = min(capacity, potential.get(company.id, 0.0))
+            costs = max(company.expenses, company.wage_offer * 1.35 if not company.employees else 0.0)
+            if expected > 1e-9:
+                company.price = max(company.price, costs / (expected * (1.0 - margin)))
             company.price = _clip(company.price, low * reference, high * reference)
             state.vice_units[company.id] = company.previous_units_sold
         sellers = [c for c in firms if c.employees]
         left = {c.id: len(c.employees) * VICE_OUTPUT * max(c.productivity_trait, 0.1) for c in sellers}
-        weights = [(c, 1.0 / (c.price * c.price)) for c in sellers]
+        potency = {c.id: self._vice_addictiveness(c) for c in firms}
+        weights = [(c, potency[c.id] / (c.price * c.price)) for c in sellers]
         total_weight = sum(weight for _, weight in weights)
+        all_weights = {c.id: potency[c.id] / (c.price * c.price) for c in firms}
+        all_weight = sum(all_weights.values())
         excise_rate = max(0.0, live.addiction_excise_rate)
         vat_rate = live.vat_rate
         gross_factor = (1.0 + excise_rate) * (1.0 + vat_rate)
@@ -688,14 +734,28 @@ class SocietyMixin:
             wanted = VICE_UNITS * level
             wanted_total += wanted
             served = 0.0
+            exposure = 0.0
             if total_weight > 0.0:
-                plan = []
+                quantities = {c.id: 0.0 for c in sellers}
+                remaining = wanted
+                available = [(c, weight) for c, weight in weights if left[c.id] > 1e-9]
+                while remaining > 1e-9 and available:
+                    weight_sum = sum(weight for _, weight in available)
+                    allocated = 0.0
+                    for company, weight in available:
+                        units = min(remaining * weight / weight_sum,
+                                    left[company.id] - quantities[company.id])
+                        quantities[company.id] += units
+                        allocated += units
+                    remaining -= allocated
+                    available = [(c, w) for c, w in available
+                                 if left[c.id] - quantities[c.id] > 1e-9]
+                    if allocated <= 1e-9:
+                        break
+                plan = [(c, quantities[c.id]) for c in sellers if quantities[c.id] > 1e-9]
                 cost = 0.0
-                for company, weight in weights:
-                    units = min(wanted * weight / total_weight, left[company.id])
-                    if units > 1e-9:
-                        plan.append((company, units))
-                        cost += units * company.price * gross_factor
+                for company, units in plan:
+                    cost += units * company.price * gross_factor
                 limit = VICE_CASH_LIMIT * max(0.0, person.cash)
                 scale = min(1.0, limit / cost) if cost > 0.0 else 0.0
                 for company, units in plan:
@@ -712,22 +772,31 @@ class SocietyMixin:
                     person.cumulative_expenses += spent
                     company.revenue += net
                     company.units_sold += units
+                    company.units_produced += units  # fabrication à la commande, sans stock
                     left[company.id] -= units
                     net_total += net
                     excise_total += excise
                     vat_total += tax
                     served += units
-                for company, weight in weights:
-                    company.unmet_units += max(0.0, wanted * weight / total_weight * (1.0 - scale))
+                    exposure += units * potency[company.id]
+            if all_weight > 0.0:
+                for company in firms:
+                    company.unmet_units += max(0.0, wanted - served) * all_weights[company.id] / all_weight
             units_total += served
             ratio = served / wanted
+            strength = exposure / served if served > 0.0 else 1.0
+            goal = 1.0 - (1.0 - goal) ** strength
             if goal > level:
-                level += VICE_REINFORCE * ratio * (goal - level)
+                level += min(1.0, VICE_REINFORCE * strength) * ratio * (goal - level)
             else:
                 level -= VICE_REINFORCE * (level - goal)
             level -= (VICE_WITHDRAWAL * (1.0 - ratio) + VICE_QUIT_PRICE * price_gap) * level
             dependence[pid] = _clip(level) if level > 1e-3 else 0.0
             damage[pid] = _clip(damage.get(pid, 0.0) + VICE_DAMAGE * level * ratio)
+        for company in firms:
+            demand = company.units_sold + company.unmet_units
+            company.demand_ema = (demand if company.demand_ema <= 0.0 else company.demand_ema
+                                  + live.demand_smoothing * (demand - company.demand_ema))
         if excise_total + vat_total > 0.0:
             self.public.cash += excise_total + vat_total
             f.vat_revenue += vat_total

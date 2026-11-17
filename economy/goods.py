@@ -898,6 +898,9 @@ def trade_technology(
     ceiling = min(10.0, config.technology_business_max_level)
     for buyer in buyers:
         base_share = config.tech_value_base_share.get(buyer.sector, 0.0)
+        addictive = buyer.sector == "vice" and config.addictive_goods
+        if addictive:
+            base_share = max(0.0, config.addiction_technology_value_share)
         revenue_base = max(buyer.revenue_ema, buyer.previous_revenue)
         if base_share <= 0.0 or revenue_base <= 0.0 or not providers or ceiling <= 0.0:
             continue
@@ -909,6 +912,16 @@ def trade_technology(
         full_value = (
             revenue_base * base_share * 0.03 * config.tech_effect_per_level * horizon
         )
+        if addictive:
+            # Rendement du produit : seul le supplément marginal de pouvoir addictif est
+            # valorisé. Les machines n'offrent pas ici le gain productif des autres secteurs.
+            level = max(0.0, buyer.tech_level)
+            gain = max(0.0, config.addiction_technology_gain)
+            potency = 1.0 + gain * level / (1.0 + level)
+            marginal = gain * 0.03 / ((1.0 + level) * (1.03 + level))
+            full_value = revenue_base * base_share * marginal / potency * horizon
+            if full_value <= 0.0:
+                continue
         # sans plafond de la part captée : un prix proche de la valeur créée éteint la
         # demande, ce qui borne l'indice
         capture = config.tech_value_capture * resources.tech_price_index

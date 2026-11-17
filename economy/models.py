@@ -825,6 +825,13 @@ class SimulationConfig:
     addiction_excise_rate: float = field(default=0.5, metadata={"identity": "neutre"})
     addiction_care_cost: float = field(default=0.10, metadata={"identity": "neutre"})
     addiction_mortality_gain: float = field(default=1.0, metadata={"identity": "neutre"})
+    # Marge d'exploitation recherchée par les fabricants ; les prix restent bornés et les
+    # achats des ménages limités par leur trésorerie. Ce n'est pas un bénéfice garanti.
+    addiction_margin_target: float = field(default=0.20, metadata={"identity": "neutre"})
+    # Les équipements réellement achetés renforcent le pouvoir addictif avec rendements
+    # décroissants : 1 + gain × niveau / (1 + niveau), érodé par l'obsolescence des équipements.
+    addiction_technology_gain: float = field(default=1.0, metadata={"identity": "neutre"})
+    addiction_technology_value_share: float = field(default=0.5, metadata={"identity": "neutre"})
     # V5 franchises : un producteur rentable loue sa marque et ses méthodes à un petit entrepreneur
     # contre un droit d'entrée (``franchise_entry_fee``, indexé sur les salaires) et une redevance
     # mensuelle de ``franchise_royalty_rate`` du chiffre d'affaires.

@@ -12,7 +12,7 @@ import math
 from typing import TYPE_CHECKING
 
 from economy.models import MarketRecord
-from economy.sectors import FIRM_SECTORS
+from economy.sectors import display_sectors
 
 if TYPE_CHECKING:
     from economy.simulation import EconomySimulation
@@ -311,7 +311,9 @@ def build_record(
     consumer_revenue = f.food_revenue + f.goods_revenue
     active_housing = sector_sum("real_estate", "property_inventory")
     household_income = sum(p.income_this_turn for p in people)
-    sector_keys = [sector for sector, _ in FIRM_SECTORS]
+    sector_keys = [sector for sector, _ in display_sectors(
+        (c.sector for c in companies), include_public=False,
+    )]
     sector_employment = {s: sum(len(c.employees) for c in active_by_sector.get(s, ())) for s in sector_keys}
     # Aucun paiement pendant la construction du relevé : ces trois lectures
     # historiques parcouraient les mêmes trésoreries. Garder les deux

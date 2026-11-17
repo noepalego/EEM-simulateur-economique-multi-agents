@@ -9,7 +9,8 @@ import re
 import unittest
 
 from economy.household_credit import extend_consumer_credit
-from economy.models import SimulationConfig
+from economy.goods import trade_technology
+from economy.models import Company, SimulationConfig
 from economy.records import MonthFlows
 from economy.simulation import EconomySimulation
 from economy.society import (
@@ -28,7 +29,8 @@ PARAMETERS = (
     "philanthropy_wealth_multiple", "philanthropy_giving_rate",
     "lottery_stake_share", "lottery_payout_share", "lottery_draw_chance",
     "addiction_firms", "addiction_budget_share", "addiction_excise_rate", "addiction_care_cost",
-    "addiction_mortality_gain",
+    "addiction_mortality_gain", "addiction_technology_gain", "addiction_technology_value_share",
+    "addiction_margin_target",
     "franchise_entry_fee", "franchise_royalty_rate",
     "marketing_agencies", "marketing_budget_share", "brand_decay_rate", "brand_reach",
     "buyout_min_workers", "buyout_benefit_months",
@@ -279,6 +281,31 @@ class LotteryTests(unittest.TestCase):
 
 
 class AddictionTests(unittest.TestCase):
+    @staticmethod
+    def controlled_market(population: int = 1, makers: int = 1) -> EconomySimulation:
+        """Marché isolé : goûts, liquidités et produits identiques avant une expérience causale."""
+        sim = simulation(months=0, population=80, addictive_goods=True)
+        sim._institutions()
+        sim.people[:] = sim.people[:population]
+        state = sim._society_state()
+        reference = sim._vice_reference_price()
+        for person in sim.people:
+            person.cash = 1e6
+            person.unemployment_months = 0
+            state.traits[person.id] = (0.5, 0.5, 0.65)
+            state.dependence[person.id] = 0.25
+        sim.companies[:] = [
+            Company(
+                id=f"vice_test_{index}", name=f"Fabricant {index}", sector=VICE_SECTOR,
+                cash=1e6, wage_offer=1000.0, price=reference, target_employees=1,
+                employees=[sim.people[0].id], productivity_trait=1.0,
+                previous_units_sold=1.0,
+            )
+            for index in range(makers)
+        ]
+        state.vice_units = {c.id: 1.0 for c in sim.companies}
+        return sim
+
     def test_damage_raises_mortality(self) -> None:
         sim = simulation(months=2, addictive_goods=True)
         person = sim.people[0]
@@ -291,6 +318,123 @@ class AddictionTests(unittest.TestCase):
         self.assertGreater(goal(0.2, True), 0.0)
         self.assertAlmostEqual(goal(1.0, False), 1.0)
         self.assertGreater(goal(0.6, True), goal(0.6, False))
+
+    def test_technology_strength_is_increasing_and_bounded(self) -> None:
+        sim = self.controlled_market()
+        maker = sim.companies[0]
+        strengths = []
+        for level in (0.0, 0.1, 1.0, 10.0, 1e9):
+            maker.tech_level = level
+            strengths.append(sim._vice_addictiveness(maker))
+        self.assertEqual(strengths[0], 1.0)
+        self.assertTrue(all(a < b for a, b in zip(strengths, strengths[1:])))
+        self.assertLessEqual(strengths[-1], 1.0 + sim.live.addiction_technology_gain)
+        sim.live.addiction_technology_gain = 0.0
+        self.assertEqual(sim._vice_addictiveness(maker), 1.0)
+
+    def test_real_technology_purchase_pays_supplier_and_strengthens_product(self) -> None:
+        sim = self.controlled_market()
+        maker = sim.companies[0]
+        maker.previous_revenue = maker.revenue_ema = 10000.0
+        maker.profit = 1000.0
+        provider = Company(
+            id="tech_test", name="Équipements", sector="technology", cash=1000.0,
+            wage_offer=1000.0, employees=[sim.people[0].id],
+            productivity_trait=1.0, innovation=1.0,
+        )
+        before = maker.cash, provider.cash, sim._vice_addictiveness(maker)
+        sold = trade_technology([provider, maker], sim.resources, sim.live)
+        self.assertGreater(sold, 0.0)
+        paid = before[0] - maker.cash
+        self.assertGreater(paid, 0.0)
+        self.assertAlmostEqual(provider.cash - before[1], paid)
+        self.assertAlmostEqual(maker.technology_asset_value, paid)
+        self.assertAlmostEqual(maker.capital_expenditure, paid)
+        self.assertAlmostEqual(maker.supplier_spending[provider.id], paid)
+        self.assertGreater(maker.tech_level, 0.0)
+        self.assertGreater(sim._vice_addictiveness(maker), before[2])
+
+    def test_technology_without_available_supply_has_no_effect(self) -> None:
+        sim = self.controlled_market()
+        maker = sim.companies[0]
+        maker.previous_revenue = maker.revenue_ema = 10000.0
+        maker.profit = 1000.0
+        provider = Company(
+            id="tech_test", name="Équipements", sector="technology", cash=1000.0,
+            wage_offer=1000.0, employees=[], tech_inventory=0.0,
+        )
+        cash = maker.cash, provider.cash
+        self.assertEqual(trade_technology([provider, maker], sim.resources, sim.live), 0.0)
+        self.assertEqual((maker.cash, provider.cash), cash)
+        self.assertEqual(maker.tech_level, 0.0)
+        self.assertEqual(sim._vice_addictiveness(maker), 1.0)
+
+    def test_dependence_follows_strength_of_products_actually_consumed(self) -> None:
+        dependencies = []
+        for technology in ((0.0,), (10.0, 0.0), (10.0,)):
+            sim = self.controlled_market(makers=len(technology))
+            for maker, level in zip(sim.companies, technology):
+                maker.tech_level = level
+            person = sim.people[0]
+            money = person.cash + sim.public.cash + sum(c.cash for c in sim.companies)
+            sim._vice_sales(flows(sim))
+            self.assertGreater(sim.society.month_stats["vice_unites"], 0.0)
+            self.assertAlmostEqual(
+                person.cash + sim.public.cash + sum(c.cash for c in sim.companies), money,
+            )
+            dependencies.append(sim.society.dependence[person.id])
+        self.assertGreater(dependencies[1], dependencies[0])
+        self.assertGreater(dependencies[2], dependencies[1])
+
+    def test_undelivered_product_does_not_strengthen_dependence(self) -> None:
+        dependencies = []
+        for level in (0.0, 10.0):
+            sim = self.controlled_market()
+            maker, person = sim.companies[0], sim.people[0]
+            maker.tech_level = level
+            maker.employees.clear()
+            cash = person.cash, maker.cash
+            sim._vice_sales(flows(sim))
+            self.assertEqual(sim.society.month_stats["vice_unites"], 0.0)
+            self.assertEqual((person.cash, maker.cash), cash)
+            self.assertEqual(maker.revenue, 0.0)
+            dependencies.append(sim.society.dependence[person.id])
+        self.assertEqual(dependencies[0], dependencies[1])
+
+    def test_losses_do_not_trigger_a_price_cut_when_volumes_decline(self) -> None:
+        sim = self.controlled_market()
+        maker, person = sim.companies[0], sim.people[0]
+        person_id = person.id
+        sim.society.dependence[person_id] = 0.5
+        reference = sim._vice_reference_price()
+        maker.previous_units_sold = 0.5
+        maker.previous_profit = -reference
+        maker.expenses = maker.wage_bill = 0.65 * reference
+        previous_price = maker.price
+        sim._vice_sales(flows(sim))
+        self.assertGreater(maker.price, previous_price)
+        self.assertLessEqual(maker.price, 2.5 * reference)
+
+    def test_saturated_maker_passes_orders_to_available_competitor(self) -> None:
+        sim = self.controlled_market(population=40, makers=2)
+        for person in sim.people:
+            sim.society.dependence[person.id] = 1.0
+        sim.companies[0].productivity_trait = 0.1  # capacité de quinze unités
+        sim._vice_sales(flows(sim))
+        self.assertAlmostEqual(sum(c.units_sold for c in sim.companies), 40.0)
+        self.assertAlmostEqual(sum(c.units_produced for c in sim.companies), 40.0)
+        self.assertLessEqual(sim.companies[0].units_sold, 15.0 + 1e-9)
+        self.assertAlmostEqual(sum(c.unmet_units for c in sim.companies), 0.0)
+
+    def test_capacity_shortage_is_recorded_as_unserved_demand(self) -> None:
+        sim = self.controlled_market(population=40, makers=2)
+        for person in sim.people:
+            sim.society.dependence[person.id] = 1.0
+        for maker in sim.companies:
+            maker.productivity_trait = 0.1
+        sim._vice_sales(flows(sim))
+        self.assertAlmostEqual(sum(c.units_sold for c in sim.companies), 30.0)
+        self.assertAlmostEqual(sum(c.unmet_units for c in sim.companies), 10.0)
 
     def test_demand_ignores_the_price_and_the_state_collects_the_excise(self) -> None:
         sim = founded(VICE_SECTOR, addictive_goods=True)
